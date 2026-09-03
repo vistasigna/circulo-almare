@@ -33,6 +33,7 @@ function authAdmin(req, res, next) {
   catch { res.clearCookie('circulo_admin'); return res.redirect('/admin/login'); }
 }
 
+// ─── BLING ────────────────────────────────────────────────────────────────────
 async function getBlingToken() {
   const r = await pool.query('SELECT * FROM almare_bling_config LIMIT 1');
   if (!r.rows.length) throw new Error('Token Bling não configurado');
@@ -46,34 +47,63 @@ async function getBlingToken() {
     });
     const data = await resp.json();
     if (!data.access_token) throw new Error('Erro ao renovar token Bling');
-    const expira = new Date(Date.now() + data.expires_in * 1000);
     await pool.query('UPDATE almare_bling_config SET access_token=$1, refresh_token=$2, expira_em=$3 WHERE id=1',
-      [data.access_token, data.refresh_token, expira]);
+      [data.access_token, data.refresh_token, new Date(Date.now() + data.expires_in * 1000)]);
     return data.access_token;
   }
   return config.access_token;
 }
 
-async function criarContatoBling(dados) {
+async function buscarContatoBling(documento) {
   const token = await getBlingToken();
-  const isCNPJ = (dados.documento||'').replace(/\D/g,'').length > 11;
+  const doc = documento.replace(/\D/g, '');
+  const resp = await fetch(`https://www.bling.com.br/Api/v3/contatos?pesquisa=${doc}&limite=5`, {
+    headers: { 'Authorization': `Bearer ${token}` }
+  });
+  const data = await resp.json();
+  if (!data?.data?.length) return null;
+  // filtra pelo documento exato
+  const contato = data.data.find(c => {
+    const cpf = (c.cpf || '').replace(/\D/g, '');
+    const cnpj = (c.cnpj || '').replace(/\D/g, '');
+    return cpf === doc || cnpj === doc;
+  });
+  return contato || null;
+}
+
+async function salvarContatoBling(dados, blingId) {
+  const token = await getBlingToken();
+  const isCNPJ = (dados.documento || '').replace(/\D/g, '').length > 11;
   const body = {
     nome: dados.nome, tipo: isCNPJ ? 'J' : 'F', email: dados.email,
     telefone: dados.telefone || '', celular: dados.celular || '',
-    [isCNPJ ? 'cnpj' : 'cpf']: (dados.documento||'').replace(/\D/g,''),
+    [isCNPJ ? 'cnpj' : 'cpf']: (dados.documento || '').replace(/\D/g, ''),
     ie: dados.ie || '',
-    endereco: { endereco: dados.endereco||'', numero: dados.numero||'', complemento: dados.complemento||'',
-      bairro: dados.bairro||'', cep: (dados.cep||'').replace(/\D/g,''), municipio: dados.cidade||'', uf: dados.estado||'' }
+    endereco: {
+      endereco: dados.endereco || '', numero: dados.numero || '',
+      complemento: dados.complemento || '', bairro: dados.bairro || '',
+      cep: (dados.cep || '').replace(/\D/g, ''), municipio: dados.cidade || '', uf: dados.estado || ''
+    }
   };
-  const resp = await fetch('https://www.bling.com.br/Api/v3/contatos', {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
-  });
-  const result = await resp.json();
-  return result?.data?.id || null;
+  if (blingId) {
+    await fetch(`https://www.bling.com.br/Api/v3/contatos/${blingId}`, {
+      method: 'PUT',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    return blingId;
+  } else {
+    const resp = await fetch('https://www.bling.com.br/Api/v3/contatos', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    const result = await resp.json();
+    return result?.data?.id || null;
+  }
 }
 
+// ─── CSS ──────────────────────────────────────────────────────────────────────
 const CSS = `
   @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400;500;600&family=Inter:wght@300;400;500&display=swap');
   *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -91,13 +121,13 @@ const CSS = `
   .field label{display:block;font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);margin-bottom:7px}
   .field input,.field select{width:100%;background:#0d0d0d;border:1px solid var(--border);color:var(--text);padding:12px 14px;border-radius:3px;font-family:'Inter',sans-serif;font-size:14px;outline:none;transition:border .2s}
   .field input:focus,.field select:focus{border-color:var(--gold)}
+  .field input:disabled{opacity:.45;cursor:not-allowed}
   .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
   .grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px}
   .btn{display:inline-block;padding:13px 28px;font-size:11px;letter-spacing:.2em;text-transform:uppercase;font-family:'Inter',sans-serif;cursor:pointer;border:none;border-radius:3px;transition:all .2s}
   .btn-primary{background:var(--gold);color:#000;font-weight:500} .btn-primary:hover{background:var(--gold-light)}
   .btn-outline{background:transparent;border:1px solid var(--border);color:var(--text)} .btn-outline:hover{border-color:var(--gold);color:var(--gold)}
-  .btn-full{width:100%;text-align:center}
-  .btn-lg{padding:18px 48px;font-size:12px}
+  .btn-full{width:100%;text-align:center} .btn-lg{padding:18px 48px;font-size:12px}
   .badge{display:inline-block;padding:3px 10px;font-size:10px;letter-spacing:.15em;text-transform:uppercase;border-radius:20px}
   .badge-gold{background:rgba(201,169,110,.15);color:var(--gold);border:1px solid rgba(201,169,110,.3)}
   .badge-muted{background:rgba(255,255,255,.05);color:var(--muted);border:1px solid var(--border)}
@@ -106,6 +136,7 @@ const CSS = `
   .divider{border:none;border-top:1px solid var(--border);margin:28px 0}
   .msg-erro{background:rgba(192,57,43,.1);border:1px solid rgba(192,57,43,.3);color:#e74c3c;padding:12px 16px;border-radius:3px;margin-bottom:20px;font-size:13px}
   .msg-ok{background:rgba(46,204,113,.1);border:1px solid rgba(46,204,113,.3);color:var(--success);padding:12px 16px;border-radius:3px;margin-bottom:20px;font-size:13px}
+  .msg-info{background:rgba(201,169,110,.1);border:1px solid rgba(201,169,110,.3);color:var(--gold);padding:12px 16px;border-radius:3px;margin-bottom:20px;font-size:13px}
   .steps{display:flex;margin-bottom:40px;border-bottom:1px solid var(--border)}
   .step{flex:1;text-align:center;padding:12px;font-size:10px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-1px}
   .step.ativo{color:var(--gold);border-color:var(--gold)}
@@ -130,6 +161,9 @@ const CSS = `
   .stat-box .lbl{font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);margin-top:4px}
   textarea{width:100%;background:#0d0d0d;border:1px solid var(--border);color:var(--text);padding:12px;border-radius:3px;font-size:14px;min-height:80px;resize:vertical;font-family:'Inter',sans-serif;outline:none}
   textarea:focus{border-color:var(--gold)}
+  #aviso-bling{display:none;margin-bottom:20px;}
+  .spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--border);border-top-color:var(--gold);border-radius:50%;animation:spin .6s linear infinite;vertical-align:middle;margin-right:6px}
+  @keyframes spin{to{transform:rotate(360deg)}}
   @media(max-width:600px){.grid-2,.grid-3{grid-template-columns:1fr}.steps{flex-direction:column}}
 `;
 
@@ -156,12 +190,46 @@ const FUNCOES = [
   {slug:'guardiao',nome:'Guardião',desc:'Possui obra ou matriz especial da ALMARE.'},
 ];
 
+// ════════════════════════════════════════════════════════════════
+// API — busca contato no Bling por documento (chamada do frontend)
+// ════════════════════════════════════════════════════════════════
+app.get('/api/buscar-contato', async (req, res) => {
+  const { doc } = req.query;
+  if (!doc || doc.replace(/\D/g,'').length < 11) return res.json({ encontrado: false });
+  try {
+    const contato = await buscarContatoBling(doc);
+    if (!contato) return res.json({ encontrado: false });
+    res.json({
+      encontrado: true,
+      bling_id: contato.id,
+      nome: contato.nome || '',
+      email: contato.email || '',
+      telefone: contato.telefone || '',
+      celular: contato.celular || '',
+      ie: contato.ie || '',
+      cep: contato.endereco?.cep || '',
+      endereco: contato.endereco?.endereco || '',
+      numero: contato.endereco?.numero || '',
+      complemento: contato.endereco?.complemento || '',
+      bairro: contato.endereco?.bairro || '',
+      cidade: contato.endereco?.municipio || '',
+      estado: contato.endereco?.uf || '',
+    });
+  } catch (e) {
+    console.error('Bling busca:', e.message);
+    res.json({ encontrado: false });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════
 // PASSO 1 — APRESENTAÇÃO
+// ════════════════════════════════════════════════════════════════
 app.get('/', (req,res) => {
   try { jwt.verify(req.cookies.circulo_token, JWT_SECRET); return res.redirect('/portal'); } catch {}
   res.redirect('/convite');
 });
 app.get('/convite', (req,res) => res.redirect('/convite/geral'));
+
 app.get('/convite/:codigo', async (req,res) => {
   const {codigo} = req.params;
   let conviteId=null, nomeIndicador='';
@@ -187,7 +255,9 @@ app.get('/convite/:codigo', async (req,res) => {
   `));
 });
 
-// PASSO 2 — DADOS PESSOAIS
+// ════════════════════════════════════════════════════════════════
+// PASSO 2 — DADOS PESSOAIS com busca automática no Bling
+// ════════════════════════════════════════════════════════════════
 app.get('/cadastro-passo2', (req,res) => {
   const convite = req.query.convite||'';
   res.send(html('Seus dados', `
@@ -200,73 +270,142 @@ app.get('/cadastro-passo2', (req,res) => {
       <h2 style="font-size:26px;margin-bottom:8px;">Seus dados</h2>
       <p style="color:var(--muted);margin-bottom:28px;">Usamos as mesmas informações para emissão de nota fiscal.</p>
       ${req.query.erro?`<div class="msg-erro">${req.query.erro}</div>`:''}
-      <form method="POST" action="/cadastro-passo2">
+
+      <div id="aviso-bling"></div>
+
+      <form method="POST" action="/cadastro-passo2" id="form-dados">
         <input type="hidden" name="convite_id" value="${convite}">
-        <div class="field"><label>Nome completo / Razão social *</label><input name="nome" required placeholder="Seu nome ou empresa"></div>
-        <div class="grid-2">
-          <div class="field"><label>CPF / CNPJ *</label><input name="documento" required placeholder="CPF ou CNPJ" id="doc" oninput="detectarDoc(this.value)"></div>
-          <div class="field"><label id="ie-label">RG / IE</label><input name="ie" id="ie" placeholder="Opcional"></div>
+        <input type="hidden" name="bling_id" id="bling_id" value="">
+
+        <!-- DOCUMENTO PRIMEIRO -->
+        <div class="field">
+          <label>CPF / CNPJ *</label>
+          <div style="display:flex;gap:10px;align-items:center;">
+            <input name="documento" id="documento" required placeholder="CPF ou CNPJ" style="flex:1"
+              oninput="formatarDoc(this)" onblur="buscarNoBling(this.value)">
+            <span id="status-busca" style="font-size:11px;color:var(--muted);white-space:nowrap;min-width:80px;"></span>
+          </div>
         </div>
-        <div class="field"><label>E-mail *</label><input name="email" type="email" required placeholder="seu@email.com"></div>
-        <div class="grid-2">
-          <div class="field"><label>Telefone</label><input name="telefone" placeholder="(00) 0000-0000"></div>
-          <div class="field"><label>Celular / WhatsApp</label><input name="celular" placeholder="(00) 00000-0000"></div>
+
+        <div id="campos-restantes" style="display:none;">
+          <div class="field"><label>Nome completo / Razão social *</label><input name="nome" id="nome" required placeholder="Seu nome ou empresa"></div>
+          <div class="grid-2">
+            <div class="field"><label id="ie-label">RG / IE</label><input name="ie" id="ie" placeholder="Opcional"></div>
+            <div class="field"><label>E-mail *</label><input name="email" id="email" type="email" required placeholder="seu@email.com"></div>
+          </div>
+          <div class="grid-2">
+            <div class="field"><label>Telefone</label><input name="telefone" id="telefone" placeholder="(00) 0000-0000"></div>
+            <div class="field"><label>Celular / WhatsApp</label><input name="celular" id="celular" placeholder="(00) 00000-0000"></div>
+          </div>
+          <hr class="divider">
+          <h3 style="font-size:18px;margin-bottom:20px;">Endereço</h3>
+          <div class="grid-2">
+            <div class="field"><label>CEP *</label><input name="cep" id="cep" required placeholder="00000-000" oninput="buscarCep(this.value)"></div>
+            <div class="field"><label>Estado</label><input name="estado" id="estado" placeholder="UF" maxlength="2"></div>
+          </div>
+          <div class="field"><label>Endereço *</label><input name="endereco" id="endereco" required placeholder="Rua, Avenida..."></div>
+          <div class="grid-2">
+            <div class="field"><label>Número *</label><input name="numero" id="numero" required placeholder="Nº"></div>
+            <div class="field"><label>Complemento</label><input name="complemento" id="complemento" placeholder="Apto, sala..."></div>
+          </div>
+          <div class="grid-2">
+            <div class="field"><label>Bairro</label><input name="bairro" id="bairro" placeholder="Bairro"></div>
+            <div class="field"><label>Cidade *</label><input name="cidade" id="cidade" required placeholder="Cidade"></div>
+          </div>
+          <button type="submit" class="btn btn-primary btn-full" style="margin-top:8px;">Continuar</button>
         </div>
-        <hr class="divider">
-        <h3 style="font-size:18px;margin-bottom:20px;">Endereço</h3>
-        <div class="grid-2">
-          <div class="field"><label>CEP *</label><input name="cep" required placeholder="00000-000" id="cep" oninput="buscarCep(this.value)"></div>
-          <div class="field"><label>Estado</label><input name="estado" id="estado" placeholder="UF" maxlength="2"></div>
-        </div>
-        <div class="field"><label>Endereço *</label><input name="endereco" required id="endereco" placeholder="Rua, Avenida..."></div>
-        <div class="grid-2">
-          <div class="field"><label>Número *</label><input name="numero" required id="numero" placeholder="Nº"></div>
-          <div class="field"><label>Complemento</label><input name="complemento" id="complemento" placeholder="Apto, sala..."></div>
-        </div>
-        <div class="grid-2">
-          <div class="field"><label>Bairro</label><input name="bairro" id="bairro" placeholder="Bairro"></div>
-          <div class="field"><label>Cidade *</label><input name="cidade" required id="cidade" placeholder="Cidade"></div>
-        </div>
-        <button type="submit" class="btn btn-primary btn-full" style="margin-top:8px;">Continuar</button>
       </form>
     </div>
+
     <script>
-      function detectarDoc(v){
-        const n=v.replace(/\\D/g,'');
-        document.getElementById('ie-label').textContent=n.length>11?'Inscrição Estadual':'RG';
-        document.getElementById('ie').placeholder=n.length>11?'IE (opcional)':'RG (opcional)';
+      function formatarDoc(el) {
+        const n = el.value.replace(/\\D/g,'');
+        document.getElementById('ie-label').textContent = n.length > 11 ? 'Inscrição Estadual' : 'RG';
+        document.getElementById('ie').placeholder = n.length > 11 ? 'IE (opcional)' : 'RG (opcional)';
       }
-      async function buscarCep(v){
-        const cep=v.replace(/\\D/g,'');
-        if(cep.length!==8)return;
-        try{
-          const r=await fetch('https://viacep.com.br/ws/'+cep+'/json/');
-          const d=await r.json();
-          if(d.erro)return;
-          document.getElementById('endereco').value=d.logradouro||'';
-          document.getElementById('bairro').value=d.bairro||'';
-          document.getElementById('cidade').value=d.localidade||'';
-          document.getElementById('estado').value=d.uf||'';
+
+      async function buscarNoBling(val) {
+        const doc = val.replace(/\\D/g,'');
+        if (doc.length < 11) return;
+        const status = document.getElementById('status-busca');
+        const aviso = document.getElementById('aviso-bling');
+        const campos = document.getElementById('campos-restantes');
+        status.innerHTML = '<span class="spinner"></span>Buscando...';
+        try {
+          const r = await fetch('/api/buscar-contato?doc=' + encodeURIComponent(doc));
+          const d = await r.json();
+          if (d.encontrado) {
+            document.getElementById('bling_id').value = d.bling_id;
+            preencherCampo('nome', d.nome);
+            preencherCampo('email', d.email);
+            preencherCampo('telefone', d.telefone);
+            preencherCampo('celular', d.celular);
+            preencherCampo('ie', d.ie);
+            preencherCampo('cep', d.cep);
+            preencherCampo('endereco', d.endereco);
+            preencherCampo('numero', d.numero);
+            preencherCampo('complemento', d.complemento);
+            preencherCampo('bairro', d.bairro);
+            preencherCampo('cidade', d.cidade);
+            preencherCampo('estado', d.estado);
+            aviso.innerHTML = '<div class="msg-info">✓ Cadastro encontrado — dados preenchidos automaticamente. Confira e corrija se necessário.</div>';
+            aviso.style.display = 'block';
+            status.textContent = '✓ Encontrado';
+          } else {
+            document.getElementById('bling_id').value = '';
+            aviso.innerHTML = '<div class="msg-ok">Cadastro novo — preencha seus dados abaixo.</div>';
+            aviso.style.display = 'block';
+            status.textContent = 'Não encontrado';
+          }
+          campos.style.display = 'block';
+        } catch(e) {
+          status.textContent = '';
+          campos.style.display = 'block';
+        }
+      }
+
+      function preencherCampo(id, val) {
+        const el = document.getElementById(id);
+        if (el) el.value = val || '';
+      }
+
+      async function buscarCep(v) {
+        const cep = v.replace(/\\D/g,'');
+        if (cep.length !== 8) return;
+        try {
+          const r = await fetch('https://viacep.com.br/ws/' + cep + '/json/');
+          const d = await r.json();
+          if (d.erro) return;
+          preencherCampo('endereco', d.logradouro);
+          preencherCampo('bairro', d.bairro);
+          preencherCampo('cidade', d.localidade);
+          preencherCampo('estado', d.uf);
           document.getElementById('numero').focus();
-        }catch{}
+        } catch {}
       }
     </script>
   `));
 });
 
 app.post('/cadastro-passo2', async (req,res) => {
-  const {nome,documento,ie,email,telefone,celular,cep,endereco,numero,complemento,bairro,cidade,estado,convite_id}=req.body;
+  const {nome,documento,ie,email,telefone,celular,cep,endereco,numero,complemento,bairro,cidade,estado,convite_id,bling_id}=req.body;
   try {
     const existe = await pool.query(
       `SELECT id FROM circulo_candidatos WHERE email=$1 AND status='pendente'
        UNION SELECT id FROM circulo_membros WHERE email=$1`,[email]);
     if (existe.rows.length) return res.redirect(`/cadastro-passo2?convite=${convite_id||''}&erro=Este+e-mail+já+tem+solicitação+no+Círculo`);
   } catch {}
-  const t = gerarToken({tipo:'dados_passo2',nome,documento,ie,email,telefone,celular,cep,endereco,numero,complemento,bairro,cidade,estado,convite_id:convite_id||''},{expiresIn:'2h'});
+  const t = gerarToken({
+    tipo:'dados_passo2',nome,documento,ie,email,telefone,celular,
+    cep,endereco,numero,complemento,bairro,cidade,estado,
+    convite_id:convite_id||'',bling_id:bling_id||''
+  },{expiresIn:'2h'});
   res.redirect(`/cadastro-passo3?t=${t}`);
 });
 
+// ════════════════════════════════════════════════════════════════
 // PASSO 3 — FUNÇÕES
+// ════════════════════════════════════════════════════════════════
 app.get('/cadastro-passo3', (req,res) => {
   const t=req.query.t||'';
   try{jwt.verify(t,JWT_SECRET);}catch{return res.redirect('/convite');}
@@ -319,9 +458,11 @@ app.post('/cadastro-passo3', async (req,res) => {
     await pool.query(
       'INSERT INTO circulo_candidatos (nome,email,convite_id,funcoes_desejadas,como_conheceu) VALUES ($1,$2,$3,$4,$5)',
       [payload.nome,payload.email,payload.convite_id||null,funcoes.join(', '),
-       JSON.stringify({documento:payload.documento,ie:payload.ie,telefone:payload.telefone,celular:payload.celular,
+       JSON.stringify({
+         documento:payload.documento,ie:payload.ie,telefone:payload.telefone,celular:payload.celular,
          cep:payload.cep,endereco:payload.endereco,numero:payload.numero,complemento:payload.complemento,
-         bairro:payload.bairro,cidade:payload.cidade,estado:payload.estado})]
+         bairro:payload.bairro,cidade:payload.cidade,estado:payload.estado,bling_id:payload.bling_id||''
+       })]
     );
     if(payload.convite_id) await pool.query('UPDATE circulo_convites SET usos=usos+1 WHERE id=$1',[payload.convite_id]);
   } catch(e){console.error('Erro candidato:',e.message);}
@@ -334,7 +475,9 @@ app.post('/cadastro-passo3', async (req,res) => {
   `));
 });
 
+// ════════════════════════════════════════════════════════════════
 // ATIVAR CONTA
+// ════════════════════════════════════════════════════════════════
 app.get('/ativar/:token', async (req,res) => {
   try {
     const p=jwt.verify(req.params.token,JWT_SECRET);
@@ -367,15 +510,14 @@ app.post('/ativar', async (req,res) => {
     const total=await pool.query('SELECT COUNT(*) FROM circulo_membros');
     const codigo=`ALM-${String(parseInt(total.rows[0].count)+1).padStart(4,'0')}`;
     const {rows}=await pool.query(
-      `INSERT INTO circulo_membros (nome,email,senha_hash,status,aprovado_em,codigo_membro)
-       VALUES ($1,$2,$3,'ativo',NOW(),$4) RETURNING id`,
+      `INSERT INTO circulo_membros (nome,email,senha_hash,status,aprovado_em,codigo_membro) VALUES ($1,$2,$3,'ativo',NOW(),$4) RETURNING id`,
       [c.nome,c.email,hash,codigo]
     );
     const mid=rows[0].id;
     await pool.query('INSERT INTO circulo_saldo_credito (membro_id) VALUES ($1)',[mid]);
     await pool.query('INSERT INTO circulo_convites (membro_id,codigo) VALUES ($1,$2)',[mid,crypto.randomBytes(6).toString('hex')]);
     await pool.query('INSERT INTO circulo_links_aquisicao (membro_id,codigo) VALUES ($1,$2)',[mid,crypto.randomBytes(6).toString('hex')]);
-    await pool.query('INSERT INTO circulo_passaporte_eventos (membro_id,tipo,descricao) VALUES ($1,\'entrada\',$2)',[mid,`${c.nome} entrou para o Círculo ALMARE`]);
+    await pool.query(`INSERT INTO circulo_passaporte_eventos (membro_id,tipo,descricao) VALUES ($1,'entrada',$2)`,[mid,`${c.nome} entrou para o Círculo ALMARE`]);
     if(c.funcoes_desejadas){
       for(const slug of c.funcoes_desejadas.split(',').map(s=>s.trim()).filter(Boolean)){
         const fr=await pool.query('SELECT id FROM circulo_funcoes WHERE slug=$1',[slug]);
@@ -383,13 +525,14 @@ app.post('/ativar', async (req,res) => {
       }
     }
     await pool.query(`UPDATE circulo_candidatos SET status='aprovado' WHERE id=$1`,[p.candidato_id]);
-    const jwtToken=gerarToken({id:mid,nome:c.nome,email:c.email});
-    res.cookie('circulo_token',jwtToken,{httpOnly:true,maxAge:7*24*60*60*1000});
+    res.cookie('circulo_token',gerarToken({id:mid,nome:c.nome,email:c.email}),{httpOnly:true,maxAge:7*24*60*60*1000});
     res.redirect('/portal');
   }catch(e){console.error(e);res.send(html('Erro',`<div class="container-sm"><div class="msg-erro">${e.message}</div></div>`));}
 });
 
+// ════════════════════════════════════════════════════════════════
 // LOGIN
+// ════════════════════════════════════════════════════════════════
 app.get('/login',(req,res)=>res.send(html('Entrar',`
   <div class="container-sm">
     <h2 style="font-size:28px;margin-bottom:32px;">Círculo ALMARE</h2>
@@ -414,7 +557,9 @@ app.post('/login',async(req,res)=>{
 });
 app.get('/logout',(req,res)=>{res.clearCookie('circulo_token');res.redirect('/login');});
 
+// ════════════════════════════════════════════════════════════════
 // PORTAL
+// ════════════════════════════════════════════════════════════════
 app.get('/portal',authMembro,async(req,res)=>{
   try{
     const resumo=await pool.query('SELECT * FROM circulo_resumo_membro WHERE id=$1',[req.membro.id]);
@@ -487,7 +632,9 @@ app.get('/meu-convite',authMembro,async(req,res)=>{
   res.send(html('Convidar',`<div class="nav-bar"><a href="/portal" class="nav-link">Passaporte</a><a href="/catalogo" class="nav-link">Obras</a><a href="/meu-impacto" class="nav-link">Impacto</a><a href="/sugestoes" class="nav-link">Voz</a><a href="/meu-convite" class="nav-link ativo">Convidar</a></div><h2 style="font-size:28px;margin-bottom:8px;">Seu link de convite</h2><p style="color:var(--muted);margin-bottom:32px;">Compartilhe com quem acredita que pertence ao Círculo.<br>Anderson aprova cada pessoa individualmente.</p><div class="card"><div style="font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);margin-bottom:12px;">Link pessoal</div><div style="background:#0d0d0d;border:1px solid var(--border);border-radius:3px;padding:14px;font-size:13px;word-break:break-all;margin-bottom:16px;">${link}</div><button onclick="navigator.clipboard.writeText('${link}');this.textContent='Copiado ✓'" class="btn btn-outline">Copiar link</button><div style="margin-top:20px;font-size:12px;color:var(--muted)">${c?c.usos:0} pessoa(s) entrou pela sua indicação</div></div>`,true));
 });
 
+// ════════════════════════════════════════════════════════════════
 // ADMIN
+// ════════════════════════════════════════════════════════════════
 app.get('/admin/login',(req,res)=>res.send(html('Admin',`<div class="container-sm"><h2 style="font-size:24px;margin-bottom:32px;">Painel Admin</h2>${req.query.erro?`<div class="msg-erro">${req.query.erro}</div>`:''}<form method="POST" action="/admin/login"><div class="field"><label>Senha</label><input type="password" name="senha" required></div><button type="submit" class="btn btn-primary btn-full">Entrar</button></form></div>`)));
 app.post('/admin/login',(req,res)=>{
   if(req.body.senha!==ADMIN_SENHA)return res.redirect('/admin/login?erro=Senha+incorreta');
@@ -499,7 +646,18 @@ app.get('/admin/logout',(req,res)=>{res.clearCookie('circulo_admin');res.redirec
 app.get('/admin',authAdmin,async(req,res)=>{
   const candidatos=await pool.query(`SELECT * FROM circulo_candidatos WHERE status='pendente' ORDER BY criado_em DESC`);
   const membros=await pool.query('SELECT * FROM circulo_resumo_membro ORDER BY membro_desde DESC');
-  const linhaCand=candidatos.rows.map(c=>`<tr><td><strong>${c.nome}</strong><br><span style="font-size:11px;color:var(--muted)">${c.email}</span></td><td style="font-size:12px;">${(c.funcoes_desejadas||'membro').split(',').map(f=>`<span class="badge badge-gold" style="margin:2px;display:inline-block;">${f.trim()}</span>`).join('')}</td><td style="font-size:11px;color:var(--muted)">${new Date(c.criado_em).toLocaleDateString('pt-BR')}</td><td><form method="POST" action="/admin/candidatos/${c.id}/aprovar" style="display:inline"><button class="btn btn-primary" style="padding:6px 14px;font-size:10px;">Aprovar</button></form><form method="POST" action="/admin/candidatos/${c.id}/recusar" style="display:inline;margin-left:6px"><button class="btn btn-outline" style="padding:6px 14px;font-size:10px;">Recusar</button></form></td></tr>`).join('');
+  const linhaCand=candidatos.rows.map(c=>{
+    let dadosNF={};try{dadosNF=JSON.parse(c.como_conheceu||'{}');}catch{}
+    const temBling=dadosNF.bling_id?'<span class="badge badge-success" style="margin-left:6px;">Bling</span>':'<span class="badge badge-muted" style="margin-left:6px;">Novo</span>';
+    return `<tr>
+      <td><strong>${c.nome}</strong>${temBling}<br><span style="font-size:11px;color:var(--muted)">${c.email}</span></td>
+      <td style="font-size:12px;">${(c.funcoes_desejadas||'membro').split(',').map(f=>`<span class="badge badge-gold" style="margin:2px;display:inline-block;">${f.trim()}</span>`).join('')}</td>
+      <td style="font-size:11px;color:var(--muted)">${new Date(c.criado_em).toLocaleDateString('pt-BR')}</td>
+      <td>
+        <form method="POST" action="/admin/candidatos/${c.id}/aprovar" style="display:inline"><button class="btn btn-primary" style="padding:6px 14px;font-size:10px;">Aprovar</button></form>
+        <form method="POST" action="/admin/candidatos/${c.id}/recusar" style="display:inline;margin-left:6px"><button class="btn btn-outline" style="padding:6px 14px;font-size:10px;">Recusar</button></form>
+      </td>
+    </tr>`;}).join('');
   const linhaMembros=membros.rows.map(m=>`<tr><td>${m.nome}</td><td style="color:var(--muted)">${m.codigo_membro||'—'}</td><td style="color:var(--muted)">${m.email}</td><td style="color:var(--gold)">R$ ${parseFloat(m.credito_disponivel).toFixed(2).replace('.',',')}</td><td>${m.obras_que_encontraram_lar}</td><td>${m.total_indicacoes}</td></tr>`).join('');
   res.send(html('Admin',`
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:32px;"><h2 style="font-size:24px;">Painel do Círculo</h2><a href="/admin/logout" class="btn btn-outline" style="padding:8px 16px;font-size:10px;">Sair</a></div>
@@ -508,7 +666,7 @@ app.get('/admin',authAdmin,async(req,res)=>{
       <div class="stat-box"><div class="num">${membros.rows.length}</div><div class="lbl">Membros ativos</div></div>
       <div class="stat-box"><div class="num">${membros.rows.reduce((a,m)=>a+parseInt(m.obras_que_encontraram_lar||0),0)}</div><div class="lbl">Obras que encontraram lar</div></div>
     </div>
-    ${candidatos.rows.length?`<div class="card" style="margin-bottom:24px;"><h3 style="font-size:18px;margin-bottom:20px;color:var(--gold);">Candidatos pendentes</h3><table><thead><tr><th>Nome / E-mail</th><th>Funções desejadas</th><th>Data</th><th>Ação</th></tr></thead><tbody>${linhaCand}</tbody></table></div>`:''}
+    ${candidatos.rows.length?`<div class="card" style="margin-bottom:24px;"><h3 style="font-size:18px;margin-bottom:20px;color:var(--gold);">Candidatos pendentes</h3><table><thead><tr><th>Nome / E-mail</th><th>Funções</th><th>Data</th><th>Ação</th></tr></thead><tbody>${linhaCand}</tbody></table></div>`:''}
     <div class="card"><h3 style="font-size:18px;margin-bottom:20px;">Membros ativos</h3><table><thead><tr><th>Nome</th><th>Código</th><th>E-mail</th><th>Crédito</th><th>Obras</th><th>Indicações</th></tr></thead><tbody>${linhaMembros||'<tr><td colspan="6" style="color:var(--muted);text-align:center;padding:24px;">Nenhum membro ainda</td></tr>'}</tbody></table></div>
     <div style="margin-top:16px;"><a href="/admin/sugestoes" class="btn btn-outline">Ver sugestões</a></div>
   `));
@@ -519,10 +677,16 @@ app.post('/admin/candidatos/:id/aprovar',authAdmin,async(req,res)=>{
     const {rows}=await pool.query('SELECT * FROM circulo_candidatos WHERE id=$1',[req.params.id]);
     if(!rows.length)return res.redirect('/admin');
     const c=rows[0];
-    let dadosNF={};
-    try{dadosNF=JSON.parse(c.como_conheceu||'{}');}catch{}
-    let blingId=null;
-    try{blingId=await criarContatoBling({nome:c.nome,email:c.email,...dadosNF});}catch(e){console.error('Bling:',e.message);}
+    let dadosNF={};try{dadosNF=JSON.parse(c.como_conheceu||'{}');}catch{}
+
+    // Cria ou atualiza no Bling
+    let blingId=dadosNF.bling_id||null;
+    let blingStatus='';
+    try{
+      blingId=await salvarContatoBling({nome:c.nome,email:c.email,...dadosNF},blingId);
+      blingStatus=dadosNF.bling_id?'atualizado no Bling':'criado no Bling';
+    }catch(e){console.error('Bling:',e.message);blingStatus='erro no Bling';}
+
     const token=gerarToken({tipo:'convite_aprovado',candidato_id:c.id,email:c.email});
     const link=`${BASE_URL}/ativar/${token}`;
     try{
@@ -530,7 +694,7 @@ app.post('/admin/candidatos/:id/aprovar',authAdmin,async(req,res)=>{
       await mailer.sendMail({from:`"ALMARE" <${process.env.SMTP_USER}>`,to:c.email,subject:'Você foi convidado para o Círculo ALMARE',html:`<div style="background:#0a0a0a;color:#e8e8e8;padding:40px;font-family:Georgia,serif;"><h1 style="color:#c9a96e;font-size:28px;margin-bottom:24px;">Bem-vindo ao Círculo.</h1><p style="line-height:1.8;margin-bottom:24px;">Sua solicitação foi aprovada.</p><a href="${link}" style="display:inline-block;background:#c9a96e;color:#000;padding:14px 32px;text-decoration:none;font-size:13px;letter-spacing:.15em;text-transform:uppercase;">Criar minha conta</a><p style="margin-top:32px;font-size:12px;color:#666;">Este link expira em 7 dias.</p></div>`});
     }catch{}
     await pool.query(`UPDATE circulo_candidatos SET status='aprovado',respondido_em=NOW() WHERE id=$1`,[req.params.id]);
-    res.send(html('Aprovado',`<div class="container-sm"><div class="msg-ok">Aprovado${blingId?' e cadastrado no Bling':' (Bling não configurado)'}.</div><div class="card"><p style="font-size:13px;margin-bottom:16px;">Link para enviar para <strong>${c.email}</strong>:</p><div style="background:#0d0d0d;border:1px solid var(--border);border-radius:3px;padding:14px;font-size:12px;word-break:break-all;margin-bottom:16px;">${link}</div><button onclick="navigator.clipboard.writeText('${link}');this.textContent='Copiado ✓'" class="btn btn-outline" style="margin-right:8px">Copiar link</button><a href="/admin" class="btn btn-primary">Voltar ao painel</a></div></div>`));
+    res.send(html('Aprovado',`<div class="container-sm"><div class="msg-ok">Aprovado · ${blingStatus}.</div><div class="card"><p style="font-size:13px;margin-bottom:16px;">Link de ativação para <strong>${c.email}</strong>:</p><div style="background:#0d0d0d;border:1px solid var(--border);border-radius:3px;padding:14px;font-size:12px;word-break:break-all;margin-bottom:16px;">${link}</div><button onclick="navigator.clipboard.writeText('${link}');this.textContent='Copiado ✓'" class="btn btn-outline" style="margin-right:8px">Copiar link</button><a href="/admin" class="btn btn-primary">Voltar ao painel</a></div></div>`));
   }catch(e){console.error(e);res.redirect('/admin');}
 });
 
@@ -544,14 +708,10 @@ app.get('/admin/sugestoes',authAdmin,async(req,res)=>{
   const itens=lista.rows.map(s=>`<div style="padding:20px;border:1px solid var(--border);border-radius:4px;margin-bottom:12px;"><div style="display:flex;justify-content:space-between;margin-bottom:8px;"><span style="font-size:12px;color:var(--gold)">${s.mn}</span><span class="badge ${s.status==='incorporada'?'badge-success':s.status==='em_analise'?'badge-pending':'badge-muted'}">${s.status}</span></div><p style="font-size:13px;margin-bottom:12px;">${s.texto}</p><form method="POST" action="/admin/sugestoes/${s.id}/responder" style="display:flex;gap:8px;flex-wrap:wrap;"><input name="resposta" placeholder="Resposta" value="${s.resposta||''}" style="flex:1;background:#0d0d0d;border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:3px;font-size:13px;"><select name="status" style="background:#0d0d0d;border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:3px;font-size:13px;"><option value="aberta" ${s.status==='aberta'?'selected':''}>Aberta</option><option value="em_analise" ${s.status==='em_analise'?'selected':''}>Em análise</option><option value="incorporada" ${s.status==='incorporada'?'selected':''}>Incorporada</option><option value="descartada" ${s.status==='descartada'?'selected':''}>Descartada</option></select><button type="submit" class="btn btn-primary" style="padding:8px 16px;">Salvar</button></form></div>`).join('');
   res.send(html('Sugestões',`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:32px;"><h2 style="font-size:24px;">Sugestões dos membros</h2><a href="/admin" class="btn btn-outline" style="padding:8px 16px;font-size:10px;">← Voltar</a></div>${itens||'<p style="color:var(--muted)">Nenhuma sugestão ainda.</p>'}`));
 });
-
 app.post('/admin/sugestoes/:id/responder',authAdmin,async(req,res)=>{
-  const {resposta,status}=req.body;
+  const{resposta,status}=req.body;
   await pool.query('UPDATE circulo_sugestoes SET status=$1,resposta=$2,respondido_em=NOW() WHERE id=$3',[status,resposta||null,req.params.id]);
-  if(status==='incorporada'){
-    const s=await pool.query('SELECT * FROM circulo_sugestoes WHERE id=$1',[req.params.id]);
-    if(s.rows.length)await pool.query(`INSERT INTO circulo_passaporte_eventos (membro_id,tipo,descricao) VALUES ($1,'sugestao_incorporada','Sua sugestão foi incorporada à curadoria ALMARE')`,[s.rows[0].membro_id]);
-  }
+  if(status==='incorporada'){const s=await pool.query('SELECT * FROM circulo_sugestoes WHERE id=$1',[req.params.id]);if(s.rows.length)await pool.query(`INSERT INTO circulo_passaporte_eventos (membro_id,tipo,descricao) VALUES ($1,'sugestao_incorporada','Sua sugestão foi incorporada à curadoria ALMARE')`,[s.rows[0].membro_id]);}
   res.redirect('/admin/sugestoes');
 });
 
