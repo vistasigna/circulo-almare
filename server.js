@@ -234,21 +234,72 @@ app.get('/convite/:codigo', async (req,res) => {
       if (r.rows.length) { conviteId=r.rows[0].id; nomeIndicador=r.rows[0].nome; }
     } catch {}
   }
-  res.send(html('Bem-vindo', `
-    <div class="container-sm" style="padding-top:20px;text-align:center;">
-      ${nomeIndicador?`<p style="font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--gold);margin-bottom:32px;">Convite de ${nomeIndicador}</p>`:''}
-      <h1 style="font-size:40px;line-height:1.2;margin-bottom:16px;">Uma obra não é uma compra.</h1>
-      <h1 style="font-size:40px;color:var(--gold);line-height:1.2;margin-bottom:40px;">É uma escolha de permanência.</h1>
-      <p style="color:var(--muted);line-height:1.9;font-size:15px;max-width:420px;margin:0 auto 20px;">
-        A ALMARE reúne obras autorais de edição limitada — criadas para espaços que entendem que a arte não decora. Transforma.
+  res.send(`<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Círculo ALMARE</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;1,300;1,400&family=Inter:wght@300;400;500&display=swap');
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    :root{--bg:#0a0a0a;--gold:#c9a96e;--gold-light:#e8d5b0;--text:#e8e8e8;--muted:#555;--border:#1a1a1a}
+    body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;min-height:100vh;display:flex;flex-direction:column;}
+    
+    /* HEADER */
+    .header{padding:32px 48px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border);}
+    .logo{font-family:'Cormorant Garamond',serif;font-size:20px;letter-spacing:.4em;color:var(--gold);text-transform:uppercase;}
+    .header-login{font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);text-decoration:none;transition:color .2s;}
+    .header-login:hover{color:var(--gold);}
+
+    /* HERO */
+    .hero{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:80px 24px;text-align:center;}
+    .indicador{font-size:11px;letter-spacing:.3em;text-transform:uppercase;color:var(--gold);margin-bottom:48px;opacity:.8;}
+    .hero-titulo{font-family:'Cormorant Garamond',serif;font-size:clamp(36px,5vw,56px);font-weight:300;line-height:1.15;margin-bottom:12px;max-width:640px;}
+    .hero-titulo em{font-style:italic;color:var(--gold);}
+    .hero-sub{font-size:15px;color:var(--muted);line-height:1.9;max-width:440px;margin:40px auto 0;}
+    .hero-sub strong{color:#888;font-weight:400;}
+
+    /* CTA */
+    .cta-area{margin-top:64px;display:flex;flex-direction:column;align-items:center;gap:20px;}
+    .btn-entrar{display:inline-block;padding:18px 56px;background:var(--gold);color:#000;font-family:'Inter',sans-serif;font-size:11px;letter-spacing:.25em;text-transform:uppercase;font-weight:500;text-decoration:none;border-radius:2px;transition:background .2s;}
+    .btn-entrar:hover{background:var(--gold-light);}
+    .login-link{font-size:12px;color:var(--muted);text-decoration:none;letter-spacing:.05em;border-bottom:1px solid var(--border);padding-bottom:2px;transition:color .2s,border-color .2s;}
+    .login-link:hover{color:var(--gold);border-color:var(--gold);}
+
+    /* RODAPÉ */
+    .footer{padding:24px 48px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;}
+    .footer-txt{font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);}
+
+    @media(max-width:600px){.header{padding:24px}.footer{padding:20px 24px;flex-direction:column;gap:8px;text-align:center}}
+  </style></head>
+  <body>
+    <header class="header">
+      <div class="logo">ALMARE</div>
+      <a href="/login" class="header-login">Entrar na minha conta</a>
+    </header>
+
+    <main class="hero">
+      ${nomeIndicador ? `<p class="indicador">Você foi convidado por ${nomeIndicador}</p>` : ''}
+
+      <h1 class="hero-titulo">
+        Uma obra não é uma compra.<br>
+        <em>É uma escolha de permanência.</em>
+      </h1>
+
+      <p class="hero-sub">
+        A ALMARE reúne obras autorais de edição limitada.<br>
+        <strong>O Círculo é a comunidade de quem carrega essa proposta adiante.</strong><br>
+        Não é um programa. É pertencimento.
       </p>
-      <p style="color:var(--muted);line-height:1.9;font-size:15px;max-width:420px;margin:0 auto 52px;">
-        O Círculo ALMARE é a comunidade de quem carrega essa proposta adiante. Não é um programa. É pertencimento.
-      </p>
-      <a href="/cadastro-passo2?convite=${conviteId||''}" class="btn btn-primary btn-lg">Quero entrar no Círculo</a>
-      <p style="margin-top:24px;font-size:12px;color:var(--muted);">Já faz parte? <a href="/login">Entrar na minha conta</a></p>
-    </div>
-  `));
+
+      <div class="cta-area">
+        <a href="/cadastro-passo2?convite=${conviteId||''}" class="btn-entrar">Quero entrar no Círculo</a>
+        <a href="/login" class="login-link">Já sou membro</a>
+      </div>
+    </main>
+
+    <footer class="footer">
+      <span class="footer-txt">ALMARE · Círculo</span>
+      <span class="footer-txt">Obras autorais de edição limitada</span>
+    </footer>
+  </body></html>`);
 });
 
 // ════════════════════════════════════════════════════════════════
