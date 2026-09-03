@@ -263,6 +263,7 @@ app.get('/cadastro-passo2', (req,res) => {
         <div class="step ativo">2 · Seus dados</div>
         <div class="step">3 · Criar senha</div>
       </div>
+      <a href="/convite" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);display:inline-block;margin-bottom:24px;">← Voltar</a>
       <h2 style="font-size:26px;margin-bottom:8px;">Seus dados</h2>
       <p style="color:var(--muted);margin-bottom:28px;">Preencha seus dados para completar o cadastro.</p>
       ${req.query.erro?`<div class="msg-erro">${req.query.erro}</div>`:''}
@@ -454,6 +455,7 @@ app.get('/login',(req,res)=>res.send(html('Entrar',`
   <div class="container-sm">
     <h2 style="font-size:28px;margin-bottom:32px;">Círculo ALMARE</h2>
     ${req.query.erro?`<div class="msg-erro">${req.query.erro}</div>`:''}
+    <a href="/convite" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);display:inline-block;margin-bottom:24px;">← Voltar</a>
     <form method="POST" action="/login">
       <div class="field"><label>E-mail</label><input name="email" type="email" required></div>
       <div class="field"><label>Senha</label><input name="senha" type="password" required></div>
@@ -547,6 +549,7 @@ app.get('/minhas-funcoes',authMembro,async(req,res)=>{
 
   res.send(html('Minhas funções',`
     <div class="nav-bar"><a href="/portal" class="nav-link">Passaporte</a><a href="/catalogo" class="nav-link">Obras</a><a href="/meu-impacto" class="nav-link">Impacto</a><a href="/sugestoes" class="nav-link">Voz</a><a href="/minhas-funcoes" class="nav-link ativo">Funções</a><a href="/meu-convite" class="nav-link">Convidar</a></div>
+    <a href="/portal" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);display:inline-block;margin-bottom:24px;">← Voltar ao portal</a>
     <h2 style="font-size:28px;margin-bottom:8px;">Suas funções</h2>
     <p style="color:var(--muted);margin-bottom:32px;">Funções ativas podem ser desativadas a qualquer momento. Funções aguardando estão pendentes de aprovação.</p>
     <div class="card">
