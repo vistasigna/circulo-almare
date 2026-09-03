@@ -260,8 +260,8 @@ app.get('/convite/:codigo', async (req,res) => {
     .cta-area{margin-top:64px;display:flex;flex-direction:column;align-items:center;gap:20px;}
     .btn-entrar{display:inline-block;padding:18px 56px;background:var(--gold);color:#000;font-family:'Inter',sans-serif;font-size:11px;letter-spacing:.25em;text-transform:uppercase;font-weight:500;text-decoration:none;border-radius:2px;transition:background .2s;}
     .btn-entrar:hover{background:var(--gold-light);}
-    .login-link{font-size:12px;color:var(--muted);text-decoration:none;letter-spacing:.05em;border-bottom:1px solid var(--border);padding-bottom:2px;transition:color .2s,border-color .2s;}
-    .login-link:hover{color:var(--gold);border-color:var(--gold);}
+    .login-link{display:inline-block;padding:16px 56px;border:1px solid var(--border);color:var(--text);font-family:'Inter',sans-serif;font-size:11px;letter-spacing:.25em;text-transform:uppercase;text-decoration:none;border-radius:2px;transition:all .2s;}
+    .login-link:hover{border-color:var(--gold);color:var(--gold);}
 
     /* RODAPÉ */
     .footer{padding:24px 48px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;}
