@@ -654,7 +654,7 @@ app.get('/admin',authAdmin,async(req,res)=>{
       <td style="font-size:12px;">${(c.funcoes_desejadas||'membro').split(',').map(f=>`<span class="badge badge-gold" style="margin:2px;display:inline-block;">${f.trim()}</span>`).join('')}</td>
       <td style="font-size:11px;color:var(--muted)">${new Date(c.criado_em).toLocaleDateString('pt-BR')}</td>
       <td>
-        <form method="POST" action="/admin/candidatos/${c.id}/aprovar" style="display:inline"><button class="btn btn-primary" style="padding:6px 14px;font-size:10px;">Aprovar</button></form>
+        <a href="/admin/candidatos/${c.id}/revisar" class="btn btn-primary" style="padding:6px 14px;font-size:10px;display:inline-block;">Revisar</a>
         <form method="POST" action="/admin/candidatos/${c.id}/recusar" style="display:inline;margin-left:6px"><button class="btn btn-outline" style="padding:6px 14px;font-size:10px;">Recusar</button></form>
       </td>
     </tr>`;}).join('');
@@ -672,12 +672,69 @@ app.get('/admin',authAdmin,async(req,res)=>{
   `));
 });
 
+// TELA DE REVISÃO — escolha de funções antes de aprovar
+app.get('/admin/candidatos/:id/revisar', authAdmin, async(req,res)=>{
+  try{
+    const {rows}=await pool.query('SELECT * FROM circulo_candidatos WHERE id=$1',[req.params.id]);
+    if(!rows.length)return res.redirect('/admin');
+    const c=rows[0];
+    const funcoesDesejadas=(c.funcoes_desejadas||'membro').split(',').map(s=>s.trim()).filter(Boolean);
+    const cards=FUNCOES.map(f=>{
+      const pediu=funcoesDesejadas.includes(f.slug);
+      return `<div class="funcao-item ${pediu?'sel':''}" id="card-${f.slug}" onclick="toggle('${f.slug}')">
+        <div class="chk" id="chk-${f.slug}" style="${pediu?'background:rgba(201,169,110,.2);border-color:var(--gold)':''}">${pediu?'✓':''}</div>
+        <div><div class="fn">${f.nome}</div><div class="fd">${f.desc}</div></div>
+        <input type="checkbox" name="funcoes" value="${f.slug}" id="cb-${f.slug}" style="display:none" ${pediu?'checked':''}>
+      </div>`;
+    }).join('');
+    res.send(html('Revisar candidato',`
+      <div class="container-sm">
+        <a href="/admin" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);display:block;margin-bottom:24px;">← Voltar</a>
+        <h2 style="font-size:26px;margin-bottom:4px;">${c.nome}</h2>
+        <div style="font-size:12px;color:var(--muted);margin-bottom:32px;">${c.email}</div>
+        <p style="color:var(--muted);margin-bottom:20px;">O candidato pediu as funções marcadas. Ajuste o que quiser liberar e clique em Aprovar.</p>
+        <form method="POST" action="/admin/candidatos/${c.id}/aprovar">
+          <!-- MEMBRO fixo -->
+          <div class="funcao-item fixo" style="margin-bottom:8px;">
+            <div class="chk" style="background:rgba(201,169,110,.2);border-color:var(--gold)">✓</div>
+            <div><div class="fn">Membro</div><div class="fd">Sempre incluído.</div></div>
+          </div>
+          ${cards}
+          <div style="display:flex;gap:12px;margin-top:24px;">
+            <button type="submit" class="btn btn-primary">Aprovar com essas funções</button>
+            <a href="/admin" class="btn btn-outline">Cancelar</a>
+          </div>
+        </form>
+      </div>
+      <script>
+        function toggle(slug){
+          const cb=document.getElementById('cb-'+slug);
+          const card=document.getElementById('card-'+slug);
+          const chk=document.getElementById('chk-'+slug);
+          cb.checked=!cb.checked;
+          card.classList.toggle('sel',cb.checked);
+          chk.textContent=cb.checked?'✓':'';
+          chk.style.background=cb.checked?'rgba(201,169,110,.2)':'';
+          chk.style.borderColor=cb.checked?'var(--gold)':'var(--border)';
+        }
+      </script>
+    `));
+  }catch(e){console.error(e);res.redirect('/admin');}
+});
+
 app.post('/admin/candidatos/:id/aprovar',authAdmin,async(req,res)=>{
   try{
     const {rows}=await pool.query('SELECT * FROM circulo_candidatos WHERE id=$1',[req.params.id]);
     if(!rows.length)return res.redirect('/admin');
     const c=rows[0];
     let dadosNF={};try{dadosNF=JSON.parse(c.como_conheceu||'{}');}catch{}
+
+    // Funções selecionadas na tela de revisão
+    let funcoesAprovadas=req.body.funcoes||[];
+    if(!Array.isArray(funcoesAprovadas))funcoesAprovadas=[funcoesAprovadas];
+    if(!funcoesAprovadas.includes('membro'))funcoesAprovadas.unshift('membro');
+    // Atualiza as funções do candidato com o que foi aprovado
+    await pool.query('UPDATE circulo_candidatos SET funcoes_desejadas=$1 WHERE id=$2',[funcoesAprovadas.join(', '),c.id]);
 
     // Cria ou atualiza no Bling
     let blingId=dadosNF.bling_id||null;
