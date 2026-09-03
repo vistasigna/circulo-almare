@@ -629,26 +629,19 @@ app.get('/catalogo',authMembro,async(req,res)=>{
     const isEmbaixador=slugs.includes('embaixador');
 
     const obras=await pool.query(`
-      SELECT o.id,o.nome,o.tiragem_maxima,c.nome as colecao,
-             COUNT(CASE WHEN t.status='disponivel' THEN 1 END) as disponiveis,
-             f.conceito,f.essencia,f.sensacao_provocada,f.o_que_permanece,
-             f.ambientes_compativeis,f.texto_curatorial,f.paleta,f.paleta_detalhe,
-             f.perfil_de_cliente,f.nivel_de_destaque,f.personalidade_da_obra,
-             f.perfil_arquitetonico,f.possibilidade_composicao,f.tamanhos_recomendados,
-             f.formato_recomendado,f.nota_curador,f.potencial_nota,f.potencial_justificativa,
-             f.observacoes_producao,f.composicao,f.descricao_comercial,f.status
+      SELECT o.id, o.nome, o.tiragem_sugerida as tiragem_maxima, o.colecao,
+             o.conceito, o.essencia, o.sensacao_provocada, o.o_que_permanece,
+             o.ambientes_compativeis, o.texto_curatorial, o.paleta, o.paleta_detalhe,
+             o.perfil_de_cliente, o.nivel_de_destaque, o.personalidade_da_obra,
+             o.perfil_arquitetonico, o.possibilidade_composicao, o.tamanhos_recomendados,
+             o.formato_recomendado, o.nota_curador, o.potencial_nota, o.potencial_justificativa,
+             o.observacoes_producao, o.descricao_comercial, o.direcao_artistica,
+             o.imagem_preview,
+             COUNT(CASE WHEN t.status='disponivel' THEN 1 END) as disponiveis
       FROM almare_obras o
-      LEFT JOIN colecoes c ON c.id=o.colecao_id
-      LEFT JOIN almare_fichas f ON f.obra_id=o.id
       LEFT JOIN almare_tiragem t ON t.obra_id=o.id
-      WHERE o.status_curatorial='aprovada'
-      GROUP BY o.id,o.nome,o.tiragem_maxima,c.nome,
-               f.conceito,f.essencia,f.sensacao_provocada,f.o_que_permanece,
-               f.ambientes_compativeis,f.texto_curatorial,f.paleta,f.paleta_detalhe,
-               f.perfil_de_cliente,f.nivel_de_destaque,f.personalidade_da_obra,
-               f.perfil_arquitetonico,f.possibilidade_composicao,f.tamanhos_recomendados,
-               f.formato_recomendado,f.nota_curador,f.potencial_nota,f.potencial_justificativa,
-               f.observacoes_producao,f.composicao,f.descricao_comercial,f.status
+      WHERE o.status='aprovada'
+      GROUP BY o.id
       ORDER BY o.id DESC`);
 
     function campo(label, valor) {
