@@ -508,7 +508,7 @@ app.get('/portal',authMembro,async(req,res)=>{
             <div style="font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);margin-bottom:12px;">Membro desde ${data} · ${m.codigo_membro||''}</div>
             <div><span class="badge badge-gold">Membro</span> ${fnomes}</div>
           </div>
-          <div style="text-align:right;">
+
             <div style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;">Crédito disponível</div>
             <div style="font-family:'Cormorant Garamond',serif;font-size:32px;color:var(--gold);">R$ ${parseFloat(m.credito_disponivel||0).toFixed(2).replace('.',',')}</div>
           </div>
