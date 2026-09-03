@@ -263,7 +263,7 @@ app.get('/cadastro-passo2', (req,res) => {
         <div class="step">3 · Criar senha</div>
       </div>
       <h2 style="font-size:26px;margin-bottom:8px;">Seus dados</h2>
-      <p style="color:var(--muted);margin-bottom:28px;">Usamos as mesmas informações para emissão de nota fiscal.</p>
+      <p style="color:var(--muted);margin-bottom:28px;">Preencha seus dados para completar o cadastro.</p>
       ${req.query.erro?`<div class="msg-erro">${req.query.erro}</div>`:''}
       <div id="aviso-bling"></div>
       <form method="POST" action="/cadastro-passo2">
