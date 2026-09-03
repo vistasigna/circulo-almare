@@ -566,9 +566,97 @@ app.post('/minhas-funcoes/:slug/desativar',authMembro,async(req,res)=>{
 // ─── CATÁLOGO ─────────────────────────────────────────────────────────────────
 app.get('/catalogo',authMembro,async(req,res)=>{
   try{
-    const obras=await pool.query(`SELECT o.id,o.nome,o.conceito,c.nome as colecao,o.tiragem_maxima,COUNT(CASE WHEN t.status='disponivel' THEN 1 END) as disponiveis FROM almare_obras o LEFT JOIN colecoes c ON c.id=o.colecao_id LEFT JOIN almare_tiragem t ON t.obra_id=o.id WHERE o.status_curatorial='aprovada' GROUP BY o.id,o.nome,o.conceito,c.nome,o.tiragem_maxima ORDER BY o.id DESC`);
-    const cards=obras.rows.map(o=>`<div class="card" style="margin-bottom:16px;"><div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;"><div><div style="font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;">${o.colecao||'—'}</div><h3 style="font-size:20px;margin-bottom:8px;">${o.nome||'Sem título'}</h3><p style="font-size:13px;color:var(--muted);line-height:1.6;">${(o.conceito||'').substring(0,140)}...</p></div><div style="text-align:right;flex-shrink:0;"><div style="font-size:11px;color:var(--muted)">Tiragem</div><div style="font-family:'Cormorant Garamond',serif;font-size:22px;color:var(--gold)">${o.disponiveis}/${o.tiragem_maxima}</div></div></div></div>`).join('');
-    res.send(html('Catálogo',`<div class="nav-bar"><a href="/portal" class="nav-link">Passaporte</a><a href="/catalogo" class="nav-link ativo">Obras</a><a href="/meu-impacto" class="nav-link">Impacto</a><a href="/sugestoes" class="nav-link">Voz</a><a href="/minhas-funcoes" class="nav-link">Funções</a><a href="/meu-convite" class="nav-link">Convidar</a></div><h2 style="font-size:28px;margin-bottom:32px;">Catálogo ALMARE</h2>${cards||'<p style="color:var(--muted)">Nenhuma obra disponível.</p>'}`,true));
+    // Descobrir funções ativas do membro
+    const fRows=await pool.query(`SELECT f.slug FROM circulo_membro_funcoes mf JOIN circulo_funcoes f ON f.id=mf.funcao_id WHERE mf.membro_id=$1 AND mf.ativo=true`,[req.membro.id]);
+    const slugs=fRows.rows.map(r=>r.slug);
+    const isCurador=slugs.includes('curador');
+    const isEspecificador=slugs.includes('especificador');
+    const isEmbaixador=slugs.includes('embaixador');
+
+    const obras=await pool.query(`
+      SELECT o.id,o.nome,o.tiragem_maxima,c.nome as colecao,
+             COUNT(CASE WHEN t.status='disponivel' THEN 1 END) as disponiveis,
+             f.conceito,f.essencia,f.sensacao_provocada,f.o_que_permanece,
+             f.ambientes_compativeis,f.texto_curatorial,f.paleta,f.paleta_detalhe,
+             f.perfil_de_cliente,f.nivel_de_destaque,f.personalidade_da_obra,
+             f.perfil_arquitetonico,f.possibilidade_composicao,f.tamanhos_recomendados,
+             f.formato_recomendado,f.nota_curador,f.potencial_nota,f.potencial_justificativa,
+             f.observacoes_producao,f.composicao,f.descricao_comercial,f.status
+      FROM almare_obras o
+      LEFT JOIN colecoes c ON c.id=o.colecao_id
+      LEFT JOIN almare_fichas f ON f.obra_id=o.id
+      LEFT JOIN almare_tiragem t ON t.obra_id=o.id
+      WHERE o.status_curatorial='aprovada'
+      GROUP BY o.id,o.nome,o.tiragem_maxima,c.nome,
+               f.conceito,f.essencia,f.sensacao_provocada,f.o_que_permanece,
+               f.ambientes_compativeis,f.texto_curatorial,f.paleta,f.paleta_detalhe,
+               f.perfil_de_cliente,f.nivel_de_destaque,f.personalidade_da_obra,
+               f.perfil_arquitetonico,f.possibilidade_composicao,f.tamanhos_recomendados,
+               f.formato_recomendado,f.nota_curador,f.potencial_nota,f.potencial_justificativa,
+               f.observacoes_producao,f.composicao,f.descricao_comercial,f.status
+      ORDER BY o.id DESC`);
+
+    function campo(label, valor) {
+      if (!valor) return '';
+      return `<div style="margin-bottom:14px;"><div style="font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;">${label}</div><div style="font-size:13px;line-height:1.7;">${valor}</div></div>`;
+    }
+
+    const cards=obras.rows.map(o=>{
+      // Campos base — todos veem
+      let campos = campo('Conceito', o.conceito)
+        + campo('Essência', o.essencia)
+        + campo('Sensação provocada', o.sensacao_provocada)
+        + campo('O que permanece', o.o_que_permanece)
+        + campo('Ambientes compatíveis', o.ambientes_compativeis)
+        + campo('Texto curatorial', o.texto_curatorial)
+        + campo('Paleta', o.paleta)
+        + campo('Cores observadas', o.paleta_detalhe);
+
+      // Embaixador
+      if (isEmbaixador || isEspecificador || isCurador) {
+        campos += campo('Perfil de cliente', o.perfil_de_cliente);
+      }
+
+      // Especificador
+      if (isEspecificador || isCurador) {
+        campos += campo('Nível de destaque', o.nivel_de_destaque)
+          + campo('Personalidade', o.personalidade_da_obra)
+          + campo('Perfil arquitetônico', o.perfil_arquitetonico)
+          + campo('Composição múltipla', o.possibilidade_composicao)
+          + campo('Tamanhos recomendados', o.tamanhos_recomendados)
+          + campo('Formato recomendado', o.formato_recomendado);
+      }
+
+      // Curador — tudo
+      if (isCurador) {
+        campos += campo('Nota do curador', o.nota_curador)
+          + campo('Potencial comercial', o.potencial_nota ? o.potencial_nota + '/100' : '')
+          + campo('Justificativa', o.potencial_justificativa)
+          + campo('Observações de produção', o.observacoes_producao)
+          + campo('Composição', o.composicao)
+          + campo('Descrição comercial', o.descricao_comercial);
+      }
+
+      return `<div class="card" style="margin-bottom:20px;">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:20px;">
+          <div>
+            <div style="font-size:10px;letter-spacing:.25em;text-transform:uppercase;color:var(--muted);margin-bottom:6px;">${o.colecao||'—'}</div>
+            <h3 style="font-family:'Cormorant Garamond',serif;font-size:24px;font-weight:400;">${o.nome||'Sem título'}</h3>
+          </div>
+          <div style="text-align:right;flex-shrink:0;">
+            <div style="font-size:10px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;">Tiragem</div>
+            <div style="font-family:'Cormorant Garamond',serif;font-size:22px;color:var(--gold)">${o.disponiveis}/${o.tiragem_maxima}</div>
+          </div>
+        </div>
+        <hr style="border:none;border-top:1px solid var(--border);margin-bottom:20px;">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 32px;">
+          ${campos}
+        </div>
+      </div>`;
+    }).join('');
+
+    const navImpacto = slugs.some(s=>['embaixador','especificador','artista','colaborador'].includes(s)) ? '<a href="/meu-impacto" class="nav-link">Impacto</a>' : '';
+    res.send(html('Catálogo',`<div class="nav-bar"><a href="/portal" class="nav-link">Passaporte</a><a href="/catalogo" class="nav-link ativo">Obras</a>${navImpacto}<a href="/sugestoes" class="nav-link">Voz</a><a href="/minhas-funcoes" class="nav-link">Funções</a><a href="/meu-convite" class="nav-link">Convidar</a></div><h2 style="font-size:28px;margin-bottom:32px;">Catálogo ALMARE</h2>${cards||'<p style="color:var(--muted)">Nenhuma obra disponível.</p>'}`,true));
   }catch(e){res.send(html('Catálogo',`<div class="msg-erro">${e.message}</div>`,true));}
 });
 
