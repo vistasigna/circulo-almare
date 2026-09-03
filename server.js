@@ -246,6 +246,7 @@ app.get('/convite/:codigo', async (req,res) => {
         O Círculo ALMARE é a comunidade de quem carrega essa proposta adiante. Não é um programa. É pertencimento.
       </p>
       <a href="/cadastro-passo2?convite=${conviteId||''}" class="btn btn-primary btn-lg">Quero entrar no Círculo</a>
+      <p style="margin-top:24px;font-size:12px;color:var(--muted);">Já faz parte? <a href="/login">Entrar na minha conta</a></p>
     </div>
   `));
 });
