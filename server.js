@@ -491,10 +491,8 @@ app.get('/portal',authMembro,async(req,res)=>{
     const link=convite.rows.length?`${BASE_URL}/convite/${convite.rows[0].codigo}`:'';
     const data=m.membro_desde?new Date(m.membro_desde).toLocaleDateString('pt-BR',{month:'long',year:'numeric'}):'';
 
-    const fnomes = funcoes.rows.map(f=>
-      f.ativo
-        ? `<span class="badge badge-gold">${f.nome}</span>`
-        : `<span class="badge badge-pending">${f.nome} · aguardando</span>`
+    const fnomes = funcoes.rows.filter(f=>f.ativo).map(f=>
+      `<span class="badge badge-gold">${f.nome}</span>`
     ).join(' ');
 
     const evHtml=eventos.rows.map(e=>`<div style="padding:12px 0;border-bottom:1px solid var(--border);font-size:13px;"><span>${e.descricao}</span><span style="float:right;font-size:11px;color:var(--muted)">${new Date(e.data_evento).toLocaleDateString('pt-BR')}</span></div>`).join('');
@@ -509,8 +507,7 @@ app.get('/portal',authMembro,async(req,res)=>{
             <div><span class="badge badge-gold">Membro</span> ${fnomes}</div>
           </div>
 
-            <div style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;">Crédito disponível</div>
-            <div style="font-family:'Cormorant Garamond',serif;font-size:32px;color:var(--gold);">R$ ${parseFloat(m.credito_disponivel||0).toFixed(2).replace('.',',')}</div>
+
           </div>
         </div>
       </div>
@@ -531,7 +528,7 @@ app.get('/minhas-funcoes',authMembro,async(req,res)=>{
     SELECT f.nome,f.slug,f.descricao,mf.ativo,mf.id as mf_id FROM circulo_membro_funcoes mf
     JOIN circulo_funcoes f ON f.id=mf.funcao_id WHERE mf.membro_id=$1`,[req.membro.id]);
 
-  const itens=funcoes.rows.map(f=>`
+  const itens=funcoes.rows.filter(f=>f.ativo).map(f=>`
     <div style="display:flex;justify-content:space-between;align-items:center;padding:16px 0;border-bottom:1px solid var(--border);">
       <div>
         <div style="font-family:'Cormorant Garamond',serif;font-size:17px;margin-bottom:3px;">${f.nome}</div>
@@ -540,7 +537,7 @@ app.get('/minhas-funcoes',authMembro,async(req,res)=>{
       <div style="flex-shrink:0;margin-left:16px;">
         ${f.ativo
           ? `<form method="POST" action="/minhas-funcoes/${f.slug}/desativar"><button class="btn btn-outline" style="padding:6px 14px;font-size:10px;">Desativar</button></form>`
-          : `<span class="badge badge-pending">Aguardando aprovação</span>`
+          : ''
         }
       </div>
     </div>`).join('');
