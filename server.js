@@ -494,17 +494,19 @@ app.get('/portal',authMembro,async(req,res)=>{
     const fnomes = funcoes.rows.filter(f=>f.ativo).map(f=>
       `<span class="badge badge-gold">${f.nome}</span>`
     ).join(' ');
+    // Membro sempre aparece
 
     const evHtml=eventos.rows.map(e=>`<div style="padding:12px 0;border-bottom:1px solid var(--border);font-size:13px;"><span>${e.descricao}</span><span style="float:right;font-size:11px;color:var(--muted)">${new Date(e.data_evento).toLocaleDateString('pt-BR')}</span></div>`).join('');
+    const temFuncaoExtra = funcoes.rows.some(f=>f.ativo && ['embaixador','especificador','artista','colaborador'].includes(f.slug));
 
     res.send(html('Portal',`
-      <div class="nav-bar"><a href="/portal" class="nav-link ativo">Passaporte</a><a href="/catalogo" class="nav-link">Obras</a><a href="/meu-impacto" class="nav-link">Impacto</a><a href="/sugestoes" class="nav-link">Voz</a><a href="/minhas-funcoes" class="nav-link">Funções</a><a href="/meu-convite" class="nav-link">Convidar</a></div>
+      <div class="nav-bar"><a href="/portal" class="nav-link ativo">Passaporte</a><a href="/catalogo" class="nav-link">Obras</a>${temFuncaoExtra ? '<a href="/meu-impacto" class="nav-link">Impacto</a>' : ''}<a href="/sugestoes" class="nav-link">Voz</a><a href="/minhas-funcoes" class="nav-link">Funções</a><a href="/meu-convite" class="nav-link">Convidar</a></div>
       <div class="card" style="margin-bottom:24px;">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:16px;">
           <div>
             <h2 style="font-size:26px;margin-bottom:4px;">${m.nome||req.membro.nome}</h2>
             <div style="font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);margin-bottom:12px;">Membro desde ${data} · ${m.codigo_membro||''}</div>
-            <div><span class="badge badge-gold">Membro</span> ${fnomes}</div>
+            <div><span class="badge badge-gold">Membro</span>${fnomes ? " " + fnomes : ""}</div>
           </div>
 
 
@@ -528,17 +530,17 @@ app.get('/minhas-funcoes',authMembro,async(req,res)=>{
     SELECT f.nome,f.slug,f.descricao,mf.ativo,mf.id as mf_id FROM circulo_membro_funcoes mf
     JOIN circulo_funcoes f ON f.id=mf.funcao_id WHERE mf.membro_id=$1`,[req.membro.id]);
 
-  const itens=funcoes.rows.filter(f=>f.ativo).map(f=>`
+  const itens=funcoes.rows.map(f=>`
     <div style="display:flex;justify-content:space-between;align-items:center;padding:16px 0;border-bottom:1px solid var(--border);">
-      <div>
-        <div style="font-family:'Cormorant Garamond',serif;font-size:17px;margin-bottom:3px;">${f.nome}</div>
-        <div style="font-size:12px;color:var(--muted);">${f.descricao}</div>
+      <div style="display:flex;align-items:center;gap:12px;">
+        <div style="width:10px;height:10px;border-radius:50%;background:${f.ativo?'#2ecc71':'#f0a500'};flex-shrink:0;"></div>
+        <div>
+          <div style="font-family:'Cormorant Garamond',serif;font-size:17px;margin-bottom:3px;">${f.nome}</div>
+          <div style="font-size:12px;color:var(--muted);">${f.descricao}</div>
+        </div>
       </div>
       <div style="flex-shrink:0;margin-left:16px;">
-        ${f.ativo
-          ? `<form method="POST" action="/minhas-funcoes/${f.slug}/desativar"><button class="btn btn-outline" style="padding:6px 14px;font-size:10px;">Desativar</button></form>`
-          : ''
-        }
+        ${f.ativo ? `<form method="POST" action="/minhas-funcoes/${f.slug}/desativar"><button class="btn btn-outline" style="padding:6px 14px;font-size:10px;">Desativar</button></form>` : ''}
       </div>
     </div>`).join('');
 
