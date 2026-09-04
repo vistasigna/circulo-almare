@@ -20,6 +20,46 @@ const BLING_CLIENT_SECRET = process.env.BLING_CLIENT_SECRET;
 
 function gerarToken(payload, opts) { return jwt.sign(payload, JWT_SECRET, opts || { expiresIn: '7d' }); }
 
+// Escapa texto vindo de usuários/IA antes de injetar em HTML (evita quebra de layout e XSS)
+function esc(v) {
+  if (v === null || v === undefined) return '';
+  return String(v)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+// Gera um código curto e único para links rastreáveis (convite, indicação de obra etc.)
+function gerarCodigo() { return crypto.randomBytes(5).toString('hex'); }
+
+// Cria as tabelas do Círculo que ainda não existiam no banco original — roda uma vez no boot,
+// não apaga nem altera nada que já existe (IF NOT EXISTS), então é seguro rodar sempre.
+async function garantirTabelas() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS circulo_obra_links (
+      id SERIAL PRIMARY KEY,
+      membro_id INTEGER NOT NULL REFERENCES circulo_membros(id),
+      obra_id INTEGER NOT NULL,
+      codigo VARCHAR(20) UNIQUE NOT NULL,
+      criado_em TIMESTAMP DEFAULT NOW(),
+      UNIQUE(membro_id, obra_id)
+    );
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS circulo_indicacoes (
+      id SERIAL PRIMARY KEY,
+      obra_link_id INTEGER NOT NULL REFERENCES circulo_obra_links(id),
+      nome_lead VARCHAR(200),
+      contato_lead VARCHAR(200),
+      mensagem TEXT,
+      status VARCHAR(20) DEFAULT 'novo',
+      criado_em TIMESTAMP DEFAULT NOW()
+    );
+  `);
+}
+
 function authMembro(req, res, next) {
   const token = req.cookies.circulo_token;
   if (!token) return res.redirect('/login');
@@ -166,18 +206,24 @@ const CSS = `
   @media(max-width:600px){.grid-2,.grid-3{grid-template-columns:1fr}.steps{flex-direction:column}}
 `;
 
-function html(titulo, corpo, nav=false) {
+function html(titulo, corpo, nav=false, membro=null) {
+  // Painel de identidade — sempre visível no topo quando há sessão, princípio permanente de UI/UX:
+  // qualquer pessoa reconhece de cara qual conta está logada, sem precisar procurar.
+  const identidade = (nav && membro) ? `<div style="font-size:10px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);margin-top:6px;">
+    Logado como <span style="color:var(--gold)">${esc(membro.nome||'')}</span>${membro.codigo?` · ${esc(membro.codigo)}`:''}
+  </div>` : '';
   const navHtml = nav ? `<div style="display:flex;gap:12px;align-items:center;justify-content:flex-end;margin-top:12px;flex-wrap:wrap;">
     <a href="/portal" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted)">Portal</a>
     <a href="/catalogo" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted)">Obras</a>
     <a href="/meu-impacto" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted)">Impacto</a>
+    <a href="/minhas-indicacoes" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted)">Indicações</a>
     <a href="/sugestoes" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted)">Voz</a>
     <a href="/minhas-funcoes" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted)">Funções</a>
     <a href="/logout" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--danger)">Sair</a>
   </div>` : '';
   return `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>${titulo} — Círculo ALMARE</title><style>${CSS}</style></head>
-  <body><div class="container"><header><div class="logo">ALMARE</div><div class="logo-sub">Círculo</div>${navHtml}</header>${corpo}</div></body></html>`;
+  <title>${esc(titulo)} — Círculo ALMARE</title><style>${CSS}</style></head>
+  <body><div class="container"><header><div class="logo">ALMARE</div><div class="logo-sub">Círculo</div>${identidade}${navHtml}</header>${corpo}</div></body></html>`;
 }
 
 // Funções que o membro pode pedir no cadastro
@@ -489,7 +535,7 @@ app.post('/cadastro-passo2', async (req,res) => {
       }
     }
 
-    // Login automático
+    // Membro entra direto — a aprovação é só para as funções extras (Embaixador, Especificador etc.), não para virar Membro.
     const token = gerarToken({id:mid, nome, email});
     res.cookie('circulo_token', token, {httpOnly:true, maxAge:7*24*60*60*1000});
     res.redirect('/portal');
@@ -546,20 +592,22 @@ app.get('/portal',authMembro,async(req,res)=>{
     const data=m.membro_desde?new Date(m.membro_desde).toLocaleDateString('pt-BR',{month:'long',year:'numeric'}):'';
 
     const fnomes = funcoes.rows.filter(f=>f.ativo).map(f=>
-      `<span class="badge badge-gold">${f.nome}</span>`
+      `<span class="badge badge-gold">${esc(f.nome)}</span>`
     ).join(' ');
     // Membro sempre aparece
 
-    const evHtml=eventos.rows.map(e=>`<div style="padding:12px 0;border-bottom:1px solid var(--border);font-size:13px;"><span>${e.descricao}</span><span style="float:right;font-size:11px;color:var(--muted)">${new Date(e.data_evento).toLocaleDateString('pt-BR')}</span></div>`).join('');
+    const evHtml=eventos.rows.map(e=>`<div style="padding:12px 0;border-bottom:1px solid var(--border);font-size:13px;"><span>${esc(e.descricao)}</span><span style="float:right;font-size:11px;color:var(--muted)">${new Date(e.data_evento).toLocaleDateString('pt-BR')}</span></div>`).join('');
     const temFuncaoExtra = funcoes.rows.some(f=>f.ativo && ['embaixador','especificador','artista','colaborador'].includes(f.slug));
+    const temIndicar = funcoes.rows.some(f=>f.ativo && ['embaixador','especificador','curador'].includes(f.slug));
+    const membroNome = m.nome||req.membro.nome;
 
     res.send(html('Portal',`
-      <div class="nav-bar"><a href="/portal" class="nav-link ativo">Passaporte</a><a href="/catalogo" class="nav-link">Obras</a>${temFuncaoExtra ? '<a href="/meu-impacto" class="nav-link">Impacto</a>' : ''}<a href="/sugestoes" class="nav-link">Voz</a><a href="/minhas-funcoes" class="nav-link">Funções</a><a href="/meu-convite" class="nav-link">Convidar</a></div>
+      <div class="nav-bar"><a href="/portal" class="nav-link ativo">Passaporte</a><a href="/catalogo" class="nav-link">Obras</a>${temFuncaoExtra ? '<a href="/meu-impacto" class="nav-link">Impacto</a>' : ''}${temIndicar ? '<a href="/minhas-indicacoes" class="nav-link">Indicações</a>' : ''}<a href="/sugestoes" class="nav-link">Voz</a><a href="/minhas-funcoes" class="nav-link">Funções</a><a href="/meu-convite" class="nav-link">Convidar</a></div>
       <div class="card" style="margin-bottom:24px;">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:16px;">
           <div>
-            <h2 style="font-size:26px;margin-bottom:4px;">${m.nome||req.membro.nome}</h2>
-            <div style="font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);margin-bottom:12px;">Membro desde ${data} · ${m.codigo_membro||''}</div>
+            <h2 style="font-size:26px;margin-bottom:4px;">${esc(membroNome)}</h2>
+            <div style="font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);margin-bottom:12px;">Membro desde ${data} · ${esc(m.codigo_membro||'')}</div>
             <div><span class="badge badge-gold">Membro</span>${fnomes ? " " + fnomes : ""}</div>
           </div>
 
@@ -573,9 +621,9 @@ app.get('/portal',authMembro,async(req,res)=>{
         <div class="stat-box"><div class="num">${m.sugestoes_incorporadas||0}</div><div class="lbl">Sugestões incorporadas</div></div>
       </div>
       <div class="card"><h3 style="font-size:18px;margin-bottom:20px;color:var(--gold);">Sua história no Círculo</h3>${evHtml||'<p style="color:var(--muted);font-size:13px;">Nada registrado ainda.</p>'}</div>
-      ${link?`<div style="margin-top:20px;padding:14px;border:1px solid var(--border);border-radius:4px;"><div style="font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);margin-bottom:8px;">Seu link de convite</div><div style="font-size:12px;word-break:break-all;">${link}</div></div>`:''}
-    `,true));
-  }catch(e){res.send(html('Erro',`<div class="msg-erro">${e.message}</div>`,true));}
+      ${link?`<div style="margin-top:20px;padding:14px;border:1px solid var(--border);border-radius:4px;"><div style="font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);margin-bottom:8px;">Seu link de convite</div><div style="font-size:12px;word-break:break-all;">${esc(link)}</div></div>`:''}
+    `,true,{nome:membroNome,codigo:m.codigo_membro}));
+  }catch(e){res.send(html('Erro',`<div class="msg-erro">${esc(e.message)}</div>`,true,req.membro));}
 });
 
 // ─── MINHAS FUNÇÕES — ativar/desativar ───────────────────────────────────────
@@ -583,38 +631,70 @@ app.get('/minhas-funcoes',authMembro,async(req,res)=>{
   const funcoes=await pool.query(`
     SELECT f.nome,f.slug,f.descricao,mf.ativo,mf.id as mf_id FROM circulo_membro_funcoes mf
     JOIN circulo_funcoes f ON f.id=mf.funcao_id WHERE mf.membro_id=$1`,[req.membro.id]);
+  const membroRow=await pool.query('SELECT nome,codigo_membro FROM circulo_membros WHERE id=$1',[req.membro.id]);
+  const membroInfo={nome:membroRow.rows[0]?.nome||req.membro.nome, codigo:membroRow.rows[0]?.codigo_membro};
 
   const itens=funcoes.rows.map(f=>`
     <div style="display:flex;justify-content:space-between;align-items:center;padding:16px 0;border-bottom:1px solid var(--border);">
       <div style="display:flex;align-items:center;gap:12px;">
         <div style="width:10px;height:10px;border-radius:50%;background:${f.ativo?'#2ecc71':'#f0a500'};flex-shrink:0;"></div>
         <div>
-          <div style="font-family:'Cormorant Garamond',serif;font-size:17px;margin-bottom:3px;">${f.nome}</div>
-          <div style="font-size:12px;color:var(--muted);">${f.descricao}</div>
+          <div style="font-family:'Cormorant Garamond',serif;font-size:17px;margin-bottom:3px;">${esc(f.nome)}</div>
+          <div style="font-size:12px;color:var(--muted);">${esc(f.descricao)}${f.ativo?'':' — aguardando aprovação'}</div>
         </div>
       </div>
       <div style="flex-shrink:0;margin-left:16px;">
-        ${f.ativo ? `<form method="POST" action="/minhas-funcoes/${f.slug}/desativar"><button class="btn btn-outline" style="padding:6px 14px;font-size:10px;">Desativar</button></form>` : ''}
+        ${f.ativo ? `<form method="POST" action="/minhas-funcoes/${encodeURIComponent(f.slug)}/desativar"><button class="btn btn-outline" style="padding:6px 14px;font-size:10px;">Desativar</button></form>` : `<span class="badge badge-pending">Aguardando</span>`}
       </div>
     </div>`).join('');
+
+  // Funções autosserviço que o membro ainda não tem (nem ativa, nem pendente) — ele pode solicitar a qualquer momento,
+  // não só no cadastro; sem isso, quem desativa uma função ou não marcou no início ficava sem caminho de volta.
+  const slugsExistentes = funcoes.rows.map(f=>f.slug);
+  const disponiveis = FUNCOES_CADASTRO.filter(f=>!funcoes.rows.some(r=>r.slug===f.slug && r.ativo) );
+  const solicitarHtml = disponiveis.map(f=>{
+    const jaTem = funcoes.rows.find(r=>r.slug===f.slug);
+    return `<div style="display:flex;justify-content:space-between;align-items:center;padding:16px 0;border-bottom:1px solid var(--border);">
+      <div><div style="font-family:'Cormorant Garamond',serif;font-size:17px;margin-bottom:3px;">${esc(f.nome)}</div><div style="font-size:12px;color:var(--muted);">${esc(f.desc)}</div></div>
+      ${jaTem?'<span class="badge badge-pending">Aguardando</span>':`<form method="POST" action="/minhas-funcoes/${f.slug}/solicitar"><button class="btn btn-outline" style="padding:6px 14px;font-size:10px;">Solicitar</button></form>`}
+    </div>`;
+  }).join('');
 
   res.send(html('Minhas funções',`
     <div class="nav-bar"><a href="/portal" class="nav-link">Passaporte</a><a href="/catalogo" class="nav-link">Obras</a><a href="/meu-impacto" class="nav-link">Impacto</a><a href="/sugestoes" class="nav-link">Voz</a><a href="/minhas-funcoes" class="nav-link ativo">Funções</a><a href="/meu-convite" class="nav-link">Convidar</a></div>
     <a href="/portal" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);display:inline-block;margin-bottom:24px;">← Voltar ao portal</a>
     <h2 style="font-size:28px;margin-bottom:8px;">Suas funções</h2>
-    <p style="color:var(--muted);margin-bottom:32px;">Funções ativas podem ser desativadas a qualquer momento. Funções aguardando estão pendentes de aprovação.</p>
-    <div class="card">
+    <p style="color:var(--muted);margin-bottom:32px;">Funções ativas podem ser desativadas a qualquer momento — e solicitadas de novo depois, sem perder seu histórico.</p>
+    <div class="card" style="margin-bottom:24px;">
       <div style="padding:16px 0;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;">
         <div><div style="font-family:'Cormorant Garamond',serif;font-size:17px;margin-bottom:3px;">Membro</div><div style="font-size:12px;color:var(--muted);">Acesso ao Círculo. Permanente.</div></div>
         <span class="badge badge-gold">Ativo</span>
       </div>
       ${itens||'<p style="color:var(--muted);padding:16px 0;">Nenhuma função adicional solicitada.</p>'}
     </div>
-  `,true));
+    ${solicitarHtml?`<div class="card"><h3 style="font-size:16px;margin-bottom:8px;">Solicitar outra função</h3><p style="color:var(--muted);font-size:12px;margin-bottom:16px;">Fica pendente de aprovação, como no cadastro.</p>${solicitarHtml}</div>`:''}
+  `,true,membroInfo));
 });
 
 app.post('/minhas-funcoes/:slug/desativar',authMembro,async(req,res)=>{
   await pool.query(`UPDATE circulo_membro_funcoes SET ativo=false WHERE membro_id=$1 AND funcao_id=(SELECT id FROM circulo_funcoes WHERE slug=$2)`,[req.membro.id,req.params.slug]);
+  res.redirect('/minhas-funcoes');
+});
+
+// Reabre uma função autosserviço (reativa se já existia desativada, ou cria pedido novo) — fecha o
+// "caminho sem volta" de quem desativou uma função e não tinha como voltar sem falar com o admin.
+app.post('/minhas-funcoes/:slug/solicitar',authMembro,async(req,res)=>{
+  const slug=req.params.slug;
+  if(!FUNCOES_CADASTRO.some(f=>f.slug===slug)) return res.redirect('/minhas-funcoes');
+  const fr=await pool.query('SELECT id FROM circulo_funcoes WHERE slug=$1',[slug]);
+  if(fr.rows.length){
+    const existente=await pool.query('SELECT id FROM circulo_membro_funcoes WHERE membro_id=$1 AND funcao_id=$2',[req.membro.id,fr.rows[0].id]);
+    if(existente.rows.length){
+      await pool.query('UPDATE circulo_membro_funcoes SET ativo=false WHERE id=$1',[existente.rows[0].id]);
+    }else{
+      await pool.query('INSERT INTO circulo_membro_funcoes (membro_id,funcao_id,ativo) VALUES ($1,$2,false)',[req.membro.id,fr.rows[0].id]);
+    }
+  }
   res.redirect('/minhas-funcoes');
 });
 
@@ -627,6 +707,8 @@ app.get('/catalogo',authMembro,async(req,res)=>{
     const isEspecificador=slugs.includes('especificador');
     const isEmbaixador=slugs.includes('embaixador');
     const navImpacto=slugs.some(s=>['embaixador','especificador','artista','colaborador'].includes(s))?'<a href="/meu-impacto" class="nav-link">Impacto</a>':'';
+    const podeIndicar=isEmbaixador||isEspecificador||isCurador;
+    const navIndicacoes=podeIndicar?'<a href="/minhas-indicacoes" class="nav-link">Indicações</a>':'';
 
     const obras=await pool.query(`
       SELECT o.id, o.nome, o.tiragem_sugerida as tiragem_maxima, o.colecao,
@@ -644,7 +726,7 @@ app.get('/catalogo',authMembro,async(req,res)=>{
 
     function campo(label,valor){
       if(!valor)return '';
-      return `<div style="margin-bottom:14px;"><div style="font-size:10px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;">${label}</div><div style="font-size:13px;line-height:1.7;color:#ccc;">${valor}</div></div>`;
+      return `<div style="margin-bottom:14px;"><div style="font-size:10px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;">${esc(label)}</div><div style="font-size:13px;line-height:1.7;color:#ccc;">${esc(valor)}</div></div>`;
     }
 
     const cardsHtml=obras.rows.map(o=>{
@@ -655,28 +737,30 @@ app.get('/catalogo',authMembro,async(req,res)=>{
 
       const palataAttr=o.paleta?o.paleta.toLowerCase().replace(/\s+/g,'-'):'';
       const colecaoAttr=o.colecao?o.colecao.toLowerCase().replace(/\s+/g,'-'):'';
+      const indicarBtn=podeIndicar?`<a href="/obra/${o.id}/link" onclick="event.stopPropagation()" class="btn btn-outline" style="padding:6px 12px;font-size:10px;margin-top:10px;display:inline-block;">Indicar esta obra</a>`:'';
 
-      return `<div class="obra-card" data-colecao="${colecaoAttr}" data-paleta="${palataAttr}" data-nome="${(o.nome||'').toLowerCase()}">
+      return `<div class="obra-card" data-colecao="${esc(colecaoAttr)}" data-paleta="${esc(palataAttr)}" data-nome="${esc((o.nome||'').toLowerCase())}">
         <div onclick="abrirObra(${o.id})" style="cursor:pointer;">
           <div style="position:relative;background:#0d0d0d;border-radius:4px 4px 0 0;overflow:hidden;aspect-ratio:4/3;">
-            ${o.imagem_preview?`<img src="${o.imagem_preview}" style="width:100%;height:100%;object-fit:cover;" loading="lazy">`:`<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:11px;letter-spacing:.15em;">SEM IMAGEM</div>`}
+            ${o.imagem_preview?`<img src="${esc(o.imagem_preview)}" style="width:100%;height:100%;object-fit:cover;" loading="lazy">`:`<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:11px;letter-spacing:.15em;">SEM IMAGEM</div>`}
           </div>
           <div style="padding:16px;background:var(--surface);border:1px solid var(--border);border-top:none;border-radius:0 0 4px 4px;">
-            <div style="font-size:10px;letter-spacing:.25em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;">${o.colecao||'—'}</div>
-            <div style="font-family:'Cormorant Garamond',serif;font-size:18px;margin-bottom:8px;">${o.nome||'Sem título'}</div>
-            <div style="font-size:11px;color:var(--muted);">${o.paleta||''}</div>
+            <div style="font-size:10px;letter-spacing:.25em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;">${esc(o.colecao)||'—'}</div>
+            <div style="font-family:'Cormorant Garamond',serif;font-size:18px;margin-bottom:8px;">${esc(o.nome)||'Sem título'}</div>
+            <div style="font-size:11px;color:var(--muted);">${esc(o.paleta)||''}</div>
           </div>
         </div>
+        ${indicarBtn}
         <!-- DETALHE (oculto, abre no modal) -->
         <div id="detalhe-${o.id}" style="display:none">${detalhe}<div style="margin-top:16px;"><strong style="font-size:10px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);">Tiragem</strong><div style="font-family:'Cormorant Garamond',serif;font-size:18px;color:var(--gold);margin-top:4px;">${o.tiragem_maxima||'—'}</div></div></div>
       </div>`;
     }).join('');
 
-    const opcoesColecao=colecoes.map(c=>`<option value="${c.toLowerCase().replace(/\s+/g,'-')}">${c}</option>`).join('');
-    const opcoesPaleta=paletas.map(p=>`<option value="${p.toLowerCase().replace(/\s+/g,'-')}">${p}</option>`).join('');
+    const opcoesColecao=colecoes.map(c=>`<option value="${esc(c.toLowerCase().replace(/\s+/g,'-'))}">${esc(c)}</option>`).join('');
+    const opcoesPaleta=paletas.map(p=>`<option value="${esc(p.toLowerCase().replace(/\s+/g,'-'))}">${esc(p)}</option>`).join('');
 
     res.send(html('Catálogo',`
-      <div class="nav-bar"><a href="/portal" class="nav-link">Passaporte</a><a href="/catalogo" class="nav-link ativo">Obras</a>${navImpacto}<a href="/sugestoes" class="nav-link">Voz</a><a href="/minhas-funcoes" class="nav-link">Funções</a><a href="/meu-convite" class="nav-link">Convidar</a></div>
+      <div class="nav-bar"><a href="/portal" class="nav-link">Passaporte</a><a href="/catalogo" class="nav-link ativo">Obras</a>${navImpacto}${navIndicacoes}<a href="/sugestoes" class="nav-link">Voz</a><a href="/minhas-funcoes" class="nav-link">Funções</a><a href="/meu-convite" class="nav-link">Convidar</a></div>
 
       <!-- BARRA DE FILTROS -->
       <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:32px;align-items:center;">
@@ -749,8 +833,124 @@ app.get('/catalogo',authMembro,async(req,res)=>{
         }
         document.addEventListener('keydown',e=>{if(e.key==='Escape')fecharModal();});
       </script>
-    `,true));
-  }catch(e){res.send(html('Catálogo',`<div class="msg-erro">${e.message}</div>`,true));}
+    `,true,{nome:req.membro.nome}));
+  }catch(e){res.send(html('Catálogo',`<div class="msg-erro">${esc(e.message)}</div>`,true,req.membro));}
+});
+
+// ─── INDICAR OBRA — link pessoal por obra ─────────────────────────────────────
+// Só quem tem função de apresentar a ALMARE para fora (embaixador, especificador, curador) cria link.
+async function podeIndicarObra(membroId){
+  const r=await pool.query(`SELECT 1 FROM circulo_membro_funcoes mf JOIN circulo_funcoes f ON f.id=mf.funcao_id WHERE mf.membro_id=$1 AND mf.ativo=true AND f.slug IN ('embaixador','especificador','curador')`,[membroId]);
+  return r.rows.length>0;
+}
+
+app.get('/obra/:obraId/link',authMembro,async(req,res)=>{
+  if(!(await podeIndicarObra(req.membro.id))) return res.send(html('Indicar obra',`<div class="msg-erro">Esta função ainda não pode gerar links de indicação. Solicite Embaixador ou Especificador em Funções.</div><a href="/catalogo" class="btn btn-outline" style="margin-top:16px;">← Voltar às obras</a>`,true,req.membro));
+  const obraId=parseInt(req.params.obraId);
+  const obra=await pool.query('SELECT id,nome,colecao,imagem_preview FROM almare_obras WHERE id=$1',[obraId]);
+  if(!obra.rows.length) return res.send(html('Indicar obra',`<div class="msg-erro">Obra não encontrada.</div>`,true,req.membro));
+
+  let link=await pool.query('SELECT codigo FROM circulo_obra_links WHERE membro_id=$1 AND obra_id=$2',[req.membro.id,obraId]);
+  if(!link.rows.length){
+    const codigo=gerarCodigo();
+    await pool.query('INSERT INTO circulo_obra_links (membro_id,obra_id,codigo) VALUES ($1,$2,$3)',[req.membro.id,obraId,codigo]);
+    link={rows:[{codigo}]};
+  }
+  const url=`${BASE_URL}/indicar/${link.rows[0].codigo}`;
+  const o=obra.rows[0];
+
+  res.send(html('Indicar obra',`
+    <a href="/catalogo" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);display:inline-block;margin-bottom:24px;">← Voltar às obras</a>
+    <h2 style="font-size:26px;margin-bottom:4px;">Indicar "${esc(o.nome)}"</h2>
+    <p style="color:var(--muted);margin-bottom:28px;">Envie este link para quem você acha que pertence a essa obra. Todo interesse recebido aparece em Minhas Indicações, com o seu nome.</p>
+    <div class="card">
+      ${o.imagem_preview?`<img src="${esc(o.imagem_preview)}" style="width:100%;max-height:280px;object-fit:cover;border-radius:4px;margin-bottom:20px;">`:''}
+      <div style="font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);margin-bottom:12px;">Seu link de indicação</div>
+      <div style="background:#0d0d0d;border:1px solid var(--border);border-radius:3px;padding:14px;font-size:13px;word-break:break-all;margin-bottom:16px;">${esc(url)}</div>
+      <button onclick="navigator.clipboard.writeText('${esc(url)}');this.textContent='Copiado ✓'" class="btn btn-primary">Copiar link</button>
+      <a href="/minhas-indicacoes" class="btn btn-outline" style="margin-left:8px;">Ver minhas indicações</a>
+    </div>
+  `,true,req.membro));
+});
+
+app.get('/minhas-indicacoes',authMembro,async(req,res)=>{
+  if(!(await podeIndicarObra(req.membro.id))) return res.redirect('/catalogo');
+  const links=await pool.query(`
+    SELECT ol.id, ol.codigo, ol.obra_id, o.nome as obra_nome, o.imagem_preview,
+      (SELECT COUNT(*) FROM circulo_indicacoes ci WHERE ci.obra_link_id=ol.id) as total_leads,
+      (SELECT COUNT(*) FROM circulo_indicacoes ci WHERE ci.obra_link_id=ol.id AND ci.status='novo') as leads_novos
+    FROM circulo_obra_links ol JOIN almare_obras o ON o.id=ol.obra_id
+    WHERE ol.membro_id=$1 ORDER BY ol.criado_em DESC`,[req.membro.id]);
+
+  const itens=links.rows.map(l=>`
+    <div style="display:flex;align-items:center;gap:16px;padding:16px 0;border-bottom:1px solid var(--border);">
+      <div style="width:56px;height:56px;border-radius:4px;overflow:hidden;background:#0d0d0d;flex-shrink:0;">
+        ${l.imagem_preview?`<img src="${esc(l.imagem_preview)}" style="width:100%;height:100%;object-fit:cover;">`:''}
+      </div>
+      <div style="flex:1;">
+        <div style="font-family:'Cormorant Garamond',serif;font-size:17px;">${esc(l.obra_nome)}</div>
+        <div style="font-size:12px;color:var(--muted);">${l.total_leads} interesse${l.total_leads!=1?'s':''} recebido${l.total_leads!=1?'s':''}${l.leads_novos>0?` · <span style="color:var(--gold)">${l.leads_novos} novo${l.leads_novos!=1?'s':''}</span>`:''}</div>
+      </div>
+      <a href="/obra/${l.obra_id}/link" class="btn btn-outline" style="padding:6px 14px;font-size:10px;">Ver link</a>
+    </div>`).join('');
+
+  res.send(html('Minhas indicações',`
+    <div class="nav-bar"><a href="/portal" class="nav-link">Passaporte</a><a href="/catalogo" class="nav-link">Obras</a><a href="/meu-impacto" class="nav-link">Impacto</a><a href="/minhas-indicacoes" class="nav-link ativo">Indicações</a><a href="/sugestoes" class="nav-link">Voz</a><a href="/minhas-funcoes" class="nav-link">Funções</a><a href="/meu-convite" class="nav-link">Convidar</a></div>
+    <h2 style="font-size:28px;margin-bottom:8px;">Minhas indicações</h2>
+    <p style="color:var(--muted);margin-bottom:32px;">Cada obra do catálogo tem seu próprio link. Toque em "Indicar esta obra" no catálogo para gerar um novo.</p>
+    <div class="card">${itens||'<p style="color:var(--muted);padding:16px 0;">Você ainda não indicou nenhuma obra. Vá até o catálogo e toque em "Indicar esta obra".</p>'}</div>
+  `,true,req.membro));
+});
+
+// Página PÚBLICA de indicação — quem recebe o link não precisa de conta no Círculo
+app.get('/indicar/:codigo',async(req,res)=>{
+  const r=await pool.query(`
+    SELECT ol.id as link_id, o.nome, o.colecao, o.essencia, o.texto_curatorial, o.o_que_permanece, o.imagem_preview, m.nome as membro_nome
+    FROM circulo_obra_links ol
+    JOIN almare_obras o ON o.id=ol.obra_id
+    JOIN circulo_membros m ON m.id=ol.membro_id
+    WHERE ol.codigo=$1`,[req.params.codigo]);
+  if(!r.rows.length) return res.status(404).send(html('Indicação',`<div class="msg-erro">Este link não existe mais.</div>`));
+  const o=r.rows[0];
+
+  res.send(`<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>${esc(o.nome)} — ALMARE</title><style>${CSS}</style></head>
+  <body><div class="container" style="max-width:640px;padding-top:48px;">
+    <div class="logo" style="margin-bottom:6px;">ALMARE</div>
+    <div style="font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--gold);margin-bottom:40px;">Uma indicação de ${esc(o.membro_nome)}</div>
+    ${o.imagem_preview?`<img src="${esc(o.imagem_preview)}" style="width:100%;max-height:420px;object-fit:cover;border-radius:4px;margin-bottom:28px;">`:''}
+    <div style="font-size:10px;letter-spacing:.25em;text-transform:uppercase;color:var(--muted);margin-bottom:8px;">${esc(o.colecao)||''}</div>
+    <h1 style="font-size:32px;margin-bottom:20px;">${esc(o.nome)}</h1>
+    ${o.essencia?`<p style="font-style:italic;color:var(--gold-light);margin-bottom:20px;">${esc(o.essencia)}</p>`:''}
+    ${o.texto_curatorial?`<p style="line-height:1.9;color:#ccc;margin-bottom:16px;">${esc(o.texto_curatorial)}</p>`:''}
+    ${o.o_que_permanece?`<p style="font-style:italic;color:var(--muted);margin-bottom:40px;">${esc(o.o_que_permanece)}</p>`:''}
+    <div class="card">
+      <h3 style="font-size:18px;margin-bottom:16px;">Tenho interesse nesta obra</h3>
+      <form method="POST" action="/indicar/${esc(req.params.codigo)}">
+        <div class="field"><label>Nome *</label><input name="nome" required></div>
+        <div class="field"><label>E-mail ou WhatsApp *</label><input name="contato" required></div>
+        <div class="field"><label>Mensagem</label><textarea name="mensagem" placeholder="Opcional"></textarea></div>
+        <button type="submit" class="btn btn-primary btn-full">Enviar interesse</button>
+      </form>
+    </div>
+  </div></body></html>`);
+});
+
+app.post('/indicar/:codigo',async(req,res)=>{
+  const r=await pool.query('SELECT ol.id as link_id, ol.membro_id, o.nome as obra_nome FROM circulo_obra_links ol JOIN almare_obras o ON o.id=ol.obra_id WHERE ol.codigo=$1',[req.params.codigo]);
+  if(!r.rows.length) return res.status(404).send(html('Indicação',`<div class="msg-erro">Este link não existe mais.</div>`));
+  const {link_id,membro_id,obra_nome}=r.rows[0];
+  const {nome,contato,mensagem}=req.body;
+  await pool.query('INSERT INTO circulo_indicacoes (obra_link_id,nome_lead,contato_lead,mensagem) VALUES ($1,$2,$3,$4)',[link_id,nome,contato,mensagem||null]);
+  await pool.query(`INSERT INTO circulo_passaporte_eventos (membro_id,tipo,descricao) VALUES ($1,'novo_interesse',$2)`,[membro_id,`Alguém demonstrou interesse em "${obra_nome}" através da sua indicação`]);
+
+  res.send(`<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Obrigado — ALMARE</title><style>${CSS}</style></head>
+  <body><div class="container-sm" style="text-align:center;padding-top:80px;">
+    <div class="logo" style="margin-bottom:32px;">ALMARE</div>
+    <h2 style="font-size:26px;margin-bottom:16px;">Recebemos seu interesse</h2>
+    <p style="color:var(--muted);line-height:1.8;">Em breve alguém da ALMARE entra em contato com você.</p>
+  </div></body></html>`);
 });
 
 // ─── IMPACTO ──────────────────────────────────────────────────────────────────
@@ -759,16 +959,16 @@ app.get('/meu-impacto',authMembro,async(req,res)=>{
     const trans=await pool.query('SELECT * FROM circulo_transacoes WHERE membro_id=$1 ORDER BY criado_em DESC',[req.membro.id]);
     const saldo=await pool.query('SELECT * FROM circulo_saldo_credito WHERE membro_id=$1',[req.membro.id]);
     const s=saldo.rows[0]||{saldo_disponivel:0,saldo_total:0};
-    const linhas=trans.rows.map(t=>`<tr><td>Obra #${t.obra_id}</td><td>R$ ${parseFloat(t.valor_obra).toFixed(2).replace('.',',')}</td><td><span class="badge ${t.modalidade==='credito'?'badge-gold':'badge-muted'}">${t.modalidade==='credito'?'Crédito':'Cashback'}</span></td><td style="color:var(--gold)">R$ ${parseFloat(t.valor_beneficio).toFixed(2).replace('.',',')}</td><td><span class="badge ${t.status==='pago'?'badge-success':'badge-pending'}">${t.status}</span></td></tr>`).join('');
-    res.send(html('Impacto',`<div class="nav-bar"><a href="/portal" class="nav-link">Passaporte</a><a href="/catalogo" class="nav-link">Obras</a><a href="/meu-impacto" class="nav-link ativo">Impacto</a><a href="/sugestoes" class="nav-link">Voz</a><a href="/minhas-funcoes" class="nav-link">Funções</a><a href="/meu-convite" class="nav-link">Convidar</a></div><div class="grid-2" style="margin-bottom:32px;"><div class="stat-box"><div class="num">R$ ${parseFloat(s.saldo_disponivel).toFixed(2).replace('.',',')}</div><div class="lbl">Crédito disponível</div></div><div class="stat-box"><div class="num">R$ ${parseFloat(s.saldo_total).toFixed(2).replace('.',',')}</div><div class="lbl">Total histórico</div></div></div><div class="card"><h3 style="font-size:18px;margin-bottom:20px;">Histórico</h3>${trans.rows.length?`<table><thead><tr><th>Obra</th><th>Valor</th><th>Modalidade</th><th>Benefício</th><th>Status</th></tr></thead><tbody>${linhas}</tbody></table>`:'<p style="color:var(--muted)">Nenhuma venda ainda.</p>'}</div>`,true));
-  }catch(e){res.send(html('Impacto',`<div class="msg-erro">${e.message}</div>`,true));}
+    const linhas=trans.rows.map(t=>`<tr><td>Obra #${t.obra_id}</td><td>R$ ${parseFloat(t.valor_obra).toFixed(2).replace('.',',')}</td><td><span class="badge ${t.modalidade==='credito'?'badge-gold':'badge-muted'}">${t.modalidade==='credito'?'Crédito':'Cashback'}</span></td><td style="color:var(--gold)">R$ ${parseFloat(t.valor_beneficio).toFixed(2).replace('.',',')}</td><td><span class="badge ${t.status==='pago'?'badge-success':'badge-pending'}">${esc(t.status)}</span></td></tr>`).join('');
+    res.send(html('Impacto',`<div class="nav-bar"><a href="/portal" class="nav-link">Passaporte</a><a href="/catalogo" class="nav-link">Obras</a><a href="/meu-impacto" class="nav-link ativo">Impacto</a><a href="/minhas-indicacoes" class="nav-link">Indicações</a><a href="/sugestoes" class="nav-link">Voz</a><a href="/minhas-funcoes" class="nav-link">Funções</a><a href="/meu-convite" class="nav-link">Convidar</a></div><div class="grid-2" style="margin-bottom:32px;"><div class="stat-box"><div class="num">R$ ${parseFloat(s.saldo_disponivel).toFixed(2).replace('.',',')}</div><div class="lbl">Crédito disponível</div></div><div class="stat-box"><div class="num">R$ ${parseFloat(s.saldo_total).toFixed(2).replace('.',',')}</div><div class="lbl">Total histórico</div></div></div><div class="card"><h3 style="font-size:18px;margin-bottom:20px;">Histórico</h3>${trans.rows.length?`<table><thead><tr><th>Obra</th><th>Valor</th><th>Modalidade</th><th>Benefício</th><th>Status</th></tr></thead><tbody>${linhas}</tbody></table>`:'<p style="color:var(--muted)">Nenhuma venda ainda.</p>'}</div>`,true,{nome:req.membro.nome}));
+  }catch(e){res.send(html('Impacto',`<div class="msg-erro">${esc(e.message)}</div>`,true,req.membro));}
 });
 
 // ─── VOZ ──────────────────────────────────────────────────────────────────────
 app.get('/sugestoes',authMembro,async(req,res)=>{
   const lista=await pool.query('SELECT * FROM circulo_sugestoes WHERE membro_id=$1 ORDER BY criado_em DESC',[req.membro.id]);
-  const itens=lista.rows.map(s=>`<div style="padding:16px 0;border-bottom:1px solid var(--border);"><div style="display:flex;justify-content:space-between;margin-bottom:6px;"><span class="badge ${s.status==='incorporada'?'badge-success':s.status==='em_analise'?'badge-pending':'badge-muted'}">${s.status}</span><span style="font-size:11px;color:var(--muted)">${new Date(s.criado_em).toLocaleDateString('pt-BR')}</span></div><p style="font-size:13px;line-height:1.6;">${s.texto}</p>${s.resposta?`<p style="font-size:12px;color:var(--gold);margin-top:8px;font-style:italic;">↳ ${s.resposta}</p>`:''}</div>`).join('');
-  res.send(html('Voz',`<div class="nav-bar"><a href="/portal" class="nav-link">Passaporte</a><a href="/catalogo" class="nav-link">Obras</a><a href="/meu-impacto" class="nav-link">Impacto</a><a href="/sugestoes" class="nav-link ativo">Voz</a><a href="/minhas-funcoes" class="nav-link">Funções</a><a href="/meu-convite" class="nav-link">Convidar</a></div><h2 style="font-size:28px;margin-bottom:8px;">Sua voz no Círculo</h2><p style="color:var(--muted);margin-bottom:32px;">Sugira temas, formatos, ambientes. Anderson lê tudo.</p><div class="card" style="margin-bottom:24px;"><form method="POST" action="/sugestoes"><div class="field"><label>Sua sugestão</label><textarea name="texto" required placeholder="Uma ideia..."></textarea></div><button type="submit" class="btn btn-primary">Enviar</button></form></div>${lista.rows.length?`<div class="card"><h3 style="font-size:16px;margin-bottom:16px;">Anteriores</h3>${itens}</div>`:''}`,true));
+  const itens=lista.rows.map(s=>`<div style="padding:16px 0;border-bottom:1px solid var(--border);"><div style="display:flex;justify-content:space-between;margin-bottom:6px;"><span class="badge ${s.status==='incorporada'?'badge-success':s.status==='em_analise'?'badge-pending':'badge-muted'}">${esc(s.status)}</span><span style="font-size:11px;color:var(--muted)">${new Date(s.criado_em).toLocaleDateString('pt-BR')}</span></div><p style="font-size:13px;line-height:1.6;">${esc(s.texto)}</p>${s.resposta?`<p style="font-size:12px;color:var(--gold);margin-top:8px;font-style:italic;">↳ ${esc(s.resposta)}</p>`:''}</div>`).join('');
+  res.send(html('Voz',`<div class="nav-bar"><a href="/portal" class="nav-link">Passaporte</a><a href="/catalogo" class="nav-link">Obras</a><a href="/meu-impacto" class="nav-link">Impacto</a><a href="/sugestoes" class="nav-link ativo">Voz</a><a href="/minhas-funcoes" class="nav-link">Funções</a><a href="/meu-convite" class="nav-link">Convidar</a></div><h2 style="font-size:28px;margin-bottom:8px;">Sua voz no Círculo</h2><p style="color:var(--muted);margin-bottom:32px;">Sugira temas, formatos, ambientes. Anderson lê tudo.</p><div class="card" style="margin-bottom:24px;"><form method="POST" action="/sugestoes"><div class="field"><label>Sua sugestão</label><textarea name="texto" required placeholder="Uma ideia..."></textarea></div><button type="submit" class="btn btn-primary">Enviar</button></form></div>${lista.rows.length?`<div class="card"><h3 style="font-size:16px;margin-bottom:16px;">Anteriores</h3>${itens}</div>`:''}`,true,{nome:req.membro.nome}));
 });
 app.post('/sugestoes',authMembro,async(req,res)=>{
   await pool.query('INSERT INTO circulo_sugestoes (membro_id,texto) VALUES ($1,$2)',[req.membro.id,req.body.texto]);
@@ -780,7 +980,7 @@ app.get('/meu-convite',authMembro,async(req,res)=>{
   const conv=await pool.query('SELECT * FROM circulo_convites WHERE membro_id=$1 LIMIT 1',[req.membro.id]);
   const c=conv.rows[0];
   const link=c?`${BASE_URL}/convite/${c.codigo}`:'';
-  res.send(html('Convidar',`<div class="nav-bar"><a href="/portal" class="nav-link">Passaporte</a><a href="/catalogo" class="nav-link">Obras</a><a href="/meu-impacto" class="nav-link">Impacto</a><a href="/sugestoes" class="nav-link">Voz</a><a href="/minhas-funcoes" class="nav-link">Funções</a><a href="/meu-convite" class="nav-link ativo">Convidar</a></div><h2 style="font-size:28px;margin-bottom:8px;">Seu link de convite</h2><p style="color:var(--muted);margin-bottom:32px;">Compartilhe com quem acredita que pertence ao Círculo.</p><div class="card"><div style="font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);margin-bottom:12px;">Link pessoal</div><div style="background:#0d0d0d;border:1px solid var(--border);border-radius:3px;padding:14px;font-size:13px;word-break:break-all;margin-bottom:16px;">${link}</div><button onclick="navigator.clipboard.writeText('${link}');this.textContent='Copiado ✓'" class="btn btn-outline">Copiar link</button><div style="margin-top:20px;font-size:12px;color:var(--muted)">${c?c.usos:0} pessoa(s) entrou pela sua indicação</div></div>`,true));
+  res.send(html('Convidar',`<div class="nav-bar"><a href="/portal" class="nav-link">Passaporte</a><a href="/catalogo" class="nav-link">Obras</a><a href="/meu-impacto" class="nav-link">Impacto</a><a href="/sugestoes" class="nav-link">Voz</a><a href="/minhas-funcoes" class="nav-link">Funções</a><a href="/meu-convite" class="nav-link ativo">Convidar</a></div><h2 style="font-size:28px;margin-bottom:8px;">Seu link de convite</h2><p style="color:var(--muted);margin-bottom:32px;">Compartilhe com quem acredita que pertence ao Círculo.</p><div class="card"><div style="font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);margin-bottom:12px;">Link pessoal</div><div style="background:#0d0d0d;border:1px solid var(--border);border-radius:3px;padding:14px;font-size:13px;word-break:break-all;margin-bottom:16px;">${esc(link)}</div><button onclick="navigator.clipboard.writeText('${esc(link)}');this.textContent='Copiado ✓'" class="btn btn-outline">Copiar link</button><div style="margin-top:20px;font-size:12px;color:var(--muted)">${c?c.usos:0} pessoa(s) entrou pela sua indicação</div></div>`,true,{nome:req.membro.nome}));
 });
 
 // ════════════════════════════════════════════════════════════════
@@ -795,7 +995,7 @@ app.post('/admin/login',(req,res)=>{
 app.get('/admin/logout',(req,res)=>{res.clearCookie('circulo_admin');res.redirect('/admin/login');});
 
 app.get('/admin',authAdmin,async(req,res)=>{
-  // Funções pendentes de aprovação
+  // Funções pendentes de aprovação (Embaixador, Especificador etc. — não a entrada como Membro, que é livre)
   const pendentes=await pool.query(`
     SELECT mf.id as mf_id, m.nome, m.email, m.codigo_membro, f.nome as funcao, f.slug, m.id as membro_id
     FROM circulo_membro_funcoes mf
@@ -803,29 +1003,61 @@ app.get('/admin',authAdmin,async(req,res)=>{
     JOIN circulo_funcoes f ON f.id=mf.funcao_id
     WHERE mf.ativo=false ORDER BY mf.id ASC`);
   const membros=await pool.query('SELECT * FROM circulo_resumo_membro ORDER BY membro_desde DESC');
+  // Indicações de obras recebidas via link pessoal de cada membro
+  const indicacoes=await pool.query(`
+    SELECT ci.id, ci.nome_lead, ci.contato_lead, ci.mensagem, ci.status, ci.criado_em,
+           ol.membro_id, ol.obra_id, m.nome as membro_nome, o.nome as obra_nome
+    FROM circulo_indicacoes ci
+    JOIN circulo_obra_links ol ON ol.id=ci.obra_link_id
+    JOIN circulo_membros m ON m.id=ol.membro_id
+    JOIN almare_obras o ON o.id=ol.obra_id
+    ORDER BY ci.criado_em DESC LIMIT 200`).catch(()=>({rows:[]}));
 
   const linhaPendentes=pendentes.rows.map(p=>`
-    <tr>
-      <td><strong>${p.nome}</strong><br><span style="font-size:11px;color:var(--muted)">${p.email}</span></td>
-      <td><span class="badge badge-gold">${p.funcao}</span></td>
+    <tr data-busca="${esc((p.nome+' '+p.email+' '+p.funcao).toLowerCase())}">
+      <td><strong>${esc(p.nome)}</strong><br><span style="font-size:11px;color:var(--muted)">${esc(p.email)}</span></td>
+      <td><span class="badge badge-gold">${esc(p.funcao)}</span></td>
       <td>
         <form method="POST" action="/admin/funcoes/${p.mf_id}/aprovar" style="display:inline">
           <button class="btn btn-primary" style="padding:6px 14px;font-size:10px;">Aprovar</button>
         </form>
-        <form method="POST" action="/admin/funcoes/${p.mf_id}/recusar" style="display:inline;margin-left:6px">
+        <form method="POST" action="/admin/funcoes/${p.mf_id}/recusar" style="display:inline;margin-left:6px" onsubmit="return confirm('Recusar esta função?')">
           <button class="btn btn-outline" style="padding:6px 14px;font-size:10px;">Recusar</button>
         </form>
       </td>
     </tr>`).join('');
 
   const linhaMembros=membros.rows.map(m=>`
-    <tr>
-      <td>${m.nome}</td>
-      <td style="color:var(--muted)">${m.codigo_membro||'—'}</td>
-      <td style="color:var(--muted)">${m.email}</td>
+    <tr data-busca="${esc((m.nome+' '+m.email+' '+(m.codigo_membro||'')).toLowerCase())}">
+      <td>${esc(m.nome)}</td>
+      <td style="color:var(--muted)">${esc(m.codigo_membro)||'—'}</td>
+      <td style="color:var(--muted)">${esc(m.email)}</td>
       <td style="color:var(--gold)">R$ ${parseFloat(m.credito_disponivel).toFixed(2).replace('.',',')}</td>
       <td>${m.obras_que_encontraram_lar}</td>
       <td>${m.total_indicacoes}</td>
+    </tr>`).join('');
+
+  const linhaIndicacoes=indicacoes.rows.map(i=>`
+    <tr data-busca="${esc((i.membro_nome+' '+i.obra_nome+' '+(i.nome_lead||'')+' '+(i.contato_lead||'')).toLowerCase())}">
+      <td>${esc(i.obra_nome)}</td>
+      <td style="color:var(--muted)">${esc(i.membro_nome)}</td>
+      <td>${esc(i.nome_lead)||'—'}<br><span style="font-size:11px;color:var(--muted)">${esc(i.contato_lead)||''}</span></td>
+      <td>
+        <form method="POST" action="/admin/indicacoes/${i.id}/atualizar" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+          <select name="status" style="background:#0d0d0d;border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:3px;font-size:12px;">
+            <option value="novo" ${i.status==='novo'?'selected':''}>Novo</option>
+            <option value="contatado" ${i.status==='contatado'?'selected':''}>Contatado</option>
+            <option value="convertido" ${i.status==='convertido'?'selected':''}>Convertido em venda</option>
+            <option value="perdido" ${i.status==='perdido'?'selected':''}>Perdido</option>
+          </select>
+          <input name="valor" type="number" step="0.01" placeholder="Valor da obra (se convertido)" style="width:160px;background:#0d0d0d;border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:3px;font-size:12px;">
+          <select name="modalidade" style="background:#0d0d0d;border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:3px;font-size:12px;">
+            <option value="cashback">Cashback 10%</option>
+            <option value="credito">Crédito 20%</option>
+          </select>
+          <button type="submit" class="btn btn-outline" style="padding:6px 12px;font-size:10px;">Salvar</button>
+        </form>
+      </td>
     </tr>`).join('');
 
   res.send(html('Admin',`
@@ -836,7 +1068,7 @@ app.get('/admin',authAdmin,async(req,res)=>{
     <div class="grid-3" style="margin-bottom:32px;">
       <div class="stat-box"><div class="num">${pendentes.rows.length}</div><div class="lbl">Funções pendentes</div></div>
       <div class="stat-box"><div class="num">${membros.rows.length}</div><div class="lbl">Membros ativos</div></div>
-      <div class="stat-box"><div class="num">${membros.rows.reduce((a,m)=>a+parseInt(m.obras_que_encontraram_lar||0),0)}</div><div class="lbl">Obras que encontraram lar</div></div>
+      <div class="stat-box"><div class="num">${indicacoes.rows.filter(i=>i.status==='novo').length}</div><div class="lbl">Indicações novas</div></div>
     </div>
     ${pendentes.rows.length?`
     <div class="card" style="margin-bottom:24px;">
@@ -844,12 +1076,28 @@ app.get('/admin',authAdmin,async(req,res)=>{
       <table><thead><tr><th>Membro</th><th>Função solicitada</th><th>Ação</th></tr></thead>
       <tbody>${linhaPendentes}</tbody></table>
     </div>`:''}
+    <div class="card" style="margin-bottom:24px;">
+      <h3 style="font-size:18px;margin-bottom:16px;color:var(--gold);">Indicações de obras</h3>
+      <input type="text" placeholder="Buscar por obra, membro ou contato..." oninput="buscarTabela(this,'tabela-indicacoes')" style="width:100%;margin-bottom:16px;background:#0d0d0d;border:1px solid var(--border);color:var(--text);padding:10px 14px;border-radius:3px;font-size:13px;">
+      <table id="tabela-indicacoes"><thead><tr><th>Obra</th><th>Indicada por</th><th>Interessado</th><th>Ação</th></tr></thead>
+      <tbody>${linhaIndicacoes||'<tr><td colspan="4" style="color:var(--muted);text-align:center;padding:24px;">Nenhuma indicação ainda</td></tr>'}</tbody></table>
+    </div>
     <div class="card" style="margin-bottom:16px;">
-      <h3 style="font-size:18px;margin-bottom:20px;">Membros do Círculo</h3>
-      <table><thead><tr><th>Nome</th><th>Código</th><th>E-mail</th><th>Crédito</th><th>Obras</th><th>Indicações</th></tr></thead>
+      <h3 style="font-size:18px;margin-bottom:16px;">Membros do Círculo</h3>
+      <input type="text" placeholder="Buscar por nome, e-mail ou código..." oninput="buscarTabela(this,'tabela-membros')" style="width:100%;margin-bottom:16px;background:#0d0d0d;border:1px solid var(--border);color:var(--text);padding:10px 14px;border-radius:3px;font-size:13px;">
+      <table id="tabela-membros"><thead><tr><th>Nome</th><th>Código</th><th>E-mail</th><th>Crédito</th><th>Obras</th><th>Indicações</th></tr></thead>
       <tbody>${linhaMembros||'<tr><td colspan="6" style="color:var(--muted);text-align:center;padding:24px;">Nenhum membro ainda</td></tr>'}</tbody></table>
     </div>
     <a href="/admin/sugestoes" class="btn btn-outline">Ver sugestões dos membros</a>
+    <script>
+      function buscarTabela(input,tableId){
+        const termo=input.value.toLowerCase();
+        document.querySelectorAll('#'+tableId+' tbody tr').forEach(tr=>{
+          const alvo=tr.dataset.busca||'';
+          tr.style.display=!termo||alvo.includes(termo)?'':'none';
+        });
+      }
+    </script>
   `));
 });
 
@@ -864,6 +1112,36 @@ app.post('/admin/funcoes/:id/aprovar',authAdmin,async(req,res)=>{
   res.redirect('/admin');
 });
 
+// ─── INDICAÇÕES — atualizar status / registrar venda ──────────────────────────
+app.post('/admin/indicacoes/:id/atualizar',authAdmin,async(req,res)=>{
+  const {status,valor,modalidade}=req.body;
+  await pool.query('UPDATE circulo_indicacoes SET status=$1 WHERE id=$2',[status,req.params.id]);
+
+  if(status==='convertido' && valor && parseFloat(valor)>0){
+    const info=await pool.query(`
+      SELECT ol.membro_id, ol.obra_id, o.nome as obra_nome
+      FROM circulo_indicacoes ci
+      JOIN circulo_obra_links ol ON ol.id=ci.obra_link_id
+      JOIN almare_obras o ON o.id=ol.obra_id
+      WHERE ci.id=$1`,[req.params.id]);
+    if(info.rows.length){
+      const {membro_id,obra_id,obra_nome}=info.rows[0];
+      const valorObra=parseFloat(valor);
+      const mod=modalidade==='credito'?'credito':'cashback';
+      const beneficio=mod==='credito'?valorObra*0.20:valorObra*0.10;
+      await pool.query(
+        `INSERT INTO circulo_transacoes (membro_id,obra_id,valor_obra,modalidade,valor_beneficio,status,criado_em) VALUES ($1,$2,$3,$4,$5,'pendente',NOW())`,
+        [membro_id,obra_id,valorObra,mod,beneficio]
+      );
+      await pool.query(
+        `INSERT INTO circulo_passaporte_eventos (membro_id,tipo,descricao) VALUES ($1,'venda_indicacao',$2)`,
+        [membro_id, `Sua indicação de "${obra_nome}" virou venda — ${mod==='credito'?'crédito':'cashback'} gerado`]
+      );
+    }
+  }
+  res.redirect('/admin');
+});
+
 app.post('/admin/funcoes/:id/recusar',authAdmin,async(req,res)=>{
   await pool.query('DELETE FROM circulo_membro_funcoes WHERE id=$1',[req.params.id]);
   res.redirect('/admin');
@@ -872,8 +1150,10 @@ app.post('/admin/funcoes/:id/recusar',authAdmin,async(req,res)=>{
 // ─── SUGESTÕES ADMIN ──────────────────────────────────────────────────────────
 app.get('/admin/sugestoes',authAdmin,async(req,res)=>{
   const lista=await pool.query('SELECT s.*,m.nome as mn FROM circulo_sugestoes s JOIN circulo_membros m ON m.id=s.membro_id ORDER BY s.status ASC,s.criado_em DESC');
-  const itens=lista.rows.map(s=>`<div style="padding:20px;border:1px solid var(--border);border-radius:4px;margin-bottom:12px;"><div style="display:flex;justify-content:space-between;margin-bottom:8px;"><span style="font-size:12px;color:var(--gold)">${s.mn}</span><span class="badge ${s.status==='incorporada'?'badge-success':s.status==='em_analise'?'badge-pending':'badge-muted'}">${s.status}</span></div><p style="font-size:13px;margin-bottom:12px;">${s.texto}</p><form method="POST" action="/admin/sugestoes/${s.id}/responder" style="display:flex;gap:8px;flex-wrap:wrap;"><input name="resposta" placeholder="Resposta" value="${s.resposta||''}" style="flex:1;background:#0d0d0d;border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:3px;font-size:13px;"><select name="status" style="background:#0d0d0d;border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:3px;font-size:13px;"><option value="aberta" ${s.status==='aberta'?'selected':''}>Aberta</option><option value="em_analise" ${s.status==='em_analise'?'selected':''}>Em análise</option><option value="incorporada" ${s.status==='incorporada'?'selected':''}>Incorporada</option><option value="descartada" ${s.status==='descartada'?'selected':''}>Descartada</option></select><button type="submit" class="btn btn-primary" style="padding:8px 16px;">Salvar</button></form></div>`).join('');
-  res.send(html('Sugestões',`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:32px;"><h2 style="font-size:24px;">Sugestões dos membros</h2><a href="/admin" class="btn btn-outline" style="padding:8px 16px;font-size:10px;">← Voltar</a></div>${itens||'<p style="color:var(--muted)">Nenhuma sugestão ainda.</p>'}`));
+  const itens=lista.rows.map(s=>`<div data-busca="${esc((s.mn+' '+s.texto).toLowerCase())}" style="padding:20px;border:1px solid var(--border);border-radius:4px;margin-bottom:12px;"><div style="display:flex;justify-content:space-between;margin-bottom:8px;"><span style="font-size:12px;color:var(--gold)">${esc(s.mn)}</span><span class="badge ${s.status==='incorporada'?'badge-success':s.status==='em_analise'?'badge-pending':'badge-muted'}">${esc(s.status)}</span></div><p style="font-size:13px;margin-bottom:12px;">${esc(s.texto)}</p><form method="POST" action="/admin/sugestoes/${s.id}/responder" style="display:flex;gap:8px;flex-wrap:wrap;"><input name="resposta" placeholder="Resposta" value="${esc(s.resposta||'')}" style="flex:1;background:#0d0d0d;border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:3px;font-size:13px;"><select name="status" style="background:#0d0d0d;border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:3px;font-size:13px;"><option value="aberta" ${s.status==='aberta'?'selected':''}>Aberta</option><option value="em_analise" ${s.status==='em_analise'?'selected':''}>Em análise</option><option value="incorporada" ${s.status==='incorporada'?'selected':''}>Incorporada</option><option value="descartada" ${s.status==='descartada'?'selected':''}>Descartada</option></select><button type="submit" class="btn btn-primary" style="padding:8px 16px;">Salvar</button></form></div>`).join('');
+  res.send(html('Sugestões',`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;"><h2 style="font-size:24px;">Sugestões dos membros</h2><a href="/admin" class="btn btn-outline" style="padding:8px 16px;font-size:10px;">← Voltar</a></div>
+  <input type="text" placeholder="Buscar por membro ou texto..." oninput="document.querySelectorAll('#lista-sugestoes > div').forEach(d=>{d.style.display=!this.value||d.dataset.busca.includes(this.value.toLowerCase())?'':'none'})" style="width:100%;margin-bottom:20px;background:#0d0d0d;border:1px solid var(--border);color:var(--text);padding:10px 14px;border-radius:3px;font-size:13px;">
+  <div id="lista-sugestoes">${itens||'<p style="color:var(--muted)">Nenhuma sugestão ainda.</p>'}</div>`));
 });
 app.post('/admin/sugestoes/:id/responder',authAdmin,async(req,res)=>{
   const{resposta,status}=req.body;
@@ -883,4 +1163,6 @@ app.post('/admin/sugestoes/:id/responder',authAdmin,async(req,res)=>{
 });
 
 const PORT=process.env.PORT||3000;
-app.listen(PORT,()=>console.log(`Círculo ALMARE rodando na porta ${PORT}`));
+garantirTabelas()
+  .then(()=>{ app.listen(PORT,()=>console.log(`Círculo ALMARE rodando na porta ${PORT}`)); })
+  .catch(e=>{ console.error('Erro ao garantir tabelas:', e.message); app.listen(PORT,()=>console.log(`Círculo ALMARE rodando na porta ${PORT} (aviso: tabelas novas não confirmadas)`)); });
