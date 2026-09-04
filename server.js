@@ -636,12 +636,9 @@ app.get('/catalogo',authMembro,async(req,res)=>{
              o.perfil_arquitetonico, o.possibilidade_composicao, o.tamanhos_recomendados,
              o.formato_recomendado, o.nota_curador, o.potencial_nota, o.potencial_justificativa,
              o.observacoes_producao, o.descricao_comercial, o.direcao_artistica,
-             o.imagem_preview,
-             COUNT(CASE WHEN t.status='disponivel' THEN 1 END) as disponiveis
+             o.imagem_preview
       FROM almare_obras o
-      LEFT JOIN almare_tiragem t ON t.obra_id=o.id
-      WHERE o.status='aprovada'
-      GROUP BY o.id
+      WHERE o.status_curatorial='aprovada'
       ORDER BY o.id DESC`);
 
     function campo(label, valor) {
@@ -693,7 +690,7 @@ app.get('/catalogo',authMembro,async(req,res)=>{
           </div>
           <div style="text-align:right;flex-shrink:0;">
             <div style="font-size:10px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;">Tiragem</div>
-            <div style="font-family:'Cormorant Garamond',serif;font-size:22px;color:var(--gold)">${o.disponiveis}/${o.tiragem_maxima}</div>
+            <div style="font-family:'Cormorant Garamond',serif;font-size:22px;color:var(--gold)">${o.tiragem_maxima || '—'}</div>
           </div>
         </div>
         <hr style="border:none;border-top:1px solid var(--border);margin-bottom:20px;">
