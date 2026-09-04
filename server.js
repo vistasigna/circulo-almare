@@ -621,12 +621,12 @@ app.post('/minhas-funcoes/:slug/desativar',authMembro,async(req,res)=>{
 // ─── CATÁLOGO ─────────────────────────────────────────────────────────────────
 app.get('/catalogo',authMembro,async(req,res)=>{
   try{
-    // Descobrir funções ativas do membro
     const fRows=await pool.query(`SELECT f.slug FROM circulo_membro_funcoes mf JOIN circulo_funcoes f ON f.id=mf.funcao_id WHERE mf.membro_id=$1 AND mf.ativo=true`,[req.membro.id]);
     const slugs=fRows.rows.map(r=>r.slug);
     const isCurador=slugs.includes('curador');
     const isEspecificador=slugs.includes('especificador');
     const isEmbaixador=slugs.includes('embaixador');
+    const navImpacto=slugs.some(s=>['embaixador','especificador','artista','colaborador'].includes(s))?'<a href="/meu-impacto" class="nav-link">Impacto</a>':'';
 
     const obras=await pool.query(`
       SELECT o.id, o.nome, o.tiragem_sugerida as tiragem_maxima, o.colecao,
@@ -635,73 +635,121 @@ app.get('/catalogo',authMembro,async(req,res)=>{
              o.perfil_de_cliente, o.nivel_de_destaque, o.personalidade_da_obra,
              o.perfil_arquitetonico, o.possibilidade_composicao, o.tamanhos_recomendados,
              o.formato_recomendado, o.nota_curador, o.potencial_nota, o.potencial_justificativa,
-             o.observacoes_producao, o.descricao_comercial, o.direcao_artistica,
-             o.imagem_preview
-      FROM almare_obras o
-      WHERE o.status='aprovada'
-      ORDER BY o.id DESC`);
+             o.observacoes_producao, o.descricao_comercial, o.direcao_artistica, o.imagem_preview
+      FROM almare_obras o WHERE o.status='aprovada' ORDER BY o.colecao, o.nome`);
 
-    function campo(label, valor) {
-      if (!valor) return '';
-      return `<div style="margin-bottom:14px;"><div style="font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;">${label}</div><div style="font-size:13px;line-height:1.7;">${valor}</div></div>`;
+    // Listas únicas para filtros
+    const colecoes=[...new Set(obras.rows.map(o=>o.colecao).filter(Boolean))].sort();
+    const paletas=[...new Set(obras.rows.map(o=>o.paleta).filter(Boolean))].sort();
+
+    function campo(label,valor){
+      if(!valor)return '';
+      return `<div style="margin-bottom:14px;"><div style="font-size:10px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;">${label}</div><div style="font-size:13px;line-height:1.7;color:#ccc;">${valor}</div></div>`;
     }
 
-    const cards=obras.rows.map(o=>{
-      // Campos base — todos veem
-      let campos = campo('Conceito', o.conceito)
-        + campo('Essência', o.essencia)
-        + campo('Sensação provocada', o.sensacao_provocada)
-        + campo('O que permanece', o.o_que_permanece)
-        + campo('Ambientes compatíveis', o.ambientes_compativeis)
-        + campo('Texto curatorial', o.texto_curatorial)
-        + campo('Paleta', o.paleta)
-        + campo('Cores observadas', o.paleta_detalhe);
+    const cardsHtml=obras.rows.map(o=>{
+      let detalhe=campo('Conceito',o.conceito)+campo('Essência',o.essencia)+campo('Sensação',o.sensacao_provocada)+campo('O que permanece',o.o_que_permanece)+campo('Ambientes',o.ambientes_compativeis)+campo('Texto curatorial',o.texto_curatorial)+campo('Paleta',o.paleta)+campo('Cores',o.paleta_detalhe);
+      if(isEmbaixador||isEspecificador||isCurador) detalhe+=campo('Perfil de cliente',o.perfil_de_cliente);
+      if(isEspecificador||isCurador) detalhe+=campo('Nível de destaque',o.nivel_de_destaque)+campo('Personalidade',o.personalidade_da_obra)+campo('Perfil arquitetônico',o.perfil_arquitetonico)+campo('Composição múltipla',o.possibilidade_composicao)+campo('Tamanhos recomendados',o.tamanhos_recomendados)+campo('Formato recomendado',o.formato_recomendado);
+      if(isCurador) detalhe+=campo('Nota do curador',o.nota_curador)+campo('Potencial',o.potencial_nota?o.potencial_nota+'/100':'')+campo('Justificativa',o.potencial_justificativa)+campo('Obs. produção',o.observacoes_producao)+campo('Descrição comercial',o.descricao_comercial);
 
-      // Embaixador
-      if (isEmbaixador || isEspecificador || isCurador) {
-        campos += campo('Perfil de cliente', o.perfil_de_cliente);
-      }
+      const palataAttr=o.paleta?o.paleta.toLowerCase().replace(/\s+/g,'-'):'';
+      const colecaoAttr=o.colecao?o.colecao.toLowerCase().replace(/\s+/g,'-'):'';
 
-      // Especificador
-      if (isEspecificador || isCurador) {
-        campos += campo('Nível de destaque', o.nivel_de_destaque)
-          + campo('Personalidade', o.personalidade_da_obra)
-          + campo('Perfil arquitetônico', o.perfil_arquitetonico)
-          + campo('Composição múltipla', o.possibilidade_composicao)
-          + campo('Tamanhos recomendados', o.tamanhos_recomendados)
-          + campo('Formato recomendado', o.formato_recomendado);
-      }
-
-      // Curador — tudo
-      if (isCurador) {
-        campos += campo('Nota do curador', o.nota_curador)
-          + campo('Potencial comercial', o.potencial_nota ? o.potencial_nota + '/100' : '')
-          + campo('Justificativa', o.potencial_justificativa)
-          + campo('Observações de produção', o.observacoes_producao)
-          + campo('Composição', o.composicao)
-          + campo('Descrição comercial', o.descricao_comercial);
-      }
-
-      return `<div class="card" style="margin-bottom:20px;">
-        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:20px;">
-          <div>
-            <div style="font-size:10px;letter-spacing:.25em;text-transform:uppercase;color:var(--muted);margin-bottom:6px;">${o.colecao||'—'}</div>
-            <h3 style="font-family:'Cormorant Garamond',serif;font-size:24px;font-weight:400;">${o.nome||'Sem título'}</h3>
+      return `<div class="obra-card" data-colecao="${colecaoAttr}" data-paleta="${palataAttr}" data-nome="${(o.nome||'').toLowerCase()}">
+        <div onclick="abrirObra(${o.id})" style="cursor:pointer;">
+          <div style="position:relative;background:#0d0d0d;border-radius:4px 4px 0 0;overflow:hidden;aspect-ratio:4/3;">
+            ${o.imagem_preview?`<img src="${o.imagem_preview}" style="width:100%;height:100%;object-fit:cover;" loading="lazy">`:`<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:11px;letter-spacing:.15em;">SEM IMAGEM</div>`}
           </div>
-          <div style="text-align:right;flex-shrink:0;">
-            <div style="font-size:10px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;">Tiragem</div>
-            <div style="font-family:'Cormorant Garamond',serif;font-size:22px;color:var(--gold)">${o.tiragem_maxima || '—'}</div>
+          <div style="padding:16px;background:var(--surface);border:1px solid var(--border);border-top:none;border-radius:0 0 4px 4px;">
+            <div style="font-size:10px;letter-spacing:.25em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;">${o.colecao||'—'}</div>
+            <div style="font-family:'Cormorant Garamond',serif;font-size:18px;margin-bottom:8px;">${o.nome||'Sem título'}</div>
+            <div style="font-size:11px;color:var(--muted);">${o.paleta||''}</div>
           </div>
         </div>
-        <hr style="border:none;border-top:1px solid var(--border);margin-bottom:20px;">
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 32px;">
-          ${campos}
-        </div>
+        <!-- DETALHE (oculto, abre no modal) -->
+        <div id="detalhe-${o.id}" style="display:none">${detalhe}<div style="margin-top:16px;"><strong style="font-size:10px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);">Tiragem</strong><div style="font-family:'Cormorant Garamond',serif;font-size:18px;color:var(--gold);margin-top:4px;">${o.tiragem_maxima||'—'}</div></div></div>
       </div>`;
     }).join('');
 
-    const navImpacto = slugs.some(s=>['embaixador','especificador','artista','colaborador'].includes(s)) ? '<a href="/meu-impacto" class="nav-link">Impacto</a>' : '';
-    res.send(html('Catálogo',`<div class="nav-bar"><a href="/portal" class="nav-link">Passaporte</a><a href="/catalogo" class="nav-link ativo">Obras</a>${navImpacto}<a href="/sugestoes" class="nav-link">Voz</a><a href="/minhas-funcoes" class="nav-link">Funções</a><a href="/meu-convite" class="nav-link">Convidar</a></div><h2 style="font-size:28px;margin-bottom:32px;">Catálogo ALMARE</h2>${cards||'<p style="color:var(--muted)">Nenhuma obra disponível.</p>'}`,true));
+    const opcoesColecao=colecoes.map(c=>`<option value="${c.toLowerCase().replace(/\s+/g,'-')}">${c}</option>`).join('');
+    const opcoesPaleta=paletas.map(p=>`<option value="${p.toLowerCase().replace(/\s+/g,'-')}">${p}</option>`).join('');
+
+    res.send(html('Catálogo',`
+      <div class="nav-bar"><a href="/portal" class="nav-link">Passaporte</a><a href="/catalogo" class="nav-link ativo">Obras</a>${navImpacto}<a href="/sugestoes" class="nav-link">Voz</a><a href="/minhas-funcoes" class="nav-link">Funções</a><a href="/meu-convite" class="nav-link">Convidar</a></div>
+
+      <!-- BARRA DE FILTROS -->
+      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:32px;align-items:center;">
+        <input id="busca" type="text" placeholder="Buscar obra..." oninput="filtrar()" style="flex:1;min-width:200px;background:#0d0d0d;border:1px solid var(--border);color:var(--text);padding:10px 14px;border-radius:3px;font-size:13px;font-family:'Inter',sans-serif;outline:none;">
+        <select id="filtroColecao" onchange="filtrar()" style="background:#0d0d0d;border:1px solid var(--border);color:var(--text);padding:10px 14px;border-radius:3px;font-size:12px;font-family:'Inter',sans-serif;outline:none;">
+          <option value="">Todas as coleções</option>${opcoesColecao}
+        </select>
+        <select id="filtroPaleta" onchange="filtrar()" style="background:#0d0d0d;border:1px solid var(--border);color:var(--text);padding:10px 14px;border-radius:3px;font-size:12px;font-family:'Inter',sans-serif;outline:none;">
+          <option value="">Todas as paletas</option>${opcoesPaleta}
+        </select>
+        <span id="contagem" style="font-size:12px;color:var(--muted);white-space:nowrap;">${obras.rows.length} obras</span>
+      </div>
+
+      <!-- GRADE -->
+      <div id="grade" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:20px;">
+        ${cardsHtml}
+      </div>
+      <div id="sem-resultado" style="display:none;text-align:center;padding:60px 0;color:var(--muted);">Nenhuma obra encontrada.</div>
+
+      <!-- MODAL DE DETALHE -->
+      <div id="modal" onclick="fecharModal(event)" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:1000;overflow-y:auto;padding:40px 20px;">
+        <div id="modal-conteudo" onclick="event.stopPropagation()" style="max-width:720px;margin:0 auto;background:#111;border:1px solid #222;border-radius:4px;overflow:hidden;">
+          <div style="display:flex;justify-content:flex-end;padding:12px 16px;border-bottom:1px solid #222;">
+            <button onclick="fecharModal()" style="background:none;border:none;color:var(--muted);font-size:20px;cursor:pointer;">✕</button>
+          </div>
+          <div id="modal-body" style="padding:32px;"></div>
+        </div>
+      </div>
+
+      <script>
+        function filtrar(){
+          const busca=document.getElementById('busca').value.toLowerCase();
+          const colecao=document.getElementById('filtroColecao').value;
+          const paleta=document.getElementById('filtroPaleta').value;
+          const cards=document.querySelectorAll('.obra-card');
+          let visiveis=0;
+          cards.forEach(c=>{
+            const nomeOk=!busca||c.dataset.nome.includes(busca);
+            const colecaoOk=!colecao||c.dataset.colecao===colecao;
+            const paletaOk=!paleta||c.dataset.paleta===paleta;
+            const ok=nomeOk&&colecaoOk&&paletaOk;
+            c.style.display=ok?'':'none';
+            if(ok)visiveis++;
+          });
+          document.getElementById('contagem').textContent=visiveis+' obra'+(visiveis!==1?'s':'');
+          document.getElementById('sem-resultado').style.display=visiveis===0?'block':'none';
+        }
+
+        function abrirObra(id){
+          const src=document.getElementById('detalhe-'+id);
+          if(!src)return;
+          const card=src.closest('.obra-card');
+          const img=card.querySelector('img');
+          const nome=card.querySelector('[style*="Cormorant"]').textContent;
+          const colecao=card.querySelector('[style*="text-transform"]').textContent;
+          let html='';
+          if(img) html+=\`<img src="\${img.src}" style="width:100%;max-height:400px;object-fit:cover;margin-bottom:24px;">\`;
+          html+=\`<div style="font-size:10px;letter-spacing:.25em;text-transform:uppercase;color:var(--muted);margin-bottom:6px;">\${colecao}</div>\`;
+          html+=\`<h2 style="font-family:'Cormorant Garamond',serif;font-size:28px;font-weight:400;margin-bottom:24px;">\${nome}</h2>\`;
+          html+=\`<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 32px;">\${src.innerHTML}</div>\`;
+          document.getElementById('modal-body').innerHTML=html;
+          document.getElementById('modal').style.display='block';
+          document.body.style.overflow='hidden';
+        }
+
+        function fecharModal(e){
+          if(e&&e.target!==document.getElementById('modal')&&e.type!=='click')return;
+          document.getElementById('modal').style.display='none';
+          document.body.style.overflow='';
+        }
+        document.addEventListener('keydown',e=>{if(e.key==='Escape')fecharModal();});
+      </script>
+    `,true));
   }catch(e){res.send(html('Catálogo',`<div class="msg-erro">${e.message}</div>`,true));}
 });
 
