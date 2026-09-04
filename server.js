@@ -224,7 +224,7 @@ function html(titulo, corpo, nav=false, membro=null) {
   // Painel de identidade — sempre visível no topo quando há sessão, princípio permanente de UI/UX:
   // qualquer pessoa reconhece de cara qual conta está logada, sem precisar procurar.
   const identidade = (nav && membro) ? `<div style="font-size:10px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);margin-top:6px;">
-    Logado como <span style="color:var(--gold)">${esc(membro.nome||'')}</span>${membro.codigo?` · ${esc(membro.codigo)}`:''}
+    Logado como <span style="color:var(--gold)">${esc(membro.nome||'')}</span>
   </div>` : '';
   const navHtml = nav ? `<div style="display:flex;gap:12px;align-items:center;justify-content:flex-end;margin-top:12px;flex-wrap:wrap;">
     <a href="/portal" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted)">Portal</a>
@@ -621,7 +621,7 @@ app.get('/portal',authMembro,async(req,res)=>{
         <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:16px;">
           <div>
             <h2 style="font-size:26px;margin-bottom:4px;">${esc(membroNome)}</h2>
-            <div style="font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);margin-bottom:12px;">Membro desde ${data} · ${esc(m.codigo_membro||'')}</div>
+            <div style="font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);margin-bottom:12px;">Membro desde ${data}</div>
             <div><span class="badge badge-gold">Membro</span>${fnomes ? " " + fnomes : ""}</div>
           </div>
 
