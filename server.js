@@ -201,6 +201,20 @@ const CSS = `
   textarea{width:100%;background:#0d0d0d;border:1px solid var(--border);color:var(--text);padding:12px;border-radius:3px;font-size:14px;min-height:80px;resize:vertical;font-family:'Inter',sans-serif;outline:none}
   textarea:focus{border-color:var(--gold)}
   #aviso-bling{display:none;margin-bottom:20px}
+  .ficha-conceito{background:var(--surface);border:1px solid var(--border);border-left:3px solid var(--gold);border-radius:0 4px 4px 0;padding:18px 20px;margin-bottom:14px}
+  .ficha-essencia{background:linear-gradient(135deg,#1a1408,var(--surface));border:1px solid #3d2f10;border-radius:4px;padding:20px;margin-bottom:14px}
+  .ficha-essencia-label{font-size:10px;color:var(--gold);text-transform:uppercase;letter-spacing:.2em;margin-bottom:8px;font-weight:600}
+  .ficha-essencia-texto{font-size:16px;color:var(--gold-light);font-style:italic;line-height:1.6}
+  .ficha-quote{font-size:14px;font-style:italic;color:#e8e0d0;line-height:1.75}
+  .ficha-card{background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:18px 20px;margin-bottom:14px}
+  .ficha-card-titulo{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.15em;margin-bottom:12px;font-weight:500}
+  .ficha-plana{font-size:13px;line-height:1.75;color:#bbb}
+  .ficha-chips{display:flex;flex-wrap:wrap;gap:6px}
+  .ficha-chip{background:rgba(201,169,110,.1);border:1px solid rgba(201,169,110,.3);color:var(--gold);padding:3px 12px;border-radius:20px;font-size:11px}
+  .ficha-linha{display:flex;gap:14px;padding:8px 0;border-bottom:1px solid var(--border)}
+  .ficha-linha:last-child{border-bottom:none}
+  .ficha-linha-label{font-size:10px;color:var(--muted);min-width:150px;flex-shrink:0;padding-top:2px;text-transform:uppercase;letter-spacing:.05em}
+  .ficha-linha-valor{font-size:13px;color:#ccc;flex:1;line-height:1.6}
   .spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--border);border-top-color:var(--gold);border-radius:50%;animation:spin .6s linear infinite;vertical-align:middle;margin-right:6px}
   @keyframes spin{to{transform:rotate(360deg)}}
   @media(max-width:600px){.grid-2,.grid-3{grid-template-columns:1fr}.steps{flex-direction:column}}
@@ -711,7 +725,7 @@ app.get('/catalogo',authMembro,async(req,res)=>{
     const navIndicacoes=podeIndicar?'<a href="/minhas-indicacoes" class="nav-link">Indicações</a>':'';
 
     const obras=await pool.query(`
-      SELECT o.id, o.nome, o.colecao,
+      SELECT o.id, o.codigo, o.nome, o.colecao, o.tags,
              o.conceito, o.essencia, o.sensacao_provocada, o.o_que_permanece,
              o.ambientes_compativeis, o.texto_curatorial, o.paleta, o.paleta_detalhe,
              o.perfil_de_cliente, o.nivel_de_destaque, o.personalidade_da_obra,
@@ -724,16 +738,43 @@ app.get('/catalogo',authMembro,async(req,res)=>{
     const colecoes=[...new Set(obras.rows.map(o=>o.colecao).filter(Boolean))].sort();
     const paletas=[...new Set(obras.rows.map(o=>o.paleta).filter(Boolean))].sort();
 
-    function campo(label,valor){
+    function campoConceito(valor){
       if(!valor)return '';
-      return `<div style="margin-bottom:14px;"><div style="font-size:10px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;">${esc(label)}</div><div style="font-size:13px;line-height:1.7;color:#ccc;">${esc(valor)}</div></div>`;
+      return `<div class="ficha-conceito"><div class="ficha-quote">"${esc(valor)}"</div></div>`;
+    }
+    function campoEssencia(valor){
+      if(!valor)return '';
+      return `<div class="ficha-essencia"><div class="ficha-essencia-label">Essência</div><div class="ficha-essencia-texto">${esc(valor)}</div></div>`;
+    }
+    function campoPermanece(valor){
+      if(!valor)return '';
+      return `<div class="ficha-conceito"><div class="ficha-quote">"${esc(valor)}"</div></div>`;
+    }
+    function campoCard(titulo,valor){
+      if(!valor)return '';
+      return `<div class="ficha-card"><div class="ficha-card-titulo">${esc(titulo)}</div><div class="ficha-plana">${esc(valor)}</div></div>`;
+    }
+    function campoChips(titulo,valor){
+      if(!valor)return '';
+      const itens=Array.isArray(valor)?valor:String(valor).split(',').map(v=>v.trim()).filter(Boolean);
+      if(!itens.length)return '';
+      return `<div class="ficha-card"><div class="ficha-card-titulo">${esc(titulo)}</div><div class="ficha-chips">${itens.map(v=>`<span class="ficha-chip">${esc(v)}</span>`).join('')}</div></div>`;
+    }
+    function linha(label,valor){
+      if(!valor)return '';
+      return `<div class="ficha-linha"><span class="ficha-linha-label">${esc(label)}</span><span class="ficha-linha-valor">${esc(valor)}</span></div>`;
     }
 
     const cardsHtml=obras.rows.map(o=>{
-      let detalhe=campo('Conceito',o.conceito)+campo('Essência',o.essencia)+campo('Sensação',o.sensacao_provocada)+campo('O que permanece',o.o_que_permanece)+campo('Ambientes',o.ambientes_compativeis)+campo('Texto curatorial',o.texto_curatorial)+campo('Paleta',o.paleta)+campo('Cores',o.paleta_detalhe);
-      if(isEmbaixador||isEspecificador||isCurador) detalhe+=campo('Perfil de cliente',o.perfil_de_cliente);
-      if(isEspecificador||isCurador) detalhe+=campo('Nível de destaque',o.nivel_de_destaque)+campo('Personalidade',o.personalidade_da_obra)+campo('Perfil arquitetônico',o.perfil_arquitetonico)+campo('Composição múltipla',o.possibilidade_composicao)+campo('Tamanhos recomendados',o.tamanhos_recomendados)+campo('Formato recomendado',o.formato_recomendado);
-      if(isCurador) detalhe+=campo('Nota do curador',o.nota_curador)+campo('Potencial',o.potencial_nota?o.potencial_nota+'/100':'')+campo('Justificativa',o.potencial_justificativa)+campo('Obs. produção',o.observacoes_producao)+campo('Descrição comercial',o.descricao_comercial);
+      let detalhe=campoChips('Tags',o.tags)+campoConceito(o.conceito)+campoEssencia(o.essencia)+campoPermanece(o.o_que_permanece)+campoChips('Ambientes compatíveis',o.ambientes_compativeis)+campoCard('Texto Curatorial',o.texto_curatorial);
+      let linhas=linha('Paleta',o.paleta)+linha('Cores observadas',o.paleta_detalhe)+linha('Sensação provocada',o.sensacao_provocada);
+      if(isEmbaixador||isEspecificador||isCurador) linhas+=linha('Perfil de cliente',o.perfil_de_cliente);
+      if(isEspecificador||isCurador) linhas+=linha('Nível de destaque',o.nivel_de_destaque)+linha('Personalidade',o.personalidade_da_obra)+linha('Perfil arquitetônico',o.perfil_arquitetonico)+linha('Composição múltipla',o.possibilidade_composicao)+linha('Tamanhos recomendados',o.tamanhos_recomendados)+linha('Formato recomendado',o.formato_recomendado);
+      if(isCurador){
+        detalhe+=campoCard('Descrição Comercial',o.descricao_comercial);
+        linhas+=linha('Nota do curador',o.nota_curador)+linha('Potencial de venda',o.potencial_nota?o.potencial_nota+'/100':'')+linha('Justificativa',o.potencial_justificativa)+linha('Obs. de produção',o.observacoes_producao);
+      }
+      if(linhas) detalhe+=`<div class="ficha-card"><div class="ficha-card-titulo">Ficha</div>${linhas}</div>`;
 
       const palataAttr=o.paleta?o.paleta.toLowerCase().replace(/\s+/g,'-'):'';
       const colecaoAttr=o.colecao?o.colecao.toLowerCase().replace(/\s+/g,'-'):'';
@@ -745,6 +786,7 @@ app.get('/catalogo',authMembro,async(req,res)=>{
             ${o.imagem_preview?`<img src="${esc(o.imagem_preview)}" style="width:100%;height:100%;object-fit:cover;" loading="lazy">`:`<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:11px;letter-spacing:.15em;">SEM IMAGEM</div>`}
           </div>
           <div style="padding:16px;background:var(--surface);border:1px solid var(--border);border-top:none;border-radius:0 0 4px 4px;">
+            <div style="font-size:10px;font-family:monospace;color:var(--muted);margin-bottom:6px;">${esc(o.codigo)||''}</div>
             <div style="font-size:10px;letter-spacing:.25em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;">${esc(o.colecao)||'—'}</div>
             <div style="font-family:'Cormorant Garamond',serif;font-size:18px;margin-bottom:8px;">${esc(o.nome)||'Sem título'}</div>
             <div style="font-size:11px;color:var(--muted);">${esc(o.paleta)||''}</div>
@@ -817,10 +859,10 @@ app.get('/catalogo',authMembro,async(req,res)=>{
           const nome=card.querySelector('[style*="Cormorant"]').textContent;
           const colecao=card.querySelector('[style*="text-transform"]').textContent;
           let html='';
-          if(img) html+=\`<img src="\${img.src}" style="width:100%;aspect-ratio:1/1;object-fit:cover;margin-bottom:24px;border-radius:4px;">\`;
+          if(img) html+=\`<img src="\${img.src}" style="max-width:100%;max-height:520px;display:block;margin:0 auto 24px;border-radius:4px;">\`;
           html+=\`<div style="font-size:10px;letter-spacing:.25em;text-transform:uppercase;color:var(--muted);margin-bottom:6px;">\${colecao}</div>\`;
           html+=\`<h2 style="font-family:'Cormorant Garamond',serif;font-size:28px;font-weight:400;margin-bottom:24px;">\${nome}</h2>\`;
-          html+=\`<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 32px;">\${src.innerHTML}</div>\`;
+          html+=\`<div>\${src.innerHTML}</div>\`;
           document.getElementById('modal-body').innerHTML=html;
           document.getElementById('modal').style.display='block';
           document.body.style.overflow='hidden';
@@ -864,7 +906,7 @@ app.get('/obra/:obraId/link',authMembro,async(req,res)=>{
     <h2 style="font-size:26px;margin-bottom:4px;">Indicar "${esc(o.nome)}"</h2>
     <p style="color:var(--muted);margin-bottom:28px;">Envie este link para quem você acha que pertence a essa obra. Todo interesse recebido aparece em Minhas Indicações, com o seu nome.</p>
     <div class="card">
-      ${o.imagem_preview?`<img src="${esc(o.imagem_preview)}" style="width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:4px;margin-bottom:20px;">`:''}
+      ${o.imagem_preview?`<img src="${esc(o.imagem_preview)}" style="max-width:100%;max-height:400px;display:block;margin:0 auto 20px;border-radius:4px;">`:''}
       <div style="font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);margin-bottom:12px;">Seu link de indicação</div>
       <div style="background:#0d0d0d;border:1px solid var(--border);border-radius:3px;padding:14px;font-size:13px;word-break:break-all;margin-bottom:16px;">${esc(url)}</div>
       <button onclick="navigator.clipboard.writeText('${esc(url)}');this.textContent='Copiado ✓'" class="btn btn-primary">Copiar link</button>
@@ -918,7 +960,7 @@ app.get('/indicar/:codigo',async(req,res)=>{
   <body><div class="container" style="max-width:640px;padding-top:48px;">
     <div class="logo" style="margin-bottom:6px;">ALMARE</div>
     <div style="font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--gold);margin-bottom:40px;">Uma indicação de ${esc(o.membro_nome)}</div>
-    ${o.imagem_preview?`<img src="${esc(o.imagem_preview)}" style="width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:4px;margin-bottom:28px;">`:''}
+    ${o.imagem_preview?`<img src="${esc(o.imagem_preview)}" style="max-width:100%;max-height:480px;display:block;margin:0 auto 28px;border-radius:4px;">`:''}
     <div style="font-size:10px;letter-spacing:.25em;text-transform:uppercase;color:var(--muted);margin-bottom:8px;">${esc(o.colecao)||''}</div>
     <h1 style="font-size:32px;margin-bottom:20px;">${esc(o.nome)}</h1>
     ${o.essencia?`<p style="font-style:italic;color:var(--gold-light);margin-bottom:20px;">${esc(o.essencia)}</p>`:''}
