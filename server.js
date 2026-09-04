@@ -225,6 +225,19 @@ const CSS = `
     .obra-lado-a-lado{display:block;}
     .obra-lado-img{max-width:100%;margin-bottom:24px;}
   }
+  .moldura-wrap{max-width:480px;margin:0 auto;}
+  .moldura{padding:20px;border-radius:2px;box-shadow:0 14px 40px rgba(0,0,0,.5);}
+  .moldura-preta{background:linear-gradient(150deg,#3d3d3d,#0a0a0a 65%,#1c1c1c);}
+  .moldura-carvalho{background:repeating-linear-gradient(98deg,#8a5a34,#8a5a34 4px,#7a4c29 4px,#7a4c29 7px),linear-gradient(150deg,#a06f42,#5c3a1e);background-blend-mode:overlay;}
+  .moldura-aco{background:repeating-linear-gradient(112deg,#dcdcdc,#dcdcdc 3px,#b4b4b4 3px,#b4b4b4 5px),linear-gradient(150deg,#e6e6e6,#9a9a9a);background-blend-mode:overlay;}
+  .moldura-vao{background:#000;padding:7px;}
+  .moldura-vao img{display:block;width:100%;height:auto;}
+  .moldura-swatches{display:flex;gap:10px;align-items:center;margin:16px 0 0;justify-content:center;}
+  .moldura-swatch{width:26px;height:26px;border-radius:50%;cursor:pointer;border:2px solid transparent;box-shadow:0 0 0 1px var(--border);}
+  .moldura-swatch.ativo{border-color:var(--gold);}
+  .moldura-swatch-preta{background:linear-gradient(150deg,#3d3d3d,#0a0a0a);}
+  .moldura-swatch-carvalho{background:linear-gradient(150deg,#a06f42,#5c3a1e);}
+  .moldura-swatch-aco{background:linear-gradient(150deg,#e6e6e6,#9a9a9a);}
 `;
 
 function html(titulo, corpo, nav=false, membro=null) {
@@ -858,6 +871,27 @@ app.get('/catalogo',authMembro,async(req,res)=>{
           document.getElementById('sem-resultado').style.display=visiveis===0?'block':'none';
         }
 
+        function moldurarImg(src){
+          return \`<div class="moldura-wrap">
+            <div class="moldura moldura-preta">
+              <div class="moldura-vao"><img src="\${src}"></div>
+            </div>
+            <div class="moldura-swatches">
+              <span class="moldura-swatch moldura-swatch-preta ativo" onclick="trocarMoldura(this,'preta')" title="Preta"></span>
+              <span class="moldura-swatch moldura-swatch-carvalho" onclick="trocarMoldura(this,'carvalho')" title="Carvalho"></span>
+              <span class="moldura-swatch moldura-swatch-aco" onclick="trocarMoldura(this,'aco')" title="Aço escovado"></span>
+            </div>
+          </div>\`;
+        }
+        function trocarMoldura(el,cor){
+          const wrap=el.closest('.moldura-wrap');
+          const moldura=wrap.querySelector('.moldura');
+          moldura.classList.remove('moldura-preta','moldura-carvalho','moldura-aco');
+          moldura.classList.add('moldura-'+cor);
+          wrap.querySelectorAll('.moldura-swatch').forEach(s=>s.classList.remove('ativo'));
+          el.classList.add('ativo');
+        }
+
         function abrirObra(id){
           const src=document.getElementById('detalhe-'+id);
           if(!src)return;
@@ -868,7 +902,7 @@ app.get('/catalogo',authMembro,async(req,res)=>{
           const orientacao=(card.dataset.orientacao||'').toLowerCase();
           const ladoALado=orientacao!=='horizontal'; // vertical, quadrado ou sem info: imagem à esquerda
 
-          const imgHtml=img?\`<img src="\${img.src}" style="max-width:100%;\${ladoALado?'max-height:560px;':'max-height:480px;display:block;margin:0 auto 24px;'}border-radius:4px;">\`:'';
+          const imgHtml=img?moldurarImg(img.src):'';
           const textoHtml=\`<div style="font-size:10px;letter-spacing:.25em;text-transform:uppercase;color:var(--muted);margin-bottom:6px;">\${colecao}</div>
             <h2 style="font-family:'Cormorant Garamond',serif;font-size:28px;font-weight:400;margin-bottom:24px;">\${nome}</h2>
             <div>\${src.innerHTML}</div>\`;
@@ -975,7 +1009,16 @@ app.get('/indicar/:codigo',async(req,res)=>{
   const o=r.rows[0];
   const ladoALado=(o.orientacao||'').toLowerCase()!=='horizontal';
 
-  const imgHtml=o.imagem_preview?`<img src="${esc(o.imagem_preview)}" style="max-width:100%;${ladoALado?'max-height:70vh;':'max-height:480px;display:block;margin:0 auto 28px;'}border-radius:4px;">`:'';
+  const imgHtml=o.imagem_preview?`<div class="moldura-wrap">
+      <div class="moldura moldura-preta">
+        <div class="moldura-vao"><img src="${esc(o.imagem_preview)}"></div>
+      </div>
+      <div class="moldura-swatches">
+        <span class="moldura-swatch moldura-swatch-preta ativo" onclick="trocarMoldura(this,'preta')" title="Preta"></span>
+        <span class="moldura-swatch moldura-swatch-carvalho" onclick="trocarMoldura(this,'carvalho')" title="Carvalho"></span>
+        <span class="moldura-swatch moldura-swatch-aco" onclick="trocarMoldura(this,'aco')" title="Aço escovado"></span>
+      </div>
+    </div>`:'';
   const textoHtml=`
     <div style="font-size:10px;letter-spacing:.25em;text-transform:uppercase;color:var(--muted);margin-bottom:8px;">${esc(o.colecao)||''}</div>
     <h1 style="font-size:32px;margin-bottom:20px;">${esc(o.nome)}</h1>
@@ -1005,6 +1048,16 @@ app.get('/indicar/:codigo',async(req,res)=>{
         <button type="submit" class="btn btn-primary btn-full">Enviar interesse</button>
       </form>
     </div>
+    <script>
+      function trocarMoldura(el,cor){
+        const wrap=el.closest('.moldura-wrap');
+        const moldura=wrap.querySelector('.moldura');
+        moldura.classList.remove('moldura-preta','moldura-carvalho','moldura-aco');
+        moldura.classList.add('moldura-'+cor);
+        wrap.querySelectorAll('.moldura-swatch').forEach(s=>s.classList.remove('ativo'));
+        el.classList.add('ativo');
+      }
+    </script>
   </div></body></html>`);
 });
 
