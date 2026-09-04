@@ -711,7 +711,7 @@ app.get('/catalogo',authMembro,async(req,res)=>{
     const navIndicacoes=podeIndicar?'<a href="/minhas-indicacoes" class="nav-link">Indicações</a>':'';
 
     const obras=await pool.query(`
-      SELECT o.id, o.nome, o.tiragem_sugerida as tiragem_maxima, o.colecao,
+      SELECT o.id, o.nome, o.colecao,
              o.conceito, o.essencia, o.sensacao_provocada, o.o_que_permanece,
              o.ambientes_compativeis, o.texto_curatorial, o.paleta, o.paleta_detalhe,
              o.perfil_de_cliente, o.nivel_de_destaque, o.personalidade_da_obra,
@@ -741,7 +741,7 @@ app.get('/catalogo',authMembro,async(req,res)=>{
 
       return `<div class="obra-card" data-colecao="${esc(colecaoAttr)}" data-paleta="${esc(palataAttr)}" data-nome="${esc((o.nome||'').toLowerCase())}">
         <div onclick="abrirObra(${o.id})" style="cursor:pointer;">
-          <div style="position:relative;background:#0d0d0d;border-radius:4px 4px 0 0;overflow:hidden;aspect-ratio:4/3;">
+          <div style="position:relative;background:#0d0d0d;border-radius:4px 4px 0 0;overflow:hidden;aspect-ratio:1/1;">
             ${o.imagem_preview?`<img src="${esc(o.imagem_preview)}" style="width:100%;height:100%;object-fit:cover;" loading="lazy">`:`<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:11px;letter-spacing:.15em;">SEM IMAGEM</div>`}
           </div>
           <div style="padding:16px;background:var(--surface);border:1px solid var(--border);border-top:none;border-radius:0 0 4px 4px;">
@@ -752,7 +752,7 @@ app.get('/catalogo',authMembro,async(req,res)=>{
         </div>
         ${indicarBtn}
         <!-- DETALHE (oculto, abre no modal) -->
-        <div id="detalhe-${o.id}" style="display:none">${detalhe}<div style="margin-top:16px;"><strong style="font-size:10px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);">Tiragem</strong><div style="font-family:'Cormorant Garamond',serif;font-size:18px;color:var(--gold);margin-top:4px;">${o.tiragem_maxima||'—'}</div></div></div>
+        <div id="detalhe-${o.id}" style="display:none">${detalhe}</div>
       </div>`;
     }).join('');
 
@@ -817,7 +817,7 @@ app.get('/catalogo',authMembro,async(req,res)=>{
           const nome=card.querySelector('[style*="Cormorant"]').textContent;
           const colecao=card.querySelector('[style*="text-transform"]').textContent;
           let html='';
-          if(img) html+=\`<img src="\${img.src}" style="width:100%;max-height:400px;object-fit:cover;margin-bottom:24px;">\`;
+          if(img) html+=\`<img src="\${img.src}" style="width:100%;aspect-ratio:1/1;object-fit:cover;margin-bottom:24px;border-radius:4px;">\`;
           html+=\`<div style="font-size:10px;letter-spacing:.25em;text-transform:uppercase;color:var(--muted);margin-bottom:6px;">\${colecao}</div>\`;
           html+=\`<h2 style="font-family:'Cormorant Garamond',serif;font-size:28px;font-weight:400;margin-bottom:24px;">\${nome}</h2>\`;
           html+=\`<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 32px;">\${src.innerHTML}</div>\`;
@@ -864,7 +864,7 @@ app.get('/obra/:obraId/link',authMembro,async(req,res)=>{
     <h2 style="font-size:26px;margin-bottom:4px;">Indicar "${esc(o.nome)}"</h2>
     <p style="color:var(--muted);margin-bottom:28px;">Envie este link para quem você acha que pertence a essa obra. Todo interesse recebido aparece em Minhas Indicações, com o seu nome.</p>
     <div class="card">
-      ${o.imagem_preview?`<img src="${esc(o.imagem_preview)}" style="width:100%;max-height:280px;object-fit:cover;border-radius:4px;margin-bottom:20px;">`:''}
+      ${o.imagem_preview?`<img src="${esc(o.imagem_preview)}" style="width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:4px;margin-bottom:20px;">`:''}
       <div style="font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);margin-bottom:12px;">Seu link de indicação</div>
       <div style="background:#0d0d0d;border:1px solid var(--border);border-radius:3px;padding:14px;font-size:13px;word-break:break-all;margin-bottom:16px;">${esc(url)}</div>
       <button onclick="navigator.clipboard.writeText('${esc(url)}');this.textContent='Copiado ✓'" class="btn btn-primary">Copiar link</button>
@@ -918,7 +918,7 @@ app.get('/indicar/:codigo',async(req,res)=>{
   <body><div class="container" style="max-width:640px;padding-top:48px;">
     <div class="logo" style="margin-bottom:6px;">ALMARE</div>
     <div style="font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--gold);margin-bottom:40px;">Uma indicação de ${esc(o.membro_nome)}</div>
-    ${o.imagem_preview?`<img src="${esc(o.imagem_preview)}" style="width:100%;max-height:420px;object-fit:cover;border-radius:4px;margin-bottom:28px;">`:''}
+    ${o.imagem_preview?`<img src="${esc(o.imagem_preview)}" style="width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:4px;margin-bottom:28px;">`:''}
     <div style="font-size:10px;letter-spacing:.25em;text-transform:uppercase;color:var(--muted);margin-bottom:8px;">${esc(o.colecao)||''}</div>
     <h1 style="font-size:32px;margin-bottom:20px;">${esc(o.nome)}</h1>
     ${o.essencia?`<p style="font-style:italic;color:var(--gold-light);margin-bottom:20px;">${esc(o.essencia)}</p>`:''}
