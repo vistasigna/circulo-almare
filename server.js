@@ -638,7 +638,7 @@ app.get('/catalogo',authMembro,async(req,res)=>{
              o.observacoes_producao, o.descricao_comercial, o.direcao_artistica,
              o.imagem_preview
       FROM almare_obras o
-      WHERE o.status_curatorial='aprovada'
+      WHERE o.status='aprovada'
       ORDER BY o.id DESC`);
 
     function campo(label, valor) {
