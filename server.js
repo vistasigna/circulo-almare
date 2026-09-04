@@ -218,6 +218,13 @@ const CSS = `
   .spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--border);border-top-color:var(--gold);border-radius:50%;animation:spin .6s linear infinite;vertical-align:middle;margin-right:6px}
   @keyframes spin{to{transform:rotate(360deg)}}
   @media(max-width:600px){.grid-2,.grid-3{grid-template-columns:1fr}.steps{flex-direction:column}}
+  .obra-lado-a-lado{display:flex;gap:28px;align-items:flex-start;}
+  .obra-lado-img{flex:1 1 300px;max-width:360px;min-width:0;}
+  .obra-lado-texto{flex:1 1 320px;min-width:0;}
+  @media(max-width:680px){
+    .obra-lado-a-lado{display:block;}
+    .obra-lado-img{max-width:100%;margin-bottom:24px;}
+  }
 `;
 
 function html(titulo, corpo, nav=false, membro=null) {
@@ -725,7 +732,7 @@ app.get('/catalogo',authMembro,async(req,res)=>{
     const navIndicacoes=podeIndicar?'<a href="/minhas-indicacoes" class="nav-link">Indicações</a>':'';
 
     const obras=await pool.query(`
-      SELECT o.id, o.codigo, o.nome, o.colecao, o.tags,
+      SELECT o.id, o.codigo, o.nome, o.colecao, o.tags, o.orientacao,
              o.conceito, o.essencia, o.sensacao_provocada, o.o_que_permanece,
              o.ambientes_compativeis, o.texto_curatorial, o.paleta, o.paleta_detalhe,
              o.perfil_de_cliente, o.nivel_de_destaque, o.personalidade_da_obra,
@@ -780,7 +787,7 @@ app.get('/catalogo',authMembro,async(req,res)=>{
       const colecaoAttr=o.colecao?o.colecao.toLowerCase().replace(/\s+/g,'-'):'';
       const indicarBtn=podeIndicar?`<a href="/obra/${o.id}/link" onclick="event.stopPropagation()" class="btn btn-outline" style="padding:6px 12px;font-size:10px;margin-top:10px;display:inline-block;">Indicar esta obra</a>`:'';
 
-      return `<div class="obra-card" data-colecao="${esc(colecaoAttr)}" data-paleta="${esc(palataAttr)}" data-nome="${esc((o.nome||'').toLowerCase())}">
+      return `<div class="obra-card" data-colecao="${esc(colecaoAttr)}" data-paleta="${esc(palataAttr)}" data-nome="${esc((o.nome||'').toLowerCase())}" data-orientacao="${esc((o.orientacao||'').toLowerCase())}">
         <div onclick="abrirObra(${o.id})" style="cursor:pointer;">
           <div style="position:relative;background:#0d0d0d;border-radius:4px 4px 0 0;overflow:hidden;aspect-ratio:1/1;">
             ${o.imagem_preview?`<img src="${esc(o.imagem_preview)}" style="width:100%;height:100%;object-fit:cover;" loading="lazy">`:`<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:11px;letter-spacing:.15em;">SEM IMAGEM</div>`}
@@ -824,7 +831,7 @@ app.get('/catalogo',authMembro,async(req,res)=>{
 
       <!-- MODAL DE DETALHE -->
       <div id="modal" onclick="fecharModal(event)" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:1000;overflow-y:auto;padding:40px 20px;">
-        <div id="modal-conteudo" onclick="event.stopPropagation()" style="max-width:720px;margin:0 auto;background:#111;border:1px solid #222;border-radius:4px;overflow:hidden;">
+        <div id="modal-conteudo" onclick="event.stopPropagation()" style="max-width:880px;margin:0 auto;background:#111;border:1px solid #222;border-radius:4px;overflow:hidden;">
           <div style="display:flex;justify-content:flex-end;padding:12px 16px;border-bottom:1px solid #222;">
             <button onclick="fecharModal()" style="background:none;border:none;color:var(--muted);font-size:20px;cursor:pointer;">✕</button>
           </div>
@@ -858,11 +865,23 @@ app.get('/catalogo',authMembro,async(req,res)=>{
           const img=card.querySelector('img');
           const nome=card.querySelector('[style*="Cormorant"]').textContent;
           const colecao=card.querySelector('[style*="text-transform"]').textContent;
+          const orientacao=(card.dataset.orientacao||'').toLowerCase();
+          const ladoALado=orientacao!=='horizontal'; // vertical, quadrado ou sem info: imagem à esquerda
+
+          const imgHtml=img?\`<img src="\${img.src}" style="max-width:100%;\${ladoALado?'max-height:560px;':'max-height:480px;display:block;margin:0 auto 24px;'}border-radius:4px;">\`:'';
+          const textoHtml=\`<div style="font-size:10px;letter-spacing:.25em;text-transform:uppercase;color:var(--muted);margin-bottom:6px;">\${colecao}</div>
+            <h2 style="font-family:'Cormorant Garamond',serif;font-size:28px;font-weight:400;margin-bottom:24px;">\${nome}</h2>
+            <div>\${src.innerHTML}</div>\`;
+
           let html='';
-          if(img) html+=\`<img src="\${img.src}" style="max-width:100%;max-height:520px;display:block;margin:0 auto 24px;border-radius:4px;">\`;
-          html+=\`<div style="font-size:10px;letter-spacing:.25em;text-transform:uppercase;color:var(--muted);margin-bottom:6px;">\${colecao}</div>\`;
-          html+=\`<h2 style="font-family:'Cormorant Garamond',serif;font-size:28px;font-weight:400;margin-bottom:24px;">\${nome}</h2>\`;
-          html+=\`<div>\${src.innerHTML}</div>\`;
+          if(ladoALado){
+            html=\`<div class="obra-lado-a-lado">
+              <div class="obra-lado-img">\${imgHtml}</div>
+              <div class="obra-lado-texto">\${textoHtml}</div>
+            </div>\`;
+          }else{
+            html=imgHtml+textoHtml;
+          }
           document.getElementById('modal-body').innerHTML=html;
           document.getElementById('modal').style.display='block';
           document.body.style.overflow='hidden';
@@ -947,25 +966,36 @@ app.get('/minhas-indicacoes',authMembro,async(req,res)=>{
 // Página PÚBLICA de indicação — quem recebe o link não precisa de conta no Círculo
 app.get('/indicar/:codigo',async(req,res)=>{
   const r=await pool.query(`
-    SELECT ol.id as link_id, o.nome, o.colecao, o.essencia, o.texto_curatorial, o.o_que_permanece, o.imagem_preview, m.nome as membro_nome
+    SELECT ol.id as link_id, o.nome, o.colecao, o.essencia, o.texto_curatorial, o.o_que_permanece, o.imagem_preview, o.orientacao, m.nome as membro_nome
     FROM circulo_obra_links ol
     JOIN almare_obras o ON o.id=ol.obra_id
     JOIN circulo_membros m ON m.id=ol.membro_id
     WHERE ol.codigo=$1`,[req.params.codigo]);
   if(!r.rows.length) return res.status(404).send(html('Indicação',`<div class="msg-erro">Este link não existe mais.</div>`));
   const o=r.rows[0];
+  const ladoALado=(o.orientacao||'').toLowerCase()!=='horizontal';
 
-  res.send(`<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>${esc(o.nome)} — ALMARE</title><style>${CSS}</style></head>
-  <body><div class="container" style="max-width:640px;padding-top:48px;">
-    <div class="logo" style="margin-bottom:6px;">ALMARE</div>
-    <div style="font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--gold);margin-bottom:40px;">Uma indicação de ${esc(o.membro_nome)}</div>
-    ${o.imagem_preview?`<img src="${esc(o.imagem_preview)}" style="max-width:100%;max-height:480px;display:block;margin:0 auto 28px;border-radius:4px;">`:''}
+  const imgHtml=o.imagem_preview?`<img src="${esc(o.imagem_preview)}" style="max-width:100%;${ladoALado?'max-height:70vh;':'max-height:480px;display:block;margin:0 auto 28px;'}border-radius:4px;">`:'';
+  const textoHtml=`
     <div style="font-size:10px;letter-spacing:.25em;text-transform:uppercase;color:var(--muted);margin-bottom:8px;">${esc(o.colecao)||''}</div>
     <h1 style="font-size:32px;margin-bottom:20px;">${esc(o.nome)}</h1>
     ${o.essencia?`<p style="font-style:italic;color:var(--gold-light);margin-bottom:20px;">${esc(o.essencia)}</p>`:''}
     ${o.texto_curatorial?`<p style="line-height:1.9;color:#ccc;margin-bottom:16px;">${esc(o.texto_curatorial)}</p>`:''}
-    ${o.o_que_permanece?`<p style="font-style:italic;color:var(--muted);margin-bottom:40px;">${esc(o.o_que_permanece)}</p>`:''}
+    ${o.o_que_permanece?`<p style="font-style:italic;color:var(--muted);margin-bottom:${ladoALado?'0':'40px'};">${esc(o.o_que_permanece)}</p>`:''}
+  `;
+  const corpoObra=ladoALado
+    ? `<div class="obra-lado-a-lado" style="margin-bottom:40px;">
+        <div class="obra-lado-img">${imgHtml}</div>
+        <div class="obra-lado-texto">${textoHtml}</div>
+      </div>`
+    : `${imgHtml}<div style="margin-bottom:40px;">${textoHtml}</div>`;
+
+  res.send(`<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>${esc(o.nome)} — ALMARE</title><style>${CSS}</style></head>
+  <body><div class="container" style="max-width:${ladoALado?'820px':'640px'};padding-top:48px;">
+    <div class="logo" style="margin-bottom:6px;">ALMARE</div>
+    <div style="font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--gold);margin-bottom:40px;">Uma indicação de ${esc(o.membro_nome)}</div>
+    ${corpoObra}
     <div class="card">
       <h3 style="font-size:18px;margin-bottom:16px;">Tenho interesse nesta obra</h3>
       <form method="POST" action="/indicar/${esc(req.params.codigo)}">
