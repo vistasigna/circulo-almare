@@ -226,18 +226,18 @@ const CSS = `
     .obra-lado-img{max-width:100%;margin-bottom:24px;}
   }
   .moldura-wrap{max-width:480px;margin:0 auto;}
-  .moldura{padding:6px;border-radius:1px;box-shadow:0 14px 40px rgba(0,0,0,.5),inset 0 0 0 1px rgba(255,255,255,.05);}
+  .moldura{padding:5px;border-radius:1px;box-shadow:0 14px 40px rgba(0,0,0,.5),inset 0 0 0 1px rgba(255,255,255,.05);}
   .moldura-preta{background:linear-gradient(160deg,#2e2e2e,#050505 60%,#161616);}
-  .moldura-carvalho{background:linear-gradient(160deg,#8a5a34,#4a2f18 55%,#6b4425);}
-  .moldura-aco{background:linear-gradient(160deg,#e8e8e8,#a8a8a8 55%,#d4d4d4);}
+  .moldura-carvalho{background:linear-gradient(135deg,#9c6b3f,#5a3a20);}
+  .moldura-aco{background:linear-gradient(135deg,#d6d6d6,#9a9a9a);}
   .moldura-vao{background:#000;padding:5px;}
   .moldura-vao img{display:block;width:100%;height:auto;}
   .moldura-swatches{display:flex;gap:10px;align-items:center;margin:16px 0 0;justify-content:center;}
   .moldura-swatch{width:26px;height:26px;border-radius:50%;cursor:pointer;border:2px solid transparent;box-shadow:0 0 0 1px var(--border);}
   .moldura-swatch.ativo{border-color:var(--gold);}
   .moldura-swatch-preta{background:linear-gradient(160deg,#2e2e2e,#050505);}
-  .moldura-swatch-carvalho{background:linear-gradient(160deg,#8a5a34,#4a2f18);}
-  .moldura-swatch-aco{background:linear-gradient(160deg,#e8e8e8,#a8a8a8);}
+  .moldura-swatch-carvalho{background:linear-gradient(135deg,#9c6b3f,#5a3a20);}
+  .moldura-swatch-aco{background:linear-gradient(135deg,#d6d6d6,#9a9a9a);}
 `;
 
 function html(titulo, corpo, nav=false, membro=null) {
