@@ -226,7 +226,7 @@ const CSS = `
     .obra-lado-img{max-width:100%;margin-bottom:24px;}
   }
   .moldura-wrap{max-width:480px;margin:0 auto;}
-  .moldura{padding:7px;border-radius:1px;box-shadow:0 14px 40px rgba(0,0,0,.5),inset 0 0 0 1px rgba(255,255,255,.05);}
+  .moldura{padding:6px;border-radius:1px;box-shadow:0 14px 40px rgba(0,0,0,.5),inset 0 0 0 1px rgba(255,255,255,.05);}
   .moldura-preta{background:linear-gradient(160deg,#2e2e2e,#050505 60%,#161616);}
   .moldura-carvalho{background:linear-gradient(160deg,#8a5a34,#4a2f18 55%,#6b4425);}
   .moldura-aco{background:linear-gradient(160deg,#e8e8e8,#a8a8a8 55%,#d4d4d4);}
