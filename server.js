@@ -58,6 +58,9 @@ async function garantirTabelas() {
       criado_em TIMESTAMP DEFAULT NOW()
     );
   `);
+  // Carência de 10 dias antes do crédito/cashback ficar disponível — dá tempo pra venda ser
+  // confirmada de vez (sem devolução/cancelamento) antes de liberar pro membro.
+  await pool.query(`ALTER TABLE circulo_transacoes ADD COLUMN IF NOT EXISTS disponivel_em TIMESTAMP;`).catch(()=>{});
 }
 
 function authMembro(req, res, next) {
@@ -1081,12 +1084,53 @@ app.post('/indicar/:codigo',async(req,res)=>{
 // ─── IMPACTO ──────────────────────────────────────────────────────────────────
 app.get('/meu-impacto',authMembro,async(req,res)=>{
   try{
-    const trans=await pool.query('SELECT * FROM circulo_transacoes WHERE membro_id=$1 ORDER BY criado_em DESC',[req.membro.id]);
-    const saldo=await pool.query('SELECT * FROM circulo_saldo_credito WHERE membro_id=$1',[req.membro.id]);
-    const s=saldo.rows[0]||{saldo_disponivel:0,saldo_total:0};
-    const linhas=trans.rows.map(t=>`<tr><td>Obra #${t.obra_id}</td><td>R$ ${parseFloat(t.valor_obra).toFixed(2).replace('.',',')}</td><td><span class="badge ${t.modalidade==='credito'?'badge-gold':'badge-muted'}">${t.modalidade==='credito'?'Crédito':'Cashback'}</span></td><td style="color:var(--gold)">R$ ${parseFloat(t.valor_beneficio).toFixed(2).replace('.',',')}</td><td><span class="badge ${t.status==='pago'?'badge-success':'badge-pending'}">${esc(t.status)}</span></td></tr>`).join('');
-    res.send(html('Impacto',`<div class="nav-bar"><a href="/portal" class="nav-link">Passaporte</a><a href="/catalogo" class="nav-link">Obras</a><a href="/meu-impacto" class="nav-link ativo">Impacto</a><a href="/minhas-indicacoes" class="nav-link">Indicações</a><a href="/sugestoes" class="nav-link">Voz</a><a href="/minhas-funcoes" class="nav-link">Funções</a><a href="/meu-convite" class="nav-link">Convidar</a></div><div class="grid-2" style="margin-bottom:32px;"><div class="stat-box"><div class="num">R$ ${parseFloat(s.saldo_disponivel).toFixed(2).replace('.',',')}</div><div class="lbl">Crédito disponível</div></div><div class="stat-box"><div class="num">R$ ${parseFloat(s.saldo_total).toFixed(2).replace('.',',')}</div><div class="lbl">Total histórico</div></div></div><div class="card"><h3 style="font-size:18px;margin-bottom:20px;">Histórico</h3>${trans.rows.length?`<table><thead><tr><th>Obra</th><th>Valor</th><th>Modalidade</th><th>Benefício</th><th>Status</th></tr></thead><tbody>${linhas}</tbody></table>`:'<p style="color:var(--muted)">Nenhuma venda ainda.</p>'}</div>`,true,{nome:req.membro.nome}));
+    const trans=await pool.query(`
+      SELECT t.*, o.nome as obra_nome
+      FROM circulo_transacoes t
+      LEFT JOIN almare_obras o ON o.id=t.obra_id
+      WHERE t.membro_id=$1 ORDER BY t.criado_em DESC`,[req.membro.id]);
+
+    const agora=Date.now();
+    const disponivel=(t)=>t.disponivel_em && new Date(t.disponivel_em).getTime()<=agora;
+    const dinheiroDisponivel=trans.rows.filter(t=>t.modalidade==='cashback'&&disponivel(t)).reduce((a,t)=>a+parseFloat(t.valor_beneficio),0);
+    const creditoDisponivel=trans.rows.filter(t=>t.modalidade==='credito'&&disponivel(t)).reduce((a,t)=>a+parseFloat(t.valor_beneficio),0);
+    const emCarencia=trans.rows.filter(t=>!disponivel(t));
+    const emCarenciaTotal=emCarencia.reduce((a,t)=>a+parseFloat(t.valor_beneficio),0);
+    const proximaLiberacao=emCarencia.length?emCarencia.map(t=>new Date(t.disponivel_em)).sort((a,b)=>a-b)[0]:null;
+
+    const linhas=trans.rows.map(t=>{
+      const disp=disponivel(t);
+      const statusHtml=disp
+        ?`<span class="badge badge-success">Disponível</span>`
+        :`<span class="badge badge-pending">Libera ${t.disponivel_em?new Date(t.disponivel_em).toLocaleDateString('pt-BR'):'em breve'}</span>`;
+      const converterBtn=(disp&&t.modalidade==='cashback')
+        ?`<form method="POST" action="/meu-impacto/${t.id}/converter-credito" onsubmit="return confirm('Converter esse valor em crédito? Depois de convertido não dá pra voltar pra dinheiro.')"><button class="btn btn-outline" style="padding:5px 10px;font-size:10px;">Converter em crédito</button></form>`
+        :'';
+      return `<tr><td>${esc(t.obra_nome)||'Obra #'+t.obra_id}</td><td>R$ ${parseFloat(t.valor_obra).toFixed(2).replace('.',',')}</td><td><span class="badge ${t.modalidade==='credito'?'badge-gold':'badge-muted'}">${t.modalidade==='credito'?'Crédito':'Cashback'}</span></td><td style="color:var(--gold)">R$ ${parseFloat(t.valor_beneficio).toFixed(2).replace('.',',')}</td><td>${statusHtml}</td><td>${converterBtn}</td></tr>`;
+    }).join('');
+
+    res.send(html('Impacto',`<div class="nav-bar"><a href="/portal" class="nav-link">Passaporte</a><a href="/catalogo" class="nav-link">Obras</a><a href="/meu-impacto" class="nav-link ativo">Impacto</a><a href="/minhas-indicacoes" class="nav-link">Indicações</a><a href="/sugestoes" class="nav-link">Voz</a><a href="/minhas-funcoes" class="nav-link">Funções</a><a href="/meu-convite" class="nav-link">Convidar</a></div>
+    <div class="grid-3" style="margin-bottom:16px;">
+      <div class="stat-box"><div class="num">R$ ${dinheiroDisponivel.toFixed(2).replace('.',',')}</div><div class="lbl">Cashback disponível</div></div>
+      <div class="stat-box"><div class="num">R$ ${creditoDisponivel.toFixed(2).replace('.',',')}</div><div class="lbl">Crédito disponível</div></div>
+      <div class="stat-box"><div class="num">R$ ${emCarenciaTotal.toFixed(2).replace('.',',')}</div><div class="lbl">Aguardando liberação</div></div>
+    </div>
+    ${proximaLiberacao?`<p style="color:var(--muted);font-size:12px;margin-bottom:24px;">Toda venda fica 10 dias em carência antes de liberar, pra cobrir o prazo de troca ou cancelamento. Próxima liberação: ${proximaLiberacao.toLocaleDateString('pt-BR')}.</p>`:'<div style="margin-bottom:24px;"></div>'}
+    <div class="card"><h3 style="font-size:18px;margin-bottom:20px;">Histórico</h3>${trans.rows.length?`<table><thead><tr><th>Obra</th><th>Valor</th><th>Modalidade</th><th>Benefício</th><th>Status</th><th></th></tr></thead><tbody>${linhas}</tbody></table>`:'<p style="color:var(--muted)">Nenhuma venda ainda.</p>'}</div>`,true,{nome:req.membro.nome}));
   }catch(e){res.send(html('Impacto',`<div class="msg-erro">${esc(e.message)}</div>`,true,req.membro));}
+});
+
+// Converte cashback (dinheiro) já disponível em crédito — mesmo valor, sem volta.
+app.post('/meu-impacto/:id/converter-credito',authMembro,async(req,res)=>{
+  const t=await pool.query(`SELECT * FROM circulo_transacoes WHERE id=$1 AND membro_id=$2`,[req.params.id,req.membro.id]);
+  if(t.rows.length){
+    const tr=t.rows[0];
+    const jaDisponivel=tr.disponivel_em && new Date(tr.disponivel_em).getTime()<=Date.now();
+    if(jaDisponivel && tr.modalidade==='cashback'){
+      await pool.query(`UPDATE circulo_transacoes SET modalidade='credito' WHERE id=$1`,[req.params.id]);
+    }
+  }
+  res.redirect('/meu-impacto');
 });
 
 // ─── VOZ ──────────────────────────────────────────────────────────────────────
@@ -1255,12 +1299,12 @@ app.post('/admin/indicacoes/:id/atualizar',authAdmin,async(req,res)=>{
       const mod=modalidade==='credito'?'credito':'cashback';
       const beneficio=mod==='credito'?valorObra*0.20:valorObra*0.10;
       await pool.query(
-        `INSERT INTO circulo_transacoes (membro_id,obra_id,valor_obra,modalidade,valor_beneficio,status,criado_em) VALUES ($1,$2,$3,$4,$5,'pendente',NOW())`,
+        `INSERT INTO circulo_transacoes (membro_id,obra_id,valor_obra,modalidade,valor_beneficio,status,criado_em,disponivel_em) VALUES ($1,$2,$3,$4,$5,'pendente',NOW(),NOW() + INTERVAL '10 days')`,
         [membro_id,obra_id,valorObra,mod,beneficio]
       );
       await pool.query(
         `INSERT INTO circulo_passaporte_eventos (membro_id,tipo,descricao) VALUES ($1,'venda_indicacao',$2)`,
-        [membro_id, `Sua indicação de "${obra_nome}" virou venda — ${mod==='credito'?'crédito':'cashback'} gerado`]
+        [membro_id, `Sua indicação de "${obra_nome}" virou venda — ${mod==='credito'?'crédito':'cashback'} contabilizado, libera em 10 dias`]
       );
     }
   }
