@@ -61,6 +61,45 @@ async function garantirTabelas() {
   // Carência de 10 dias antes do crédito/cashback ficar disponível — dá tempo pra venda ser
   // confirmada de vez (sem devolução/cancelamento) antes de liberar pro membro.
   await pool.query(`ALTER TABLE circulo_transacoes ADD COLUMN IF NOT EXISTS disponivel_em TIMESTAMP;`).catch(()=>{});
+  // ID do contato no Bling — gravado no cadastro, reaproveitado na hora de faturar a venda.
+  await pool.query(`ALTER TABLE circulo_membros ADD COLUMN IF NOT EXISTS bling_id VARCHAR(50);`).catch(()=>{});
+  await pool.query(`ALTER TABLE circulo_membros ADD COLUMN IF NOT EXISTS documento VARCHAR(20);`).catch(()=>{});
+  await pool.query(`ALTER TABLE circulo_membros ADD COLUMN IF NOT EXISTS asaas_cliente_id VARCHAR(50);`).catch(()=>{});
+
+  // Carrinho e checkout de obras (compra pelo link de indicação ou pelo catálogo)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS circulo_pedidos (
+      id SERIAL PRIMARY KEY,
+      numero VARCHAR(30) UNIQUE NOT NULL,
+      membro_id INTEGER NOT NULL REFERENCES circulo_membros(id),
+      status VARCHAR(30) NOT NULL DEFAULT 'CARRINHO',
+      total NUMERIC(10,2) DEFAULT 0,
+      metodo_pagamento VARCHAR(20),
+      asaas_cliente_id VARCHAR(50),
+      asaas_cobranca_id VARCHAR(50),
+      bling_pedido_id VARCHAR(50),
+      bling_erro TEXT,
+      criado_em TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS circulo_pedido_itens (
+      id SERIAL PRIMARY KEY,
+      pedido_id INTEGER NOT NULL REFERENCES circulo_pedidos(id),
+      obra_id INTEGER NOT NULL,
+      obra_link_id INTEGER REFERENCES circulo_obra_links(id),
+      tamanho_id INTEGER,
+      tamanho_label VARCHAR(100),
+      largura NUMERIC(6,2),
+      altura NUMERIC(6,2),
+      moldura VARCHAR(20) NOT NULL DEFAULT 'preta',
+      quantidade INTEGER NOT NULL DEFAULT 1,
+      preco_unitario NUMERIC(10,2) NOT NULL,
+      subtotal NUMERIC(10,2) NOT NULL,
+      bling_produto_id VARCHAR(50),
+      criado_em TIMESTAMP DEFAULT NOW()
+    );
+  `);
 }
 
 function authMembro(req, res, next) {
@@ -142,6 +181,99 @@ async function salvarContatoBling(dados, blingId) {
     });
     const result = await resp.json();
     return result?.data?.id || null;
+  }
+}
+
+// ─── ASAAS (pagamento — mesma conta/chave usada pelo Vista Signa) ─────────────
+const ASAAS_BASE_URL = process.env.ASAAS_ENV === 'production'
+  ? 'https://api.asaas.com/v3'
+  : 'https://api-sandbox.asaas.com/v3';
+
+async function asaasFetch(path, options = {}) {
+  const resp = await fetch(ASAAS_BASE_URL + path, {
+    ...options,
+    headers: { 'Content-Type': 'application/json', 'access_token': process.env.ASAAS_API_KEY, ...(options.headers || {}) },
+  });
+  const data = await resp.json();
+  if (!resp.ok) throw new Error(data?.errors?.[0]?.description || 'Erro na comunicação com o Asaas');
+  return data;
+}
+
+async function garantirClienteAsaas(membro) {
+  if (membro.asaas_cliente_id) return membro.asaas_cliente_id;
+  const cliente = await asaasFetch('/customers', {
+    method: 'POST',
+    body: JSON.stringify({ name: membro.nome, email: membro.email, cpfCnpj: (membro.documento||'').replace(/\D/g,''), externalReference: membro.id }),
+  });
+  await pool.query('UPDATE circulo_membros SET asaas_cliente_id=$1 WHERE id=$2',[cliente.id, membro.id]);
+  return cliente.id;
+}
+
+async function criarCobranca(asaasClienteId, valor, pedidoId, metodoPagamento) {
+  const hoje = new Date().toISOString().slice(0, 10);
+  const billingType = metodoPagamento === 'CARTAO' ? 'CREDIT_CARD' : 'PIX';
+  const pagamento = await asaasFetch('/payments', {
+    method: 'POST',
+    body: JSON.stringify({ customer: asaasClienteId, billingType, value: valor, dueDate: hoje, externalReference: String(pedidoId) }),
+  });
+  const resultado = { id: pagamento.id, invoiceUrl: pagamento.invoiceUrl };
+  if (billingType === 'PIX') {
+    const qr = await asaasFetch('/payments/' + pagamento.id + '/pixQrCode');
+    resultado.qrCodeImagem = qr.encodedImage;
+    resultado.copiaCola = qr.payload;
+  }
+  return resultado;
+}
+
+// ─── BLING (produto por obra+tamanho+moldura, venda ao confirmar pagamento) ───
+async function blingFetch(path, options = {}) {
+  const token = await getBlingToken();
+  const resp = await fetch('https://api.bling.com.br/Api/v3' + path, {
+    ...options,
+    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', ...(options.headers || {}) },
+  });
+  const data = await resp.json();
+  if (!resp.ok) throw new Error(data?.error?.description || 'Erro na comunicação com o Bling');
+  return data;
+}
+
+const MOLDURA_NOME = { preta: 'Moldura Preta', carvalho: 'Moldura Carvalho', aco: 'Moldura Aço Escovado' };
+
+async function garantirProdutoBlingObra(item, obraCodigo, obraNome){
+  if (item.bling_produto_id) return item.bling_produto_id;
+  const codigo = `${obraCodigo || 'ALM'}-${String(item.tamanho_label||'').replace(/[^0-9x]/gi,'').toUpperCase()}-${(item.moldura||'preta').slice(0,2).toUpperCase()}`;
+  const nome = `${obraNome} — ${item.tamanho_label} — ${MOLDURA_NOME[item.moldura]||item.moldura}`;
+  const corpo = { nome, codigo, tipo: 'P', situacao: 'A', formato: 'S', unidade: 'UN', preco: parseFloat(item.preco_unitario), ncm: '4911.99.00' };
+  const resultado = await blingFetch('/produtos', { method: 'POST', body: JSON.stringify(corpo) });
+  const produtoId = resultado?.data?.id;
+  if (produtoId) await pool.query('UPDATE circulo_pedido_itens SET bling_produto_id=$1 WHERE id=$2',[produtoId,item.id]);
+  return produtoId;
+}
+
+async function sincronizarPedidoBlingObra(pedidoId){
+  try{
+    const pedidoRes = await pool.query(`SELECT p.*, m.nome, m.email, m.bling_id FROM circulo_pedidos p JOIN circulo_membros m ON m.id=p.membro_id WHERE p.id=$1`,[pedidoId]);
+    if(!pedidoRes.rows.length) return;
+    const pedido = pedidoRes.rows[0];
+    const itensRes = await pool.query(`SELECT pi.*, o.nome as obra_nome, o.codigo as obra_codigo FROM circulo_pedido_itens pi JOIN almare_obras o ON o.id=pi.obra_id WHERE pi.pedido_id=$1`,[pedidoId]);
+    if(!itensRes.rows.length) return;
+    if(!pedido.bling_id) return; // sem contato Bling vinculado, não dá pra faturar — fica registrado o erro
+
+    const itensBling=[];
+    for(const item of itensRes.rows){
+      const produtoId = await garantirProdutoBlingObra(item, item.obra_codigo, item.obra_nome);
+      const linha = { descricao: `${item.obra_nome} — ${item.tamanho_label} — ${MOLDURA_NOME[item.moldura]||item.moldura}`, quantidade: item.quantidade, valor: parseFloat(item.preco_unitario), unidade: 'UN' };
+      if(produtoId) linha.produto = { id: produtoId };
+      itensBling.push(linha);
+    }
+    const hoje = new Date().toISOString().slice(0,10);
+    const corpoPedido = { numero: pedido.numero, data: hoje, dataSaida: hoje, contato: { id: pedido.bling_id }, itens: itensBling, observacoes: `Pedido ${pedido.numero} — Círculo ALMARE — pagamento via Asaas` };
+    const resultado = await blingFetch('/pedidos/vendas', { method: 'POST', body: JSON.stringify(corpoPedido) });
+    const blingPedidoId = resultado?.data?.id;
+    if(blingPedidoId) await pool.query('UPDATE circulo_pedidos SET bling_pedido_id=$1, bling_erro=NULL WHERE id=$2',[blingPedidoId,pedidoId]);
+  }catch(err){
+    console.error('Erro ao sincronizar pedido Círculo com Bling:', err.message);
+    await pool.query('UPDATE circulo_pedidos SET bling_erro=$1 WHERE id=$2',[String(err.message).slice(0,500),pedidoId]).catch(()=>{});
   }
 }
 
@@ -254,6 +386,7 @@ function html(titulo, corpo, nav=false, membro=null) {
     <a href="/catalogo" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted)">Obras</a>
     <a href="/meu-impacto" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted)">Impacto</a>
     <a href="/minhas-indicacoes" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted)">Indicações</a>
+    <a href="/carrinho" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted)">Carrinho</a>
     <a href="/sugestoes" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted)">Voz</a>
     <a href="/minhas-funcoes" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted)">Funções</a>
     <a href="/logout" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--danger)">Sair</a>
@@ -547,8 +680,8 @@ app.post('/cadastro-passo2', async (req,res) => {
     const total = await pool.query('SELECT COUNT(*) FROM circulo_membros');
     const codigo = `ALM-${String(parseInt(total.rows[0].count)+1).padStart(4,'0')}`;
     const {rows} = await pool.query(
-      `INSERT INTO circulo_membros (nome,email,senha_hash,status,aprovado_em,codigo_membro) VALUES ($1,$2,$3,'ativo',NOW(),$4) RETURNING id`,
-      [nome, email, hash, codigo]
+      `INSERT INTO circulo_membros (nome,email,senha_hash,status,aprovado_em,codigo_membro,bling_id,documento) VALUES ($1,$2,$3,'ativo',NOW(),$4,$5,$6) RETURNING id`,
+      [nome, email, hash, codigo, blingIdFinal, documento]
     );
     const mid = rows[0].id;
 
@@ -1003,7 +1136,7 @@ app.get('/minhas-indicacoes',authMembro,async(req,res)=>{
 // Página PÚBLICA de indicação — quem recebe o link não precisa de conta no Círculo
 app.get('/indicar/:codigo',async(req,res)=>{
   const r=await pool.query(`
-    SELECT ol.id as link_id, o.nome, o.colecao, o.essencia, o.texto_curatorial, o.o_que_permanece, o.imagem_preview, o.orientacao, m.nome as membro_nome
+    SELECT ol.id as link_id, o.id as obra_id, o.nome, o.colecao, o.essencia, o.texto_curatorial, o.o_que_permanece, o.imagem_preview, o.orientacao, m.nome as membro_nome
     FROM circulo_obra_links ol
     JOIN almare_obras o ON o.id=ol.obra_id
     JOIN circulo_membros m ON m.id=ol.membro_id
@@ -1011,6 +1144,10 @@ app.get('/indicar/:codigo',async(req,res)=>{
   if(!r.rows.length) return res.status(404).send(html('Indicação',`<div class="msg-erro">Este link não existe mais.</div>`));
   const o=r.rows[0];
   const ladoALado=(o.orientacao||'').toLowerCase()!=='horizontal';
+  const tamanhos=await tamanhosDaObra(o.orientacao);
+
+  let logado=null;
+  try{ logado=jwt.verify(req.cookies.circulo_token, JWT_SECRET); }catch{}
 
   const imgHtml=o.imagem_preview?`<div class="moldura-wrap">
       <div class="moldura moldura-preta">
@@ -1042,6 +1179,26 @@ app.get('/indicar/:codigo',async(req,res)=>{
     <div class="logo" style="margin-bottom:6px;">ALMARE</div>
     <div style="font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--gold);margin-bottom:40px;">Uma indicação de ${esc(o.membro_nome)}</div>
     ${corpoObra}
+    <div class="card" style="margin-bottom:20px;">
+      <h3 style="font-size:18px;margin-bottom:16px;">Comprar esta obra</h3>
+      ${logado?`
+      <form method="POST" action="/comprar/${o.obra_id}/adicionar">
+        <input type="hidden" name="codigo_indicacao" value="${esc(req.params.codigo)}">
+        <input type="hidden" name="moldura" id="moldura_escolhida" value="preta">
+        <div class="field"><label>Tamanho</label>
+          <select name="tamanho_id" required>
+            ${tamanhos.map(t=>`<option value="${t.id}">${esc(t.label)} — R$ ${t.preco.toFixed(2).replace('.',',')}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field"><label>Moldura</label><div style="font-size:12px;color:var(--muted);">Escolhida acima na imagem — atualiza sozinho.</div></div>
+        <button type="submit" class="btn btn-primary btn-full">Adicionar ao carrinho</button>
+      </form>
+      `:`
+      <p style="color:var(--muted);margin-bottom:16px;">Pra comprar, entre com sua conta do Círculo (ou crie uma — leva um minuto).</p>
+      <a href="/login" class="btn btn-primary btn-full" style="margin-bottom:10px;display:block;text-align:center;">Já sou membro — Entrar</a>
+      <a href="/convite" class="btn btn-outline btn-full" style="display:block;text-align:center;">Quero entrar no Círculo</a>
+      `}
+    </div>
     <div class="card">
       <h3 style="font-size:18px;margin-bottom:16px;">Tenho interesse nesta obra</h3>
       <form method="POST" action="/indicar/${esc(req.params.codigo)}">
@@ -1057,6 +1214,8 @@ app.get('/indicar/:codigo',async(req,res)=>{
         const moldura=wrap.querySelector('.moldura');
         moldura.classList.remove('moldura-preta','moldura-carvalho','moldura-aco');
         moldura.classList.add('moldura-'+cor);
+        const campoOculto=document.getElementById('moldura_escolhida');
+        if(campoOculto) campoOculto.value=cor;
         wrap.querySelectorAll('.moldura-swatch').forEach(s=>s.classList.remove('ativo'));
         el.classList.add('ativo');
       }
@@ -1079,6 +1238,185 @@ app.post('/indicar/:codigo',async(req,res)=>{
     <h2 style="font-size:26px;margin-bottom:16px;">Recebemos seu interesse</h2>
     <p style="color:var(--muted);line-height:1.8;">Em breve alguém da ALMARE entra em contato com você.</p>
   </div></body></html>`);
+});
+
+// ─── COMPRAR OBRA — tamanhos, carrinho e checkout ─────────────────────────────
+// Busca os tamanhos válidos pra uma obra, a partir da orientação dela (quadrada usa
+// os tamanhos 1:1; vertical/horizontal usa os 3:2, girando largura x altura conforme o caso).
+async function tamanhosDaObra(orientacao){
+  const quadrada = (orientacao||'').toLowerCase()==='quadrado'||(orientacao||'').toLowerCase()==='quadrada';
+  const formato = quadrada?'1:1':'3:2';
+  const r = await pool.query('SELECT id,tamanho,preco FROM almare_tamanhos WHERE formato=$1 AND ativo=true ORDER BY ordem',[formato]);
+  return r.rows.map(t=>{
+    const nums=(t.tamanho.match(/\d+/g)||[]).map(Number);
+    let largura=nums[0]||0, altura=nums[1]||nums[0]||0;
+    if(!quadrada && (orientacao||'').toLowerCase()==='vertical' && largura>altura){ [largura,altura]=[altura,largura]; }
+    const preco=parseFloat(String(t.preco).replace(/[^\d,.-]/g,'').replace(',','.'))||0;
+    return {id:t.id, label:`${largura}×${altura} cm`, largura, altura, preco};
+  });
+}
+
+async function pegarOuCriarCarrinhoObra(membroId){
+  const existente = await pool.query(`SELECT * FROM circulo_pedidos WHERE membro_id=$1 AND status='CARRINHO'`,[membroId]);
+  if(existente.rows.length) return existente.rows[0];
+  const numero = `CIR-${new Date().getFullYear()}-${Date.now().toString().slice(-6)}`;
+  const novo = await pool.query(`INSERT INTO circulo_pedidos (numero,membro_id,total,status) VALUES ($1,$2,0,'CARRINHO') RETURNING *`,[numero,membroId]);
+  return novo.rows[0];
+}
+async function recalcularTotalCarrinhoObra(pedidoId){
+  const soma = await pool.query('SELECT COALESCE(SUM(subtotal),0) as total FROM circulo_pedido_itens WHERE pedido_id=$1',[pedidoId]);
+  const total = parseFloat(soma.rows[0].total);
+  await pool.query('UPDATE circulo_pedidos SET total=$1 WHERE id=$2',[total,pedidoId]);
+  return total;
+}
+
+// Adiciona ao carrinho a partir da página pública de indicação (ou do catálogo, sem link)
+app.post('/comprar/:obraId/adicionar',authMembro,async(req,res)=>{
+  const obraId=parseInt(req.params.obraId);
+  const {tamanho_id,moldura,codigo_indicacao}=req.body;
+  const quantidade=Math.max(1,Math.min(20,parseInt(req.body.quantidade)||1));
+  try{
+    const obra=await pool.query('SELECT id,orientacao FROM almare_obras WHERE id=$1',[obraId]);
+    if(!obra.rows.length) return res.redirect('back');
+    const tamanhos=await tamanhosDaObra(obra.rows[0].orientacao);
+    const tamanho=tamanhos.find(t=>t.id===parseInt(tamanho_id));
+    if(!tamanho||!MOLDURA_NOME[moldura]) return res.redirect('back');
+
+    let obraLinkId=null;
+    if(codigo_indicacao){
+      const link=await pool.query('SELECT id FROM circulo_obra_links WHERE codigo=$1',[codigo_indicacao]);
+      if(link.rows.length) obraLinkId=link.rows[0].id;
+    }
+
+    const pedido=await pegarOuCriarCarrinhoObra(req.membro.id);
+    const subtotal=Math.round(tamanho.preco*quantidade*100)/100;
+    await pool.query(
+      `INSERT INTO circulo_pedido_itens (pedido_id,obra_id,obra_link_id,tamanho_id,tamanho_label,largura,altura,moldura,quantidade,preco_unitario,subtotal) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+      [pedido.id,obraId,obraLinkId,tamanho.id,tamanho.label,tamanho.largura,tamanho.altura,moldura,quantidade,tamanho.preco,subtotal]
+    );
+    await recalcularTotalCarrinhoObra(pedido.id);
+    res.redirect('/carrinho');
+  }catch(e){ res.send(html('Erro',`<div class="msg-erro">${esc(e.message)}</div>`,true,req.membro)); }
+});
+
+app.get('/carrinho',authMembro,async(req,res)=>{
+  const pedido=await pool.query(`SELECT * FROM circulo_pedidos WHERE membro_id=$1 AND status='CARRINHO'`,[req.membro.id]);
+  if(!pedido.rows.length) return res.send(html('Carrinho',`<h2 style="font-size:28px;margin-bottom:16px;">Seu carrinho</h2><p style="color:var(--muted)">Vazio. Volte ao <a href="/catalogo">catálogo</a> pra escolher uma obra.</p>`,true,{nome:req.membro.nome}));
+  const p=pedido.rows[0];
+  const itens=await pool.query(`SELECT pi.*, o.nome as obra_nome, o.imagem_preview FROM circulo_pedido_itens pi JOIN almare_obras o ON o.id=pi.obra_id WHERE pi.pedido_id=$1 ORDER BY pi.id`,[p.id]);
+  const linhas=itens.rows.map(i=>`
+    <tr>
+      <td>${i.imagem_preview?`<img src="${esc(i.imagem_preview)}" style="width:56px;height:56px;object-fit:cover;border-radius:4px;">`:''}</td>
+      <td>${esc(i.obra_nome)}<br><span style="font-size:11px;color:var(--muted)">${esc(i.tamanho_label)} · ${esc(MOLDURA_NOME[i.moldura]||i.moldura)}</span></td>
+      <td>${i.quantidade}</td>
+      <td>R$ ${parseFloat(i.subtotal).toFixed(2).replace('.',',')}</td>
+      <td><form method="POST" action="/carrinho/${i.id}/remover"><button class="btn btn-outline" style="padding:5px 10px;font-size:10px;">Remover</button></form></td>
+    </tr>`).join('');
+  res.send(html('Carrinho',`
+    <h2 style="font-size:28px;margin-bottom:24px;">Seu carrinho</h2>
+    <div class="card" style="margin-bottom:24px;">
+      <table><thead><tr><th></th><th>Obra</th><th>Qtd.</th><th>Valor</th><th></th></tr></thead><tbody>${linhas}</tbody></table>
+      <div style="text-align:right;margin-top:20px;font-family:'Cormorant Garamond',serif;font-size:24px;color:var(--gold);">Total: R$ ${parseFloat(p.total).toFixed(2).replace('.',',')}</div>
+    </div>
+    <div class="card">
+      <h3 style="font-size:16px;margin-bottom:16px;">Forma de pagamento</h3>
+      <form method="POST" action="/carrinho/finalizar">
+        <div class="field"><label>Como prefere pagar?</label>
+          <select name="metodo_pagamento">
+            <option value="PIX">PIX</option>
+            <option value="CARTAO">Cartão de crédito</option>
+          </select>
+        </div>
+        <button type="submit" class="btn btn-primary btn-full">Finalizar e pagar</button>
+      </form>
+    </div>
+  `,true,{nome:req.membro.nome}));
+});
+
+app.post('/carrinho/:itemId/remover',authMembro,async(req,res)=>{
+  const item=await pool.query(`SELECT pi.*, p.membro_id FROM circulo_pedido_itens pi JOIN circulo_pedidos p ON p.id=pi.pedido_id WHERE pi.id=$1`,[req.params.itemId]);
+  if(item.rows.length && item.rows[0].membro_id===req.membro.id){
+    const pedidoId=item.rows[0].pedido_id;
+    await pool.query('DELETE FROM circulo_pedido_itens WHERE id=$1',[req.params.itemId]);
+    const restantes=await pool.query('SELECT COUNT(*) as n FROM circulo_pedido_itens WHERE pedido_id=$1',[pedidoId]);
+    if(parseInt(restantes.rows[0].n)===0) await pool.query('DELETE FROM circulo_pedidos WHERE id=$1',[pedidoId]);
+    else await recalcularTotalCarrinhoObra(pedidoId);
+  }
+  res.redirect('/carrinho');
+});
+
+app.post('/carrinho/finalizar',authMembro,async(req,res)=>{
+  try{
+    const {metodo_pagamento}=req.body;
+    if(!['PIX','CARTAO'].includes(metodo_pagamento)) return res.redirect('/carrinho');
+    const pedidoRes=await pool.query(`SELECT * FROM circulo_pedidos WHERE membro_id=$1 AND status='CARRINHO'`,[req.membro.id]);
+    if(!pedidoRes.rows.length) return res.redirect('/carrinho');
+    const pedido=pedidoRes.rows[0];
+    if(parseFloat(pedido.total)<=0) return res.redirect('/carrinho');
+
+    const membroRes=await pool.query('SELECT * FROM circulo_membros WHERE id=$1',[req.membro.id]);
+    const membro=membroRes.rows[0];
+
+    await pool.query(`UPDATE circulo_pedidos SET status='AGUARDANDO_PAGAMENTO', metodo_pagamento=$1 WHERE id=$2`,[metodo_pagamento,pedido.id]);
+
+    const asaasClienteId=await garantirClienteAsaas(membro);
+    const cobranca=await criarCobranca(asaasClienteId,parseFloat(pedido.total),pedido.id,metodo_pagamento);
+    await pool.query('UPDATE circulo_pedidos SET asaas_cobranca_id=$1, asaas_cliente_id=$2 WHERE id=$3',[cobranca.id,asaasClienteId,pedido.id]);
+
+    res.send(html('Pagamento',`
+      <h2 style="font-size:26px;margin-bottom:16px;">Pedido ${esc(pedido.numero)}</h2>
+      <div class="card">
+        ${cobranca.qrCodeImagem?`
+          <div style="text-align:center;margin-bottom:16px;"><img src="data:image/png;base64,${cobranca.qrCodeImagem}" style="width:220px;height:220px;background:#fff;border-radius:8px;padding:8px;"></div>
+          <div class="field"><label>Código para copiar e colar</label><input readonly value="${esc(cobranca.copiaCola||'')}" onclick="this.select()"></div>
+        `:`<p style="color:var(--muted)">Termine o pagamento por cartão pelo link abaixo.</p><a href="${esc(cobranca.invoiceUrl||'#')}" target="_blank" class="btn btn-primary btn-full" style="margin-top:12px;">Ir para pagamento</a>`}
+      </div>
+    `,true,{nome:req.membro.nome}));
+  }catch(e){
+    res.send(html('Erro',`<div class="msg-erro">Não foi possível gerar o pagamento: ${esc(e.message)}</div><a href="/carrinho" class="btn btn-outline" style="margin-top:16px;">← Voltar ao carrinho</a>`,true,req.membro));
+  }
+});
+
+// Webhook do Asaas — confirma pagamento, credita quem indicou (10 dias de carência) e fatura no Bling
+app.post('/webhook/asaas', async (req, res) => {
+  try {
+    const tokenRecebido = req.headers['asaas-access-token'];
+    if (process.env.ASAAS_WEBHOOK_TOKEN && tokenRecebido !== process.env.ASAAS_WEBHOOK_TOKEN) {
+      return res.status(401).json({ erro: 'Token inválido' });
+    }
+    const { event, payment } = req.body;
+    if (!payment || !payment.id) return res.status(200).json({ ok: true });
+
+    const pedidoRes = await pool.query('SELECT * FROM circulo_pedidos WHERE asaas_cobranca_id=$1',[payment.id]);
+    if (!pedidoRes.rows.length) return res.status(200).json({ ok: true });
+    const pedido = pedidoRes.rows[0];
+
+    if ((event==='PAYMENT_RECEIVED'||event==='PAYMENT_CONFIRMED') && pedido.status==='AGUARDANDO_PAGAMENTO'){
+      await pool.query(`UPDATE circulo_pedidos SET status='PAGO' WHERE id=$1`,[pedido.id]);
+
+      const itens=await pool.query('SELECT * FROM circulo_pedido_itens WHERE pedido_id=$1',[pedido.id]);
+      for(const item of itens.rows){
+        if(!item.obra_link_id) continue; // sem indicação vinculada, ninguém a creditar
+        const link=await pool.query('SELECT membro_id FROM circulo_obra_links WHERE id=$1',[item.obra_link_id]);
+        if(!link.rows.length) continue;
+        const membroIndicador=link.rows[0].membro_id;
+        const beneficio=parseFloat(item.subtotal)*0.10; // nasce como cashback — o membro pode converter em crédito depois
+        await pool.query(
+          `INSERT INTO circulo_transacoes (membro_id,obra_id,valor_obra,modalidade,valor_beneficio,status,criado_em,disponivel_em) VALUES ($1,$2,$3,'cashback',$4,'pendente',NOW(),NOW() + INTERVAL '10 days')`,
+          [membroIndicador,item.obra_id,item.subtotal,beneficio]
+        );
+        await pool.query(`INSERT INTO circulo_passaporte_eventos (membro_id,tipo,descricao) VALUES ($1,'venda_indicacao',$2)`,
+          [membroIndicador, `Uma indicação sua virou venda — cashback contabilizado, libera em 10 dias`]);
+      }
+      await sincronizarPedidoBlingObra(pedido.id);
+    } else if (event==='PAYMENT_REFUNDED' || event==='PAYMENT_OVERDUE'){
+      await pool.query(`UPDATE circulo_pedidos SET status='CANCELADO' WHERE id=$1`,[pedido.id]);
+    }
+    res.status(200).json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(200).json({ ok: true });
+  }
 });
 
 // ─── IMPACTO ──────────────────────────────────────────────────────────────────
