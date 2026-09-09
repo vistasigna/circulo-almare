@@ -1069,7 +1069,7 @@ app.get('/catalogo',authMembro,async(req,res)=>{
     const navImpacto=slugs.some(s=>['embaixador','especificador','artista','colaborador'].includes(s))?'<a href="/meu-impacto" class="nav-link">Impacto</a>':'';
 
     const obras=await pool.query(`
-      SELECT o.id, o.nome, o.tiragem_sugerida as tiragem_maxima, o.colecao,
+      SELECT o.id, o.nome, o.colecao,
              o.conceito, o.essencia, o.sensacao_provocada, o.o_que_permanece,
              o.ambientes_compativeis, o.texto_curatorial, o.paleta, o.paleta_detalhe,
              o.perfil_de_cliente, o.nivel_de_destaque, o.personalidade_da_obra,
@@ -1108,7 +1108,7 @@ app.get('/catalogo',authMembro,async(req,res)=>{
           </div>
         </div>
         <!-- DETALHE (oculto, abre no modal) -->
-        <div id="detalhe-${o.id}" style="display:none">${detalhe}<div style="margin-top:16px;"><strong style="font-size:10px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);">Tiragem</strong><div style="font-family:'Cormorant Garamond',serif;font-size:18px;color:var(--gold);margin-top:4px;">${o.tiragem_maxima||'—'}</div></div></div>
+        <div id="detalhe-${o.id}" style="display:none">${detalhe}</div>
       </div>`;
     }).join('');
 
