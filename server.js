@@ -982,21 +982,21 @@ app.get('/simulador', authMembro, async(req,res)=>{
           html += '<div class="moldura moldura-'+i+'" style="border:2px solid '+molduraInicial+';padding:3px;background:#0a0a0a;box-sizing:border-box;">';
           html += '<div style="position:relative;">';
           html += '<img src="'+o.imagem_preview+'" style="width:100%;display:block;">';
-          html += '<div style="position:absolute;inset:0;background-image:url(\''+data.watermark+'\');background-repeat:repeat;mix-blend-mode:overlay;pointer-events:none;"></div>';
+          html += '<div style="position:absolute;inset:0;background-image:url(\\''+data.watermark+'\\');background-repeat:repeat;mix-blend-mode:overlay;pointer-events:none;"></div>';
           html += '</div></div></div>';
           html += '</div>';
 
           html += '<div style="font-size:10px;letter-spacing:.25em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;">'+(o.colecao||'')+'</div>';
-          html += '<h4 style="font-family:\'Cormorant Garamond\',serif;font-size:22px;margin-bottom:4px;">'+o.nome+'</h4>';
+          html += '<h4 style="font-family:\\'Cormorant Garamond\\',serif;font-size:22px;margin-bottom:4px;">'+o.nome+'</h4>';
           html += '<div style="font-size:11px;color:var(--muted);margin-bottom:12px;">Código: '+(o.codigo||o.id)+'</div>';
           if(t) html += '<p style="font-size:13px;color:var(--gold);margin-bottom:12px;">Tamanho sugerido: '+t.label+'</p>';
 
           html += '<div style="margin-bottom:16px;">';
           html += '<div style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:8px;">Moldura — comparar outras opções</div>';
           html += '<div style="display:flex;gap:8px;" id="molduras-'+i+'">';
-          html += '<button type="button" onclick="trocarMoldura('+i+',\'#1a1a1a\',\'preta\')" data-cor="preta" style="width:36px;height:36px;background:#1a1a1a;border:2px solid '+(a.moldura_recomendada==='preta'?'var(--gold)':'var(--border)')+';border-radius:3px;cursor:pointer;" title="Preta"></button>';
-          html += '<button type="button" onclick="trocarMoldura('+i+',\'#8a6d3b\',\'carvalho\')" data-cor="carvalho" style="width:36px;height:36px;background:#8a6d3b;border:2px solid '+(a.moldura_recomendada==='carvalho'?'var(--gold)':'var(--border)')+';border-radius:3px;cursor:pointer;" title="Carvalho"></button>';
-          html += '<button type="button" onclick="trocarMoldura('+i+',\'#9a9a9a\',\'aco_escovado\')" data-cor="aco_escovado" style="width:36px;height:36px;background:linear-gradient(135deg,#aaa,#777);border:2px solid '+(a.moldura_recomendada==='aco_escovado'?'var(--gold)':'var(--border)')+';border-radius:3px;cursor:pointer;" title="Aço escovado"></button>';
+          html += '<button type="button" onclick="trocarMoldura('+i+',\\'#1a1a1a\\',\\'preta\\')" data-cor="preta" style="width:36px;height:36px;background:#1a1a1a;border:2px solid '+(a.moldura_recomendada==='preta'?'var(--gold)':'var(--border)')+';border-radius:3px;cursor:pointer;" title="Preta"></button>';
+          html += '<button type="button" onclick="trocarMoldura('+i+',\\'#8a6d3b\\',\\'carvalho\\')" data-cor="carvalho" style="width:36px;height:36px;background:#8a6d3b;border:2px solid '+(a.moldura_recomendada==='carvalho'?'var(--gold)':'var(--border)')+';border-radius:3px;cursor:pointer;" title="Carvalho"></button>';
+          html += '<button type="button" onclick="trocarMoldura('+i+',\\'#9a9a9a\\',\\'aco_escovado\\')" data-cor="aco_escovado" style="width:36px;height:36px;background:linear-gradient(135deg,#aaa,#777);border:2px solid '+(a.moldura_recomendada==='aco_escovado'?'var(--gold)':'var(--border)')+';border-radius:3px;cursor:pointer;" title="Aço escovado"></button>';
           html += '</div></div>';
 
           if(o._motivos && o._motivos.length){
