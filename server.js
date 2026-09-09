@@ -7,7 +7,7 @@ const cookieParser = require('cookie-parser');
 const crypto = require('crypto');
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '25mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
@@ -661,12 +661,19 @@ Regra importante: se o ambiente estiver "carregado", recomende obra_unica_suave 
   const resp = await fetch('https://api.anthropic.com/v1/messages', {
     method:'POST',
     headers:{ 'x-api-key':ANTHROPIC_API_KEY, 'anthropic-version':'2023-06-01', 'content-type':'application/json' },
-    body: JSON.stringify({ model:'claude-sonnet-4-5-20250929', max_tokens:1024, messages:[{ role:'user', content }] })
+    body: JSON.stringify({ model:'claude-sonnet-4-20250514', max_tokens:1024, messages:[{ role:'user', content }] })
   });
+  if(!resp.ok){
+    const errTxt = await resp.text();
+    throw new Error('API Anthropic retornou erro '+resp.status+': '+errTxt.substring(0,200));
+  }
   const data = await resp.json();
+  if(data.error){
+    throw new Error('Erro Anthropic: '+(data.error.message||JSON.stringify(data.error)));
+  }
   const txt = (data.content||[]).filter(c=>c.type==='text').map(c=>c.text).join('');
   const jsonMatch = txt.match(/\{[\s\S]*\}/);
-  if(!jsonMatch) throw new Error('IA não retornou análise válida');
+  if(!jsonMatch) throw new Error('IA não retornou análise válida. Resposta: '+txt.substring(0,200));
   return JSON.parse(jsonMatch[0]);
 }
 
