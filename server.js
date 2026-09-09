@@ -666,6 +666,7 @@ Retorne SOMENTE um JSON válido, sem texto antes ou depois, com esta estrutura e
   "moldura_recomendada": "preta | carvalho | aco_escovado",
   "justificativa_moldura": "1 frase curta sobre por que essa moldura combina com o ambiente",
   "justificativa_ambiente": "2 frases sobre o caráter visual do ambiente",
+  "moveis_identificados": "liste rapidamente os móveis/objetos visíveis na parede ou na frente dela (ex: sofá baixo à esquerda, luminária de chão à direita)",
   "parede_bbox": { "top_pct": 0, "left_pct": 0, "width_pct": 0, "height_pct": 0 },
   "parede_bbox_largura_cm": 0,
   "referencia_usada": "qual objeto real você usou para calibrar a escala",
@@ -676,14 +677,16 @@ Sobre "parede_bbox_largura_cm": este é o campo MAIS IMPORTANTE para a simulaç�
 
 Sobre "moldura_recomendada": a ALMARE oferece três opções — preta, carvalho (madeira clara) e aço escovado. Escolha a que melhor combina com a cor da parede, o estilo do ambiente e a paleta da obra que será usada (você pode não saber a obra ainda, então baseie-se só no ambiente: paredes claras/neutras combinam bem com preta ou aço escovado para contraste, ambientes com madeira ou tom quente combinam com carvalho, ambientes industriais combinam com aço escovado ou preta). Este campo é obrigatório, sempre escolha uma das três opções.
 
-Sobre "parede_bbox": são as coordenadas em PORCENTAGEM de 0 a 100 da área de parede vazia e disponível na PRIMEIRA imagem, onde o quadro deveria ser centralizado. top_pct e left_pct são a posição do canto superior esquerdo dessa área útil, width_pct e height_pct são o tamanho dela, todos relativos ao tamanho total da imagem. Seja preciso: essa área deve ser só a parede livre, sem cobrir móveis, portas ou janelas.
+Sobre "parede_bbox": são as coordenadas em PORCENTAGEM de 0 a 100 da área de parede vazia e disponível na PRIMEIRA imagem, onde o quadro deveria ser centralizado. top_pct e left_pct são a posição do canto superior esquerdo dessa área útil, width_pct e height_pct são o tamanho dela, todos relativos ao tamanho total da imagem.
+
+ISSO É CRÍTICO E OBRIGATÓRIO: antes de definir "parede_bbox", primeiro identifique mentalmente TODOS os móveis e objetos visíveis na foto que ocupam a parede ou ficam na frente dela — sofás, poltronas, mesas, aparadores, estantes, plantas, portas, janelas, interruptores, tomadas, luminárias. A área de "parede_bbox" NUNCA pode se sobrepor a nenhum desses elementos, nem parcialmente. Se houver um móvel (como um sofá) na parte de baixo da parede, a área da bbox deve começar ACIMA do topo desse móvel, com uma margem de segurança equivalente a pelo menos 20-25cm reais de folga entre o topo do móvel e o início da bbox (isso é a distância mínima real entre um quadro pendurado e o encosto de um sofá, por exemplo). É um erro grave e inaceitável a bbox incluir qualquer parte de um móvel — verifique isso com atenção antes de responder.
 
 Regra importante: se o ambiente estiver "carregado", recomende obra_unica_suave ou uma obra que não compita com o que já existe. Se estiver "clean", pode recomendar obra protagonista.` });
 
   const resp = await fetch('https://api.anthropic.com/v1/messages', {
     method:'POST',
     headers:{ 'x-api-key':ANTHROPIC_API_KEY, 'anthropic-version':'2023-06-01', 'content-type':'application/json' },
-    body: JSON.stringify({ model:'claude-sonnet-5', max_tokens:2500, messages:[{ role:'user', content }] })
+    body: JSON.stringify({ model:'claude-sonnet-5', max_tokens:4096, thinking:{type:'disabled'}, messages:[{ role:'user', content }] })
   });
   if(!resp.ok){
     const errTxt = await resp.text();
@@ -979,21 +982,21 @@ app.get('/simulador', authMembro, async(req,res)=>{
           html += '<div class="moldura moldura-'+i+'" style="border:2px solid '+molduraInicial+';padding:3px;background:#0a0a0a;box-sizing:border-box;">';
           html += '<div style="position:relative;">';
           html += '<img src="'+o.imagem_preview+'" style="width:100%;display:block;">';
-          html += '<div style="position:absolute;inset:0;background-image:url(\\''+data.watermark+'\\');background-repeat:repeat;mix-blend-mode:overlay;pointer-events:none;"></div>';
+          html += '<div style="position:absolute;inset:0;background-image:url(\''+data.watermark+'\');background-repeat:repeat;mix-blend-mode:overlay;pointer-events:none;"></div>';
           html += '</div></div></div>';
           html += '</div>';
 
           html += '<div style="font-size:10px;letter-spacing:.25em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;">'+(o.colecao||'')+'</div>';
-          html += '<h4 style="font-family:\\'Cormorant Garamond\\',serif;font-size:22px;margin-bottom:4px;">'+o.nome+'</h4>';
+          html += '<h4 style="font-family:\'Cormorant Garamond\',serif;font-size:22px;margin-bottom:4px;">'+o.nome+'</h4>';
           html += '<div style="font-size:11px;color:var(--muted);margin-bottom:12px;">Código: '+(o.codigo||o.id)+'</div>';
           if(t) html += '<p style="font-size:13px;color:var(--gold);margin-bottom:12px;">Tamanho sugerido: '+t.label+'</p>';
 
           html += '<div style="margin-bottom:16px;">';
           html += '<div style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:8px;">Moldura — comparar outras opções</div>';
           html += '<div style="display:flex;gap:8px;" id="molduras-'+i+'">';
-          html += '<button type="button" onclick="trocarMoldura('+i+',\\'#1a1a1a\\',\\'preta\\')" data-cor="preta" style="width:36px;height:36px;background:#1a1a1a;border:2px solid '+(a.moldura_recomendada==='preta'?'var(--gold)':'var(--border)')+';border-radius:3px;cursor:pointer;" title="Preta"></button>';
-          html += '<button type="button" onclick="trocarMoldura('+i+',\\'#8a6d3b\\',\\'carvalho\\')" data-cor="carvalho" style="width:36px;height:36px;background:#8a6d3b;border:2px solid '+(a.moldura_recomendada==='carvalho'?'var(--gold)':'var(--border)')+';border-radius:3px;cursor:pointer;" title="Carvalho"></button>';
-          html += '<button type="button" onclick="trocarMoldura('+i+',\\'#9a9a9a\\',\\'aco_escovado\\')" data-cor="aco_escovado" style="width:36px;height:36px;background:linear-gradient(135deg,#aaa,#777);border:2px solid '+(a.moldura_recomendada==='aco_escovado'?'var(--gold)':'var(--border)')+';border-radius:3px;cursor:pointer;" title="Aço escovado"></button>';
+          html += '<button type="button" onclick="trocarMoldura('+i+',\'#1a1a1a\',\'preta\')" data-cor="preta" style="width:36px;height:36px;background:#1a1a1a;border:2px solid '+(a.moldura_recomendada==='preta'?'var(--gold)':'var(--border)')+';border-radius:3px;cursor:pointer;" title="Preta"></button>';
+          html += '<button type="button" onclick="trocarMoldura('+i+',\'#8a6d3b\',\'carvalho\')" data-cor="carvalho" style="width:36px;height:36px;background:#8a6d3b;border:2px solid '+(a.moldura_recomendada==='carvalho'?'var(--gold)':'var(--border)')+';border-radius:3px;cursor:pointer;" title="Carvalho"></button>';
+          html += '<button type="button" onclick="trocarMoldura('+i+',\'#9a9a9a\',\'aco_escovado\')" data-cor="aco_escovado" style="width:36px;height:36px;background:linear-gradient(135deg,#aaa,#777);border:2px solid '+(a.moldura_recomendada==='aco_escovado'?'var(--gold)':'var(--border)')+';border-radius:3px;cursor:pointer;" title="Aço escovado"></button>';
           html += '</div></div>';
 
           if(o._motivos && o._motivos.length){
