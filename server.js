@@ -972,7 +972,9 @@ app.get('/simulador', authMembro, async(req,res)=>{
           const t = o._melhorTamanho;
           // Escala real: usa a largura da PAREDE NA FOTO calculada pela IA (não o número digitado),
           // porque a foto pode não enquadrar a parede inteira do jeito que foi medida
-          const larguraRealParede = a.parede_bbox_largura_cm || data.parede_largura;
+          // Usa DIRETO o número que o cliente digitou — a estimativa da IA por objetos de referência
+          // provou ser instável e gerava quadros do tamanho errado (às vezes gigantes)
+          const larguraRealParede = parseInt(data.parede_largura) || 300;
           const fracaoParede = t ? Math.min(t.largura / larguraRealParede, 1) : 0.3;
           const larguraNaFoto = fracaoParede * bbox.width_pct; // % da FOTO INTEIRA
           const centroX = bbox.left_pct + bbox.width_pct/2;
