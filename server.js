@@ -667,11 +667,14 @@ Retorne SOMENTE um JSON válido, sem texto antes ou depois, com esta estrutura e
   "justificativa_moldura": "1 frase curta sobre por que essa moldura combina com o ambiente",
   "justificativa_ambiente": "2 frases sobre o caráter visual do ambiente",
   "parede_bbox": { "top_pct": 0, "left_pct": 0, "width_pct": 0, "height_pct": 0 },
+  "parede_bbox_largura_cm": 0,
   "referencia_usada": "qual objeto real você usou para calibrar a escala",
   "aviso_precisao": "aviso curto se a proporção parecer inconsistente com o que o cliente informou, ou null se estiver coerente"
 }
 
-Sobre "moldura_recomendada": a ALMARE oferece três opções — preta, carvalho (madeira clara) e aço escovado. Escolha a que melhor combina com a cor da parede, o estilo do ambiente e a paleta da obra que será usada (você pode não saber a obra ainda, então baseie-se só no ambiente: paredes claras/neutras combinam bem com preta ou aço escovado para contraste, ambientes com madeira ou tom quente combinam com carvalho, ambientes industriais combinam com aço escovado ou preta).
+Sobre "parede_bbox_largura_cm": este é o campo MAIS IMPORTANTE para a simulação ficar correta. É a largura REAL em centímetros da área de parede que você marcou em "parede_bbox", calculada usando os objetos de referência que você identificou na foto — NÃO copie o número que o cliente informou, calcule você mesmo pela imagem. Se a porta na foto mede visualmente cerca de 1/3 da largura da parede disponível, e porta padrão tem 80-90cm, então a parede tem por volta de 240-270cm — é esse tipo de cálculo que você deve fazer. Seja o mais preciso possível, porque um erro aqui faz o quadro aparecer do tamanho errado na simulação.
+
+Sobre "moldura_recomendada": a ALMARE oferece três opções — preta, carvalho (madeira clara) e aço escovado. Escolha a que melhor combina com a cor da parede, o estilo do ambiente e a paleta da obra que será usada (você pode não saber a obra ainda, então baseie-se só no ambiente: paredes claras/neutras combinam bem com preta ou aço escovado para contraste, ambientes com madeira ou tom quente combinam com carvalho, ambientes industriais combinam com aço escovado ou preta). Este campo é obrigatório, sempre escolha uma das três opções.
 
 Sobre "parede_bbox": são as coordenadas em PORCENTAGEM de 0 a 100 da área de parede vazia e disponível na PRIMEIRA imagem, onde o quadro deveria ser centralizado. top_pct e left_pct são a posição do canto superior esquerdo dessa área útil, width_pct e height_pct são o tamanho dela, todos relativos ao tamanho total da imagem. Seja preciso: essa área deve ser só a parede livre, sem cobrir móveis, portas ou janelas.
 
@@ -699,6 +702,20 @@ Regra importante: se o ambiente estiver "carregado", recomende obra_unica_suave 
   if(!b || typeof b.top_pct!=='number' || typeof b.left_pct!=='number' || typeof b.width_pct!=='number' || typeof b.height_pct!=='number'){
     analise.parede_bbox = { top_pct:25, left_pct:20, width_pct:60, height_pct:50 };
     analise.aviso_precisao = analise.aviso_precisao || 'Não foi possível calibrar a posição exata pela imagem — a simulação usa uma posição aproximada.';
+  }
+
+  // Fallback: se a IA não calculou a largura real da parede na foto, usa a medida informada pelo cliente
+  if(!analise.parede_bbox_largura_cm || analise.parede_bbox_largura_cm <= 0){
+    analise.parede_bbox_largura_cm = parseInt(dados.parede_largura) || 300;
+  }
+
+  // Fallback: se a IA não recomendou moldura, decide por heurística simples
+  if(!['preta','carvalho','aco_escovado'].includes(analise.moldura_recomendada)){
+    const cp = (analise.cor_parede||'').toLowerCase();
+    if(/madeira|amadeirad|quente|terroso|bege/.test(cp)) analise.moldura_recomendada = 'carvalho';
+    else if(/industrial|cimento|concreto|cinza/.test(cp)) analise.moldura_recomendada = 'aco_escovado';
+    else analise.moldura_recomendada = 'preta';
+    if(!analise.justificativa_moldura) analise.justificativa_moldura = 'Recomendação padrão com base no tom geral do ambiente.';
   }
 
   return analise;
@@ -942,8 +959,10 @@ app.get('/simulador', authMembro, async(req,res)=>{
 
         data.sugestoes.forEach((o,i)=>{
           const t = o._melhorTamanho;
-          // Escala real: fração do tamanho da obra em relação à largura de parede informada, aplicada à largura da bbox
-          const fracaoParede = t ? Math.min(t.largura / data.parede_largura, 1) : 0.3;
+          // Escala real: usa a largura da PAREDE NA FOTO calculada pela IA (não o número digitado),
+          // porque a foto pode não enquadrar a parede inteira do jeito que foi medida
+          const larguraRealParede = a.parede_bbox_largura_cm || data.parede_largura;
+          const fracaoParede = t ? Math.min(t.largura / larguraRealParede, 1) : 0.3;
           const larguraNaFoto = fracaoParede * bbox.width_pct; // % da FOTO INTEIRA
           const centroX = bbox.left_pct + bbox.width_pct/2;
           const centroY = bbox.top_pct + bbox.height_pct/2;
@@ -965,7 +984,8 @@ app.get('/simulador', authMembro, async(req,res)=>{
           html += '</div>';
 
           html += '<div style="font-size:10px;letter-spacing:.25em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;">'+(o.colecao||'')+'</div>';
-          html += '<h4 style="font-family:\\'Cormorant Garamond\\',serif;font-size:22px;margin-bottom:12px;">'+o.nome+'</h4>';
+          html += '<h4 style="font-family:\\'Cormorant Garamond\\',serif;font-size:22px;margin-bottom:4px;">'+o.nome+'</h4>';
+          html += '<div style="font-size:11px;color:var(--muted);margin-bottom:12px;">Código: '+(o.codigo||o.id)+'</div>';
           if(t) html += '<p style="font-size:13px;color:var(--gold);margin-bottom:12px;">Tamanho sugerido: '+t.label+'</p>';
 
           html += '<div style="margin-bottom:16px;">';
