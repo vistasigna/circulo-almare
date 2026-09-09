@@ -1069,7 +1069,7 @@ app.get('/catalogo',authMembro,async(req,res)=>{
     const navImpacto=slugs.some(s=>['embaixador','especificador','artista','colaborador'].includes(s))?'<a href="/meu-impacto" class="nav-link">Impacto</a>':'';
 
     const obras=await pool.query(`
-      SELECT o.id, o.nome, o.colecao,
+      SELECT o.id, o.nome, o.colecao, o.tiragem_total,
              o.conceito, o.essencia, o.sensacao_provocada, o.o_que_permanece,
              o.ambientes_compativeis, o.texto_curatorial, o.paleta, o.paleta_detalhe,
              o.perfil_de_cliente, o.nivel_de_destaque, o.personalidade_da_obra,
@@ -1108,7 +1108,7 @@ app.get('/catalogo',authMembro,async(req,res)=>{
           </div>
         </div>
         <!-- DETALHE (oculto, abre no modal) -->
-        <div id="detalhe-${o.id}" style="display:none">${detalhe}</div>
+        <div id="detalhe-${o.id}" style="display:none">${detalhe}${o.tiragem_total?`<div style="margin-top:16px;"><strong style="font-size:10px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);">Tiragem</strong><div style="font-family:'Cormorant Garamond',serif;font-size:18px;color:var(--gold);margin-top:4px;">${o.tiragem_total} exemplares</div></div>`:''}</div>
       </div>`;
     }).join('');
 
@@ -1173,13 +1173,33 @@ app.get('/catalogo',authMembro,async(req,res)=>{
           const nome=card.querySelector('[style*="Cormorant"]').textContent;
           const colecao=card.querySelector('[style*="text-transform"]').textContent;
           let html='';
-          if(img) html+=\`<div style="background:#0d0d0d;text-align:center;margin-bottom:24px;"><img src="\${img.src}" style="max-width:100%;max-height:520px;width:auto;height:auto;object-fit:contain;"></div>\`;
+          if(img){
+            html+=\`<div style="background:#0d0d0d;text-align:center;margin-bottom:16px;padding:24px;">
+              <div id="moldura-preview" style="display:inline-block;border:2px solid #1a1a1a;padding:3px;background:#0a0a0a;">
+                <img src="\${img.src}" style="max-width:100%;max-height:480px;width:auto;height:auto;object-fit:contain;display:block;">
+              </div>
+            </div>\`;
+            html+=\`<div style="display:flex;gap:8px;align-items:center;justify-content:center;margin-bottom:24px;">
+              <span style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-right:8px;">Moldura:</span>
+              <button type="button" onclick="trocarMolduraModal('#1a1a1a',this)" data-cor="preta" style="width:32px;height:32px;background:#1a1a1a;border:2px solid var(--gold);border-radius:3px;cursor:pointer;" title="Preta"></button>
+              <button type="button" onclick="trocarMolduraModal('#8a6d3b',this)" data-cor="carvalho" style="width:32px;height:32px;background:#8a6d3b;border:2px solid var(--border);border-radius:3px;cursor:pointer;" title="Carvalho"></button>
+              <button type="button" onclick="trocarMolduraModal('#9a9a9a',this)" data-cor="aco_escovado" style="width:32px;height:32px;background:linear-gradient(135deg,#aaa,#777);border:2px solid var(--border);border-radius:3px;cursor:pointer;" title="Aço escovado"></button>
+            </div>\`;
+          }
           html+=\`<div style="font-size:10px;letter-spacing:.25em;text-transform:uppercase;color:var(--muted);margin-bottom:6px;">\${colecao}</div>\`;
           html+=\`<h2 style="font-family:'Cormorant Garamond',serif;font-size:28px;font-weight:400;margin-bottom:24px;">\${nome}</h2>\`;
           html+=\`<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 32px;">\${src.innerHTML}</div>\`;
           document.getElementById('modal-body').innerHTML=html;
           document.getElementById('modal').style.display='block';
           document.body.style.overflow='hidden';
+        }
+
+        function trocarMolduraModal(cor, btn){
+          const el = document.getElementById('moldura-preview');
+          if(el) el.style.borderColor = cor;
+          const grupo = btn.parentElement;
+          grupo.querySelectorAll('button').forEach(b=>{ b.style.borderColor = 'var(--border)'; });
+          btn.style.borderColor = 'var(--gold)';
         }
 
         function fecharModal(e){
