@@ -967,7 +967,7 @@ app.get('/simulador', authMembro, async(req,res)=>{
           const centroX = bbox.left_pct + bbox.width_pct/2;
           const centroY = bbox.top_pct + bbox.height_pct/2;
           const larguraFinal = Math.min(Math.max(larguraNaFoto, 10), 75);
-          const coresMoldura = { preta:'#1a1a1a', carvalho:'#8a6d3b', aco_escovado:'linear-gradient(135deg,#aaa,#777)' };
+          const coresMoldura = { preta:'#1a1a1a', carvalho:'#8a6d3b', aco_escovado:'#9a9a9a' };
           const molduraInicial = coresMoldura[a.moldura_recomendada] || '#1a1a1a';
 
           html += '<div class="card" style="margin-bottom:24px;">';
@@ -976,8 +976,8 @@ app.get('/simulador', authMembro, async(req,res)=>{
           html += '<div style="position:relative;background:#0d0d0d;border-radius:4px;overflow:hidden;margin-bottom:20px;line-height:0;">';
           html += '<img src="'+data.foto_local+'" style="width:100%;display:block;">';
           html += '<div style="position:absolute;top:'+centroY+'%;left:'+centroX+'%;transform:translate(-50%,-50%);width:'+larguraFinal+'%;">';
-          html += '<div class="moldura moldura-'+i+'" style="padding:3px;background:'+molduraInicial+';box-shadow:2px 6px 16px rgba(0,0,0,.4),0 1px 3px rgba(0,0,0,.25);">';
-          html += '<div style="position:relative;">';
+          html += '<div class="moldura moldura-'+i+'" style="border:2px solid '+molduraInicial+';padding:7%;box-sizing:border-box;">';
+          html += '<div style="position:relative;box-shadow:0 3px 12px rgba(0,0,0,.4),0 1px 4px rgba(0,0,0,.3);">';
           html += '<img src="'+o.imagem_preview+'" style="width:100%;display:block;">';
           html += '<div style="position:absolute;inset:0;background-image:url(\\''+data.watermark+'\\');background-repeat:repeat;mix-blend-mode:overlay;pointer-events:none;"></div>';
           html += '</div></div></div>';
@@ -993,7 +993,7 @@ app.get('/simulador', authMembro, async(req,res)=>{
           html += '<div style="display:flex;gap:8px;" id="molduras-'+i+'">';
           html += '<button type="button" onclick="trocarMoldura('+i+',\\'#1a1a1a\\',\\'preta\\')" data-cor="preta" style="width:36px;height:36px;background:#1a1a1a;border:2px solid '+(a.moldura_recomendada==='preta'?'var(--gold)':'var(--border)')+';border-radius:3px;cursor:pointer;" title="Preta"></button>';
           html += '<button type="button" onclick="trocarMoldura('+i+',\\'#8a6d3b\\',\\'carvalho\\')" data-cor="carvalho" style="width:36px;height:36px;background:#8a6d3b;border:2px solid '+(a.moldura_recomendada==='carvalho'?'var(--gold)':'var(--border)')+';border-radius:3px;cursor:pointer;" title="Carvalho"></button>';
-          html += '<button type="button" onclick="trocarMoldura('+i+',\\'linear-gradient(135deg,#aaa,#777)\\',\\'aco_escovado\\')" data-cor="aco_escovado" style="width:36px;height:36px;background:linear-gradient(135deg,#aaa,#777);border:2px solid '+(a.moldura_recomendada==='aco_escovado'?'var(--gold)':'var(--border)')+';border-radius:3px;cursor:pointer;" title="Aço escovado"></button>';
+          html += '<button type="button" onclick="trocarMoldura('+i+',\\'#9a9a9a\\',\\'aco_escovado\\')" data-cor="aco_escovado" style="width:36px;height:36px;background:linear-gradient(135deg,#aaa,#777);border:2px solid '+(a.moldura_recomendada==='aco_escovado'?'var(--gold)':'var(--border)')+';border-radius:3px;cursor:pointer;" title="Aço escovado"></button>';
           html += '</div></div>';
 
           if(o._motivos && o._motivos.length){
@@ -1008,7 +1008,7 @@ app.get('/simulador', authMembro, async(req,res)=>{
 
       function trocarMoldura(idx, cor, slug){
         const el = document.querySelector('.moldura-'+idx);
-        if(el) el.style.background = cor;
+        if(el) el.style.borderColor = cor;
         const grupo = document.getElementById('molduras-'+idx);
         if(grupo){
           grupo.querySelectorAll('button').forEach(b=>{
