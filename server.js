@@ -669,6 +669,7 @@ Retorne SOMENTE um JSON válido, sem texto antes ou depois, com esta estrutura e
   "moveis_identificados": "liste rapidamente os móveis/objetos visíveis na parede ou na frente dela (ex: sofá baixo à esquerda, luminária de chão à direita)",
   "parede_bbox": { "top_pct": 0, "left_pct": 0, "width_pct": 0, "height_pct": 0 },
   "parede_bbox_largura_cm": 0,
+  "centro_vertical_ideal_pct": 0,
   "referencia_usada": "qual objeto real você usou para calibrar a escala",
   "aviso_precisao": "aviso curto se a proporção parecer inconsistente com o que o cliente informou, ou null se estiver coerente"
 }
@@ -677,7 +678,9 @@ Sobre "parede_bbox_largura_cm": este é o campo MAIS IMPORTANTE para a simulaç�
 
 Sobre "moldura_recomendada": a ALMARE oferece três opções — preta, carvalho (madeira clara) e aço escovado. Escolha a que melhor combina com a cor da parede, o estilo do ambiente e a paleta da obra que será usada (você pode não saber a obra ainda, então baseie-se só no ambiente: paredes claras/neutras combinam bem com preta ou aço escovado para contraste, ambientes com madeira ou tom quente combinam com carvalho, ambientes industriais combinam com aço escovado ou preta). Este campo é obrigatório, sempre escolha uma das três opções.
 
-Sobre "parede_bbox": são as coordenadas em PORCENTAGEM de 0 a 100 da área de parede vazia e disponível na PRIMEIRA imagem, onde o quadro deveria ser centralizado. top_pct e left_pct são a posição do canto superior esquerdo dessa área útil, width_pct e height_pct são o tamanho dela, todos relativos ao tamanho total da imagem.
+Sobre "centro_vertical_ideal_pct": este campo é OBRIGATÓRIO e segue uma regra fixa e inegociável de museus e galerias: o CENTRO de qualquer quadro pendurado deve ficar a 150cm de altura do chão (regra internacional de curadoria). Para calcular esse valor, identifique onde fica o CHÃO na foto (a linha onde a parede encontra o piso) usando os mesmos objetos de referência (porta, interruptor, tomada, rodapé). Depois calcule: partindo do chão, suba 150cm reais, e determine em que PORCENTAGEM da altura total da foto (contando do topo da imagem) essa marca de 150cm cai. Esse número é o "centro_vertical_ideal_pct". NUNCA calcule esse valor com base em "espaço livre na parede" — ele depende exclusivamente da altura real do chão até 150cm, independente de haver parede vazia acima ou abaixo. Se essa altura ideal cair em cima de um móvel identificado, ajuste o valor para logo acima do móvel (com a margem de 20-25cm já mencionada), mas nunca ignore a regra dos 150cm sem necessidade.
+
+Sobre "parede_bbox": são as coordenadas em PORCENTAGEM de 0 a 100 da área de parede vazia e disponível na PRIMEIRA imagem, usada apenas para saber a LARGURA disponível e a posição horizontal — não use para calcular a altura vertical do quadro, isso é definido só por "centro_vertical_ideal_pct". top_pct e left_pct são a posição do canto superior esquerdo dessa área útil, width_pct e height_pct são o tamanho dela, todos relativos ao tamanho total da imagem.
 
 ISSO É CRÍTICO E OBRIGATÓRIO: antes de definir "parede_bbox", primeiro identifique mentalmente TODOS os móveis e objetos visíveis na foto que ocupam a parede ou ficam na frente dela — sofás, poltronas, mesas, aparadores, estantes, plantas, portas, janelas, interruptores, tomadas, luminárias. A área de "parede_bbox" NUNCA pode se sobrepor a nenhum desses elementos, nem parcialmente. Se houver um móvel (como um sofá) na parte de baixo da parede, a área da bbox deve começar ACIMA do topo desse móvel, com uma margem de segurança equivalente a pelo menos 20-25cm reais de folga entre o topo do móvel e o início da bbox (isso é a distância mínima real entre um quadro pendurado e o encosto de um sofá, por exemplo). É um erro grave e inaceitável a bbox incluir qualquer parte de um móvel — verifique isso com atenção antes de responder.
 
@@ -710,6 +713,11 @@ Regra importante: se o ambiente estiver "carregado", recomende obra_unica_suave 
   // Fallback: se a IA não calculou a largura real da parede na foto, usa a medida informada pelo cliente
   if(!analise.parede_bbox_largura_cm || analise.parede_bbox_largura_cm <= 0){
     analise.parede_bbox_largura_cm = parseInt(dados.parede_largura) || 300;
+  }
+
+  // Fallback: se a IA não calculou a altura ideal (regra dos 150cm do chão), usa 48% como aproximação segura
+  if(typeof analise.centro_vertical_ideal_pct !== 'number' || analise.centro_vertical_ideal_pct <= 0 || analise.centro_vertical_ideal_pct >= 100){
+    analise.centro_vertical_ideal_pct = 48;
   }
 
   // Fallback: se a IA não recomendou moldura, decide por heurística simples
@@ -968,7 +976,7 @@ app.get('/simulador', authMembro, async(req,res)=>{
           const fracaoParede = t ? Math.min(t.largura / larguraRealParede, 1) : 0.3;
           const larguraNaFoto = fracaoParede * bbox.width_pct; // % da FOTO INTEIRA
           const centroX = bbox.left_pct + bbox.width_pct/2;
-          const centroY = bbox.top_pct + bbox.height_pct/2;
+          const centroY = a.centro_vertical_ideal_pct;
           const larguraFinal = Math.min(Math.max(larguraNaFoto, 10), 75);
           const coresMoldura = { preta:'#1a1a1a', carvalho:'#8a6d3b', aco_escovado:'#9a9a9a' };
           const molduraInicial = coresMoldura[a.moldura_recomendada] || '#1a1a1a';
