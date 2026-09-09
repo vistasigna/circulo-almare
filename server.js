@@ -875,15 +875,18 @@ app.get('/simulador', authMembro, async(req,res)=>{
           html += '<div class="card" style="margin-bottom:24px;">';
           html += '<div style="display:flex;gap:8px;align-items:center;margin-bottom:16px;"><span class="badge badge-gold">'+(i+1)+'ª sugestão</span><span style="font-size:11px;color:var(--muted);">'+(o._score)+' pontos de compatibilidade</span></div>';
 
-          // Simulação: foto do ambiente com a obra sobreposta em escala
-          html += '<div style="position:relative;background:#0d0d0d;border-radius:4px;overflow:hidden;margin-bottom:20px;">';
-          html += '<img src="'+fotoAmbiente+'" style="width:100%;display:block;opacity:.85;">';
-          html += '<div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:'+escalaLargura+'%;max-width:70%;box-shadow:0 8px 30px rgba(0,0,0,.6);">';
-          html += '<div class="moldura moldura-'+i+'" style="padding:8px;background:#1a1a1a;border-radius:2px;">';
+          // Simulação: foto do ambiente com a obra sobreposta em escala real, moldura fina e sombra sutil
+          const escalaFinal = Math.min(Math.max(escalaLargura, 18), 55);
+          html += '<div style="position:relative;background:#0d0d0d;border-radius:4px;overflow:hidden;margin-bottom:20px;line-height:0;">';
+          html += '<img src="'+fotoAmbiente+'" style="width:100%;display:block;">';
+          html += '<div style="position:absolute;top:42%;left:50%;transform:translate(-50%,-50%);width:'+escalaFinal+'%;">';
+          html += '<div class="moldura moldura-'+i+'" style="padding:3px;background:#1a1a1a;box-shadow:2px 5px 14px rgba(0,0,0,.45),0 1px 3px rgba(0,0,0,.3);">';
+          html += '<div style="padding:5px;background:#f4f2ee;">';
           html += '<img src="'+o.imagem_preview+'" style="width:100%;display:block;">';
-          html += '</div>';
-          html += '<div style="position:absolute;bottom:4px;right:6px;font-size:9px;color:rgba(255,255,255,.7);text-shadow:0 1px 2px #000;letter-spacing:.1em;">ALMARE · '+(o.codigo||o.nome)+'</div>';
           html += '</div></div>';
+          html += '<div style="position:absolute;bottom:-14px;right:0;font-size:8px;color:rgba(255,255,255,.55);text-shadow:0 1px 2px rgba(0,0,0,.8);letter-spacing:.08em;white-space:nowrap;">ALMARE · '+(o.codigo||o.nome)+'</div>';
+          html += '</div></div>';
+          html += '<p style="font-size:10px;color:var(--muted);margin-top:8px;">Simulação em escala — posição sobre a parede é aproximada.</p>';
 
           // Info da obra
           html += '<div style="font-size:10px;letter-spacing:.25em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;">'+(o.colecao||'')+'</div>';
