@@ -661,7 +661,7 @@ Regra importante: se o ambiente estiver "carregado", recomende obra_unica_suave 
   const resp = await fetch('https://api.anthropic.com/v1/messages', {
     method:'POST',
     headers:{ 'x-api-key':ANTHROPIC_API_KEY, 'anthropic-version':'2023-06-01', 'content-type':'application/json' },
-    body: JSON.stringify({ model:'claude-sonnet-4-20250514', max_tokens:1024, messages:[{ role:'user', content }] })
+    body: JSON.stringify({ model:'claude-sonnet-5', max_tokens:1024, messages:[{ role:'user', content }] })
   });
   if(!resp.ok){
     const errTxt = await resp.text();
