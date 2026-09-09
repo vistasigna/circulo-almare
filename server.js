@@ -634,16 +634,28 @@ function extrairTamanhos(raw){
   });
 }
 
-// Analisa fotos do ambiente com Claude visão
-async function analisarAmbiente(fotosBase64, dados){
+// Analisa a foto do local (onde o quadro vai) + fotos de ambiente com Claude visão.
+// Retorna leitura de estilo/paleta E a área da parede (bbox) calibrada por objetos de referência reais.
+async function analisarAmbiente(fotoLocalBase64, fotosAmbienteBase64, dados){
   const content = [];
-  for(const f of fotosBase64){
+
+  const mLocal = fotoLocalBase64.match(/^data:(image\/\w+);base64,(.+)$/);
+  if(mLocal) content.push({ type:'image', source:{ type:'base64', media_type:mLocal[1], data:mLocal[2] } });
+
+  for(const f of (fotosAmbienteBase64||[])){
     const m = f.match(/^data:(image\/\w+);base64,(.+)$/);
-    if(m){
-      content.push({ type:'image', source:{ type:'base64', media_type:m[1], data:m[2] } });
-    }
+    if(m) content.push({ type:'image', source:{ type:'base64', media_type:m[1], data:m[2] } });
   }
-  content.push({ type:'text', text:`Você é um consultor curatorial de arte da ALMARE. Analise as fotos deste ambiente e retorne SOMENTE um JSON válido, sem texto antes ou depois, com esta estrutura exata:
+
+  content.push({ type:'text', text:`Você é um consultor curatorial de arte da ALMARE analisando fotos para sugerir onde e qual obra pendurar.
+
+A PRIMEIRA imagem é a foto exata do local/parede onde o quadro vai ficar — é nela que você deve identificar a área da parede disponível. As imagens seguintes (se houver) são fotos adicionais do ambiente só para entender o estilo geral, não para posicionamento.
+
+Na primeira imagem, procure objetos de referência de tamanho real conhecido para calibrar a escala: porta padrão (altura aproximadamente 210cm), interruptor de luz (aproximadamente 110cm do chão), tomada (aproximadamente 30cm do chão), rodapé, altura de sofá (aproximadamente 85cm), pé-direito padrão (aproximadamente 270-300cm). Use o que estiver visível.
+
+O cliente informou que a parede disponível mede ${dados.parede_largura}cm de largura por ${dados.parede_altura}cm de altura. Compare essa informação com o que você vê na imagem usando os objetos de referência. Se a proporção da parede que você identifica na foto for claramente incompatível com a medida informada, sinalize isso em "aviso_precisao".
+
+Retorne SOMENTE um JSON válido, sem texto antes ou depois, com esta estrutura exata:
 {
   "paleta_dominante": "descrição curta das cores predominantes do ambiente",
   "temperatura": "quente | fria | neutra",
@@ -651,17 +663,24 @@ async function analisarAmbiente(fotosBase64, dados){
   "carga_visual": "clean | equilibrado | carregado",
   "recomendacao_composicao": "obra_unica_protagonista | obra_unica_suave | composicao_multipla",
   "cor_parede": "cor da parede onde iria a obra",
-  "justificativa_ambiente": "2 frases sobre o caráter visual do ambiente"
+  "moldura_recomendada": "preta | carvalho | aco_escovado",
+  "justificativa_moldura": "1 frase curta sobre por que essa moldura combina com o ambiente",
+  "justificativa_ambiente": "2 frases sobre o caráter visual do ambiente",
+  "parede_bbox": { "top_pct": 0, "left_pct": 0, "width_pct": 0, "height_pct": 0 },
+  "referencia_usada": "qual objeto real você usou para calibrar a escala",
+  "aviso_precisao": "aviso curto se a proporção parecer inconsistente com o que o cliente informou, ou null se estiver coerente"
 }
 
-Dados informados pelo cliente: parede ${dados.parede_largura}cm de largura × ${dados.parede_altura}cm de altura. Finalidade: ${dados.finalidade}. Preferência de destaque: ${dados.destaque}. Preferência de paleta: ${dados.pref_paleta||'sem preferência'}.
+Sobre "moldura_recomendada": a ALMARE oferece três opções — preta, carvalho (madeira clara) e aço escovado. Escolha a que melhor combina com a cor da parede, o estilo do ambiente e a paleta da obra que será usada (você pode não saber a obra ainda, então baseie-se só no ambiente: paredes claras/neutras combinam bem com preta ou aço escovado para contraste, ambientes com madeira ou tom quente combinam com carvalho, ambientes industriais combinam com aço escovado ou preta).
+
+Sobre "parede_bbox": são as coordenadas em PORCENTAGEM de 0 a 100 da área de parede vazia e disponível na PRIMEIRA imagem, onde o quadro deveria ser centralizado. top_pct e left_pct são a posição do canto superior esquerdo dessa área útil, width_pct e height_pct são o tamanho dela, todos relativos ao tamanho total da imagem. Seja preciso: essa área deve ser só a parede livre, sem cobrir móveis, portas ou janelas.
 
 Regra importante: se o ambiente estiver "carregado", recomende obra_unica_suave ou uma obra que não compita com o que já existe. Se estiver "clean", pode recomendar obra protagonista.` });
 
   const resp = await fetch('https://api.anthropic.com/v1/messages', {
     method:'POST',
     headers:{ 'x-api-key':ANTHROPIC_API_KEY, 'anthropic-version':'2023-06-01', 'content-type':'application/json' },
-    body: JSON.stringify({ model:'claude-sonnet-5', max_tokens:1024, messages:[{ role:'user', content }] })
+    body: JSON.stringify({ model:'claude-sonnet-5', max_tokens:1200, messages:[{ role:'user', content }] })
   });
   if(!resp.ok){
     const errTxt = await resp.text();
@@ -674,8 +693,32 @@ Regra importante: se o ambiente estiver "carregado", recomende obra_unica_suave 
   const txt = (data.content||[]).filter(c=>c.type==='text').map(c=>c.text).join('');
   const jsonMatch = txt.match(/\{[\s\S]*\}/);
   if(!jsonMatch) throw new Error('IA não retornou análise válida. Resposta: '+txt.substring(0,200));
-  return JSON.parse(jsonMatch[0]);
+  const analise = JSON.parse(jsonMatch[0]);
+
+  const b = analise.parede_bbox;
+  if(!b || typeof b.top_pct!=='number' || typeof b.left_pct!=='number' || typeof b.width_pct!=='number' || typeof b.height_pct!=='number'){
+    analise.parede_bbox = { top_pct:25, left_pct:20, width_pct:60, height_pct:50 };
+    analise.aviso_precisao = analise.aviso_precisao || 'Não foi possível calibrar a posição exata pela imagem — a simulação usa uma posição aproximada.';
+  }
+
+  return analise;
 }
+
+// Gera um watermark SVG real (padrão diagonal repetido) como data URI
+function gerarMarcaDagua(codigo){
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="360" height="360">' +
+    '<g transform="rotate(-32 180 180)" font-family="Georgia, serif" fill="rgba(255,255,255,0.5)">' +
+    '<text x="-40" y="40" font-size="19" letter-spacing="4">ALMARE</text>' +
+    '<text x="-40" y="80" font-size="10" letter-spacing="2">' + codigo + '</text>' +
+    '<text x="-40" y="140" font-size="19" letter-spacing="4">ALMARE</text>' +
+    '<text x="-40" y="180" font-size="10" letter-spacing="2">' + codigo + '</text>' +
+    '<text x="-40" y="240" font-size="19" letter-spacing="4">ALMARE</text>' +
+    '<text x="-40" y="280" font-size="10" letter-spacing="2">' + codigo + '</text>' +
+    '<text x="-40" y="340" font-size="19" letter-spacing="4">ALMARE</text>' +
+    '</g></svg>';
+  return 'data:image/svg+xml;base64,' + Buffer.from(svg).toString('base64');
+}
+
 
 // Rankeia obras do catálogo contra a análise do ambiente
 function rankearObras(obras, analise, dados){
@@ -743,14 +786,21 @@ app.get('/simulador', authMembro, async(req,res)=>{
     <div class="nav-bar"><a href="/portal" class="nav-link">Passaporte</a><a href="/catalogo" class="nav-link">Obras</a><a href="/simulador" class="nav-link ativo">Simulador</a>${navImpacto}<a href="/sugestoes" class="nav-link">Voz</a><a href="/minhas-funcoes" class="nav-link">Funções</a><a href="/meu-convite" class="nav-link">Convidar</a></div>
     <a href="/portal" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);display:inline-block;margin-bottom:24px;">← Voltar ao portal</a>
     <h2 style="font-size:28px;margin-bottom:8px;">Simulador de ambiente</h2>
-    <p style="color:var(--muted);margin-bottom:32px;">Envie fotos do ambiente e informe as medidas. A curadoria ALMARE sugere as obras que melhor se integram ao espaço.</p>
+    <p style="color:var(--muted);margin-bottom:32px;">Envie a foto do local exato e informe as medidas. A curadoria ALMARE sugere as obras que melhor se integram ao espaço.</p>
 
     <form id="form-sim" onsubmit="return enviar(event)">
       <div class="card" style="margin-bottom:20px;">
-        <h3 style="font-size:18px;margin-bottom:20px;color:var(--gold);">Fotos do ambiente</h3>
-        <p style="font-size:12px;color:var(--muted);margin-bottom:16px;">Envie de 1 a 4 fotos, de ângulos diferentes. Inclua a parede onde a obra ficaria.</p>
-        <input type="file" id="fotos" accept="image/*" multiple onchange="previewFotos()" style="width:100%;background:#0d0d0d;border:1px solid var(--border);color:var(--text);padding:12px;border-radius:3px;font-size:13px;">
-        <div id="preview-fotos" style="display:flex;gap:10px;flex-wrap:wrap;margin-top:16px;"></div>
+        <h3 style="font-size:18px;margin-bottom:8px;color:var(--gold);">Foto do local exato</h3>
+        <p style="font-size:12px;color:var(--muted);margin-bottom:16px;">A foto da parede onde o quadro vai ficar. É nela que a simulação será montada — tente enquadrar a parede inteira, de frente, com boa luz.</p>
+        <input type="file" id="foto-local" accept="image/*" required onchange="previewFotoLocal()" style="width:100%;background:#0d0d0d;border:1px solid var(--border);color:var(--text);padding:12px;border-radius:3px;font-size:13px;">
+        <div id="preview-local" style="margin-top:16px;"></div>
+      </div>
+
+      <div class="card" style="margin-bottom:20px;">
+        <h3 style="font-size:18px;margin-bottom:8px;color:var(--gold);">Outras fotos do ambiente <span style="color:var(--muted);font-weight:400;">(opcional)</span></h3>
+        <p style="font-size:12px;color:var(--muted);margin-bottom:16px;">Fotos adicionais do cômodo ajudam a IA a entender o estilo geral — não são usadas na simulação, só na leitura.</p>
+        <input type="file" id="fotos-ambiente" accept="image/*" multiple onchange="previewFotosAmbiente()" style="width:100%;background:#0d0d0d;border:1px solid var(--border);color:var(--text);padding:12px;border-radius:3px;font-size:13px;">
+        <div id="preview-ambiente" style="display:flex;gap:10px;flex-wrap:wrap;margin-top:16px;"></div>
       </div>
 
       <div class="card" style="margin-bottom:20px;">
@@ -804,21 +854,34 @@ app.get('/simulador', authMembro, async(req,res)=>{
     <style>@keyframes spin{to{transform:rotate(360deg)}}</style>
 
     <script>
-      let fotosBase64 = [];
+      let fotoLocalBase64 = null;
+      let fotosAmbienteBase64 = [];
 
-      function previewFotos(){
-        const input = document.getElementById('fotos');
-        const files = Array.from(input.files).slice(0,4);
-        fotosBase64 = [];
-        const cont = document.getElementById('preview-fotos');
+      function previewFotoLocal(){
+        const input = document.getElementById('foto-local');
+        const file = input.files[0];
+        if(!file) return;
+        const reader = new FileReader();
+        reader.onload = e=>{
+          fotoLocalBase64 = e.target.result;
+          document.getElementById('preview-local').innerHTML = '<img src="'+e.target.result+'" style="width:100%;max-height:280px;object-fit:cover;border-radius:3px;border:1px solid var(--border);">';
+        };
+        reader.readAsDataURL(file);
+      }
+
+      function previewFotosAmbiente(){
+        const input = document.getElementById('fotos-ambiente');
+        const files = Array.from(input.files).slice(0,3);
+        fotosAmbienteBase64 = [];
+        const cont = document.getElementById('preview-ambiente');
         cont.innerHTML = '';
         files.forEach(file=>{
           const reader = new FileReader();
           reader.onload = e=>{
-            fotosBase64.push(e.target.result);
+            fotosAmbienteBase64.push(e.target.result);
             const img = document.createElement('img');
             img.src = e.target.result;
-            img.style.cssText = 'width:90px;height:90px;object-fit:cover;border-radius:3px;border:1px solid var(--border);';
+            img.style.cssText = 'width:80px;height:80px;object-fit:cover;border-radius:3px;border:1px solid var(--border);';
             cont.appendChild(img);
           };
           reader.readAsDataURL(file);
@@ -827,14 +890,15 @@ app.get('/simulador', authMembro, async(req,res)=>{
 
       async function enviar(e){
         e.preventDefault();
-        if(fotosBase64.length===0){ alert('Envie ao menos uma foto do ambiente.'); return false; }
+        if(!fotoLocalBase64){ alert('Envie a foto do local onde o quadro vai ficar.'); return false; }
 
         document.getElementById('form-sim').style.display='none';
         document.getElementById('loading').style.display='block';
         document.getElementById('resultado').innerHTML='';
 
         const payload = {
-          fotos: fotosBase64,
+          foto_local: fotoLocalBase64,
+          fotos_ambiente: fotosAmbienteBase64,
           parede_largura: document.getElementById('parede_largura').value,
           parede_altura: document.getElementById('parede_altura').value,
           finalidade: document.getElementById('finalidade').value,
@@ -857,50 +921,61 @@ app.get('/simulador', authMembro, async(req,res)=>{
 
       function renderResultado(data){
         const a = data.analise;
-        const fotoAmbiente = fotosBase64[0];
+        const bbox = a.parede_bbox;
+
         let html = '<div class="card" style="margin-bottom:24px;"><h3 style="font-size:18px;margin-bottom:16px;color:var(--gold);">Leitura do ambiente</h3>';
         html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px 24px;font-size:13px;">';
         html += '<div><span style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.1em;">Paleta</span><br>'+a.paleta_dominante+'</div>';
         html += '<div><span style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.1em;">Temperatura</span><br>'+a.temperatura+'</div>';
         html += '<div><span style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.1em;">Estilo</span><br>'+a.estilo+'</div>';
         html += '<div><span style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.1em;">Carga visual</span><br>'+a.carga_visual+'</div>';
-        html += '</div><p style="margin-top:16px;font-size:13px;color:#ccc;font-style:italic;">'+a.justificativa_ambiente+'</p></div>';
+        html += '</div><p style="margin-top:16px;font-size:13px;color:#ccc;font-style:italic;">'+a.justificativa_ambiente+'</p>';
+        if(a.referencia_usada){ html += '<p style="margin-top:10px;font-size:11px;color:var(--muted);">Escala calibrada por: '+a.referencia_usada+'</p>'; }
+        if(a.moldura_recomendada){
+          const nomesMoldura = {preta:'Preta', carvalho:'Carvalho', aco_escovado:'Aço escovado'};
+          html += '<p style="margin-top:10px;font-size:12px;color:var(--gold);">Moldura recomendada pela curadoria: '+(nomesMoldura[a.moldura_recomendada]||a.moldura_recomendada)+(a.justificativa_moldura?' — '+a.justificativa_moldura:'')+'</p>';
+        }
+        if(a.aviso_precisao){ html += '<div class="msg-info" style="margin-top:14px;">⚠ '+a.aviso_precisao+'</div>'; }
+        html += '</div>';
 
         html += '<h3 style="font-size:22px;margin-bottom:20px;">Obras sugeridas</h3>';
 
         data.sugestoes.forEach((o,i)=>{
           const t = o._melhorTamanho;
-          // escala: proporção do tamanho da obra vs parede
-          const escalaLargura = t ? (t.largura / data.parede_largura * 100) : 40;
+          // Escala real: fração do tamanho da obra em relação à largura de parede informada, aplicada à largura da bbox
+          const fracaoParede = t ? Math.min(t.largura / data.parede_largura, 1) : 0.3;
+          const larguraNaFoto = fracaoParede * bbox.width_pct; // % da FOTO INTEIRA
+          const centroX = bbox.left_pct + bbox.width_pct/2;
+          const centroY = bbox.top_pct + bbox.height_pct/2;
+          const larguraFinal = Math.min(Math.max(larguraNaFoto, 10), 75);
+          const coresMoldura = { preta:'#1a1a1a', carvalho:'#8a6d3b', aco_escovado:'linear-gradient(135deg,#aaa,#777)' };
+          const molduraInicial = coresMoldura[a.moldura_recomendada] || '#1a1a1a';
+
           html += '<div class="card" style="margin-bottom:24px;">';
           html += '<div style="display:flex;gap:8px;align-items:center;margin-bottom:16px;"><span class="badge badge-gold">'+(i+1)+'ª sugestão</span><span style="font-size:11px;color:var(--muted);">'+(o._score)+' pontos de compatibilidade</span></div>';
 
-          // Simulação: foto do ambiente com a obra sobreposta em escala real, moldura fina e sombra sutil
-          const escalaFinal = Math.min(Math.max(escalaLargura, 18), 55);
           html += '<div style="position:relative;background:#0d0d0d;border-radius:4px;overflow:hidden;margin-bottom:20px;line-height:0;">';
-          html += '<img src="'+fotoAmbiente+'" style="width:100%;display:block;">';
-          html += '<div style="position:absolute;top:42%;left:50%;transform:translate(-50%,-50%);width:'+escalaFinal+'%;">';
-          html += '<div class="moldura moldura-'+i+'" style="padding:3px;background:#1a1a1a;box-shadow:2px 5px 14px rgba(0,0,0,.45),0 1px 3px rgba(0,0,0,.3);">';
-          html += '<div style="padding:5px;background:#f4f2ee;">';
+          html += '<img src="'+data.foto_local+'" style="width:100%;display:block;">';
+          html += '<div style="position:absolute;top:'+centroY+'%;left:'+centroX+'%;transform:translate(-50%,-50%);width:'+larguraFinal+'%;">';
+          html += '<div class="moldura moldura-'+i+'" style="padding:3px;background:'+molduraInicial+';box-shadow:2px 6px 16px rgba(0,0,0,.4),0 1px 3px rgba(0,0,0,.25);">';
+          html += '<div style="position:relative;">';
           html += '<img src="'+o.imagem_preview+'" style="width:100%;display:block;">';
-          html += '</div></div>';
-          html += '<div style="position:absolute;bottom:-14px;right:0;font-size:8px;color:rgba(255,255,255,.55);text-shadow:0 1px 2px rgba(0,0,0,.8);letter-spacing:.08em;white-space:nowrap;">ALMARE · '+(o.codigo||o.nome)+'</div>';
-          html += '</div></div>';
-          html += '<p style="font-size:10px;color:var(--muted);margin-top:8px;">Simulação em escala — posição sobre a parede é aproximada.</p>';
+          html += '<div style="position:absolute;inset:0;background-image:url(\\''+data.watermark+'\\');background-repeat:repeat;mix-blend-mode:overlay;pointer-events:none;"></div>';
+          html += '</div></div></div>';
+          html += '</div>';
 
-          // Info da obra
           html += '<div style="font-size:10px;letter-spacing:.25em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;">'+(o.colecao||'')+'</div>';
           html += '<h4 style="font-family:\\'Cormorant Garamond\\',serif;font-size:22px;margin-bottom:12px;">'+o.nome+'</h4>';
           if(t) html += '<p style="font-size:13px;color:var(--gold);margin-bottom:12px;">Tamanho sugerido: '+t.label+'</p>';
 
-          // Molduras
-          html += '<div style="margin-bottom:16px;"><div style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:8px;">Escolha a moldura</div><div style="display:flex;gap:8px;">';
-          html += '<button type="button" onclick="trocarMoldura('+i+',\\'#1a1a1a\\')" style="width:36px;height:36px;background:#1a1a1a;border:2px solid var(--gold);border-radius:3px;cursor:pointer;" title="Preta"></button>';
-          html += '<button type="button" onclick="trocarMoldura('+i+',\\'#8a6d3b\\')" style="width:36px;height:36px;background:#8a6d3b;border:2px solid var(--border);border-radius:3px;cursor:pointer;" title="Carvalho"></button>';
-          html += '<button type="button" onclick="trocarMoldura('+i+',\\'#8b8b8b\\')" style="width:36px;height:36px;background:linear-gradient(135deg,#aaa,#777);border:2px solid var(--border);border-radius:3px;cursor:pointer;" title="Aço escovado"></button>';
+          html += '<div style="margin-bottom:16px;">';
+          html += '<div style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:8px;">Moldura — comparar outras opções</div>';
+          html += '<div style="display:flex;gap:8px;" id="molduras-'+i+'">';
+          html += '<button type="button" onclick="trocarMoldura('+i+',\\'#1a1a1a\\',\\'preta\\')" data-cor="preta" style="width:36px;height:36px;background:#1a1a1a;border:2px solid '+(a.moldura_recomendada==='preta'?'var(--gold)':'var(--border)')+';border-radius:3px;cursor:pointer;" title="Preta"></button>';
+          html += '<button type="button" onclick="trocarMoldura('+i+',\\'#8a6d3b\\',\\'carvalho\\')" data-cor="carvalho" style="width:36px;height:36px;background:#8a6d3b;border:2px solid '+(a.moldura_recomendada==='carvalho'?'var(--gold)':'var(--border)')+';border-radius:3px;cursor:pointer;" title="Carvalho"></button>';
+          html += '<button type="button" onclick="trocarMoldura('+i+',\\'linear-gradient(135deg,#aaa,#777)\\',\\'aco_escovado\\')" data-cor="aco_escovado" style="width:36px;height:36px;background:linear-gradient(135deg,#aaa,#777);border:2px solid '+(a.moldura_recomendada==='aco_escovado'?'var(--gold)':'var(--border)')+';border-radius:3px;cursor:pointer;" title="Aço escovado"></button>';
           html += '</div></div>';
 
-          // Justificativa
           if(o._motivos && o._motivos.length){
             html += '<div style="font-size:12px;color:#aaa;line-height:1.7;"><strong style="color:var(--gold);">Por que combina:</strong> '+o._motivos.join('; ')+'.</div>';
           }
@@ -911,9 +986,15 @@ app.get('/simulador', authMembro, async(req,res)=>{
         document.getElementById('resultado').innerHTML = html;
       }
 
-      function trocarMoldura(idx, cor){
+      function trocarMoldura(idx, cor, slug){
         const el = document.querySelector('.moldura-'+idx);
         if(el) el.style.background = cor;
+        const grupo = document.getElementById('molduras-'+idx);
+        if(grupo){
+          grupo.querySelectorAll('button').forEach(b=>{
+            b.style.borderColor = b.dataset.cor===slug ? 'var(--gold)' : 'var(--border)';
+          });
+        }
       }
     </script>
   `,true));
@@ -922,33 +1003,39 @@ app.get('/simulador', authMembro, async(req,res)=>{
 // POST — processa a análise
 app.post('/simulador/analisar', authMembro, async(req,res)=>{
   try{
-    const { fotos, parede_largura, parede_altura, finalidade, destaque, pref_paleta } = req.body;
-    if(!fotos || !fotos.length) return res.json({ erro:'Nenhuma foto recebida.' });
+    const { foto_local, fotos_ambiente, parede_largura, parede_altura, finalidade, destaque, pref_paleta } = req.body;
+    if(!foto_local) return res.json({ erro:'Nenhuma foto do local recebida.' });
     if(!ANTHROPIC_API_KEY) return res.json({ erro:'API de análise não configurada. Adicione ANTHROPIC_API_KEY nas variáveis do Railway.' });
 
     const dados = { parede_largura, parede_altura, finalidade, destaque, pref_paleta };
 
-    // 1. IA analisa o ambiente
-    const analise = await analisarAmbiente(fotos, dados);
+    const analise = await analisarAmbiente(foto_local, fotos_ambiente||[], dados);
 
-    // 2. Busca obras aprovadas
     const obras = await pool.query(`
       SELECT id, codigo, nome, colecao, paleta, paleta_detalhe, personalidade_da_obra,
              nivel_de_destaque, ambientes_compativeis, tamanhos_recomendados,
              formato_recomendado, imagem_preview
       FROM almare_obras WHERE status='aprovada'`);
 
-    // 3. Rankeia
     const sugestoes = rankearObras(obras.rows, analise, dados);
 
     if(!sugestoes.length) return res.json({ erro:'Nenhuma obra do catálogo é compatível com essas medidas. Tente uma parede maior.' });
 
-    res.json({ analise, sugestoes, parede_largura: parseInt(parede_largura), parede_altura: parseInt(parede_altura) });
+    // Marca d'água genérica (uma só, o código muda visualmente por obra no front se quiser evoluir depois)
+    const watermark = gerarMarcaDagua('ALMARE');
+
+    res.json({
+      analise, sugestoes, watermark,
+      foto_local,
+      parede_largura: parseInt(parede_largura),
+      parede_altura: parseInt(parede_altura)
+    });
   }catch(e){
     console.error('Simulador:', e.message);
     res.json({ erro:'Erro ao processar: '+e.message });
   }
 });
+
 
 
 // ─── CATÁLOGO ─────────────────────────────────────────────────────────────────
