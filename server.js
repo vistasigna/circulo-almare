@@ -1098,8 +1098,8 @@ app.get('/catalogo',authMembro,async(req,res)=>{
 
       return `<div class="obra-card" data-colecao="${colecaoAttr}" data-paleta="${palataAttr}" data-nome="${(o.nome||'').toLowerCase()}">
         <div onclick="abrirObra(${o.id})" style="cursor:pointer;">
-          <div style="position:relative;background:#0d0d0d;border-radius:4px 4px 0 0;overflow:hidden;aspect-ratio:4/3;">
-            ${o.imagem_preview?`<img src="${o.imagem_preview}" style="width:100%;height:100%;object-fit:cover;" loading="lazy">`:`<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:11px;letter-spacing:.15em;">SEM IMAGEM</div>`}
+          <div style="position:relative;background:#0d0d0d;border-radius:4px 4px 0 0;overflow:hidden;height:300px;display:flex;align-items:center;justify-content:center;">
+            ${o.imagem_preview?`<img src="${o.imagem_preview}" style="max-width:100%;max-height:100%;width:auto;height:auto;object-fit:contain;" loading="lazy">`:`<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:11px;letter-spacing:.15em;">SEM IMAGEM</div>`}
           </div>
           <div style="padding:16px;background:var(--surface);border:1px solid var(--border);border-top:none;border-radius:0 0 4px 4px;">
             <div style="font-size:10px;letter-spacing:.25em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;">${o.colecao||'—'}</div>
