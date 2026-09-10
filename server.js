@@ -1028,8 +1028,11 @@ app.get('/simulador', authMembro, async(req,res)=>{
       }
 
       function renderResultado(data){
+        document.getElementById('resultado').innerHTML = ''; // limpa qualquer resultado anterior
         const a = data.analise;
         const bbox = a.parede_bbox;
+        // Blindagem: nunca renderiza mais de 3 sugestões, aconteça o que acontecer no backend
+        const sugestoes = (data.sugestoes || []).slice(0, 3);
 
         let html = '<div class="card" style="margin-bottom:24px;"><h3 style="font-size:18px;margin-bottom:16px;color:var(--gold);">Leitura do ambiente</h3>';
         html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px 24px;font-size:13px;">';
@@ -1048,7 +1051,7 @@ app.get('/simulador', authMembro, async(req,res)=>{
 
         html += '<h3 style="font-size:22px;margin-bottom:20px;">Obras sugeridas</h3>';
 
-        data.sugestoes.forEach((o,i)=>{
+        sugestoes.forEach((o,i)=>{
           const t = o._melhorTamanho;
           // Mesma premissa usada na altura: a foto enquadra a parede inteira, de ponta a ponta.
           // A escala usa direto o número digitado pelo cliente — sem depender de estimativa da IA.
@@ -1151,7 +1154,7 @@ app.post('/simulador/analisar', authMembro, async(req,res)=>{
              formato_recomendado, orientacao, imagem_preview
       FROM almare_obras WHERE status='aprovada' AND codigo <> 'ALM-001'`);
 
-    const sugestoes = rankearObras(obras.rows, analise, dados);
+    const sugestoes = rankearObras(obras.rows, analise, dados).slice(0, 3);
 
     if(!sugestoes.length) return res.json({ erro:'Nenhuma obra do catálogo é compatível com essas medidas. Tente uma parede maior.' });
 
