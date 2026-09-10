@@ -1133,7 +1133,7 @@ app.post('/simulador/analisar', authMembro, async(req,res)=>{
       SELECT id, codigo, nome, colecao, paleta, paleta_detalhe, personalidade_da_obra,
              nivel_de_destaque, ambientes_compativeis, tamanhos_recomendados,
              formato_recomendado, orientacao, imagem_preview
-      FROM almare_obras WHERE status='aprovada'`);
+      FROM almare_obras WHERE status='aprovada' AND codigo <> 'ALM-001'`);
 
     const sugestoes = rankearObras(obras.rows, analise, dados);
 
