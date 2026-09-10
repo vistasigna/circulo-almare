@@ -981,6 +981,20 @@ app.get('/simulador', authMembro, async(req,res)=>{
 
     <div id="resultado" style="margin-top:40px;"></div>
 
+    <!-- MODAL GALERIA DE TROCA DE OBRA -->
+    <div id="galeria-modal" onclick="if(event.target===this)fecharGaleria()" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:1000;overflow-y:auto;padding:30px 20px;">
+      <div style="max-width:900px;margin:0 auto;background:#111;border:1px solid #222;border-radius:4px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:20px 24px;border-bottom:1px solid #222;position:sticky;top:0;background:#111;z-index:1;">
+          <h3 style="font-size:20px;">Escolher outra obra</h3>
+          <button onclick="fecharGaleria()" style="background:none;border:none;color:var(--muted);font-size:22px;cursor:pointer;">✕</button>
+        </div>
+        <div style="padding:20px 24px;">
+          <input type="text" placeholder="Buscar por nome, código ou coleção..." oninput="renderGaleria(this.value)" style="width:100%;background:#0d0d0d;border:1px solid var(--border);color:var(--text);padding:12px 14px;border-radius:3px;font-size:14px;font-family:'Inter',sans-serif;outline:none;margin-bottom:20px;">
+          <div id="galeria-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:14px;"></div>
+        </div>
+      </div>
+    </div>
+
     <style>@keyframes spin{to{transform:rotate(360deg)}}</style>
 
     <script>
@@ -1049,111 +1063,203 @@ app.get('/simulador', authMembro, async(req,res)=>{
         return false;
       }
 
+      // Estado global — guarda os dados da simulação atual para permitir edições (trocar tamanho/obra)
+      let SIM = { data:null, cards:[] };
+
       function renderResultado(data){
-        document.getElementById('resultado').innerHTML = ''; // limpa qualquer resultado anterior
+        document.getElementById('resultado').innerHTML = '';
+        SIM.data = data;
         const a = data.analise;
-        const bbox = a.parede_bbox;
-        // Blindagem: nunca renderiza mais de 3 sugestões, aconteça o que acontecer no backend
         const sugestoes = (data.sugestoes || []).slice(0, 3);
 
-        let html = '<div class="card" style="margin-bottom:24px;"><h3 style="font-size:18px;margin-bottom:16px;color:var(--gold);">Leitura do ambiente</h3>';
-        html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px 24px;font-size:13px;">';
+        // Estado editável de cada card (tamanho e obra podem mudar; moldura começa na recomendada)
+        SIM.cards = sugestoes.map(o => ({
+          obra: o,
+          tamanho: o._melhorTamanho,
+          moldura: a.moldura_recomendada || 'preta'
+        }));
+
+        const nomesMoldura = {preta:'Preta', carvalho:'Carvalho', aco_escovado:'Aço escovado'};
+
+        // ── Leitura do ambiente + curadoria em destaque ──
+        let html = '<div class="card" style="margin-bottom:24px;">';
+        html += '<h3 style="font-size:18px;margin-bottom:16px;color:var(--gold);">Leitura do ambiente</h3>';
+        html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px 24px;font-size:13px;margin-bottom:16px;">';
         html += '<div><span style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.1em;">Paleta</span><br>'+a.paleta_dominante+'</div>';
         html += '<div><span style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.1em;">Temperatura</span><br>'+a.temperatura+'</div>';
         html += '<div><span style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.1em;">Estilo</span><br>'+a.estilo+'</div>';
         html += '<div><span style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.1em;">Carga visual</span><br>'+a.carga_visual+'</div>';
-        html += '</div><p style="margin-top:16px;font-size:13px;color:#ccc;font-style:italic;">'+a.justificativa_ambiente+'</p>';
-        if(a.referencia_usada){ html += '<p style="margin-top:10px;font-size:11px;color:var(--muted);">Escala calibrada por: '+a.referencia_usada+'</p>'; }
+        html += '</div>';
+        html += '<p style="font-size:13px;color:#ccc;font-style:italic;line-height:1.7;">'+a.justificativa_ambiente+'</p>';
+
+        // Bloco de curadoria destacado (moldura recomendada + justificativa)
         if(a.moldura_recomendada){
-          const nomesMoldura = {preta:'Preta', carvalho:'Carvalho', aco_escovado:'Aço escovado'};
-          html += '<p style="margin-top:10px;font-size:12px;color:var(--gold);">Moldura recomendada pela curadoria: '+(nomesMoldura[a.moldura_recomendada]||a.moldura_recomendada)+(a.justificativa_moldura?' — '+a.justificativa_moldura:'')+'</p>';
+          html += '<div style="margin-top:20px;padding:16px;background:rgba(201,169,110,.06);border:1px solid rgba(201,169,110,.25);border-radius:4px;">';
+          html += '<div style="font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--gold);margin-bottom:6px;">Recomendação de curadoria</div>';
+          html += '<div style="font-size:14px;margin-bottom:4px;">Moldura <strong style="color:var(--gold);">'+(nomesMoldura[a.moldura_recomendada]||a.moldura_recomendada)+'</strong></div>';
+          if(a.justificativa_moldura) html += '<div style="font-size:12px;color:#bbb;line-height:1.6;">'+a.justificativa_moldura+'</div>';
+          html += '</div>';
         }
+        if(a.referencia_usada){ html += '<p style="margin-top:10px;font-size:11px;color:var(--muted);">Escala calibrada por: '+a.referencia_usada+'</p>'; }
         if(a.aviso_precisao){ html += '<div class="msg-info" style="margin-top:14px;">⚠ '+a.aviso_precisao+'</div>'; }
         html += '</div>';
 
-        html += '<h3 style="font-size:22px;margin-bottom:20px;">Obras sugeridas</h3>';
+        html += '<h3 style="font-size:22px;margin-bottom:8px;">Obras sugeridas</h3>';
+        html += '<p style="font-size:12px;color:var(--muted);margin-bottom:20px;">Nossa curadoria escolheu estas três. Você pode ajustar o tamanho ou trocar a obra em cada uma.</p>';
 
-        sugestoes.forEach((o,i)=>{
-          const t = o._melhorTamanho;
-          // A área de parede LIVRE (sem porta/estante/móveis) foi identificada pela IA no bbox.
-          // Tudo é ancorado nela: a largura do bbox representa a largura real da parede informada
-          // pelo cliente, e o quadro é escalado e posicionado DENTRO dessa área livre.
-          const bx = (bbox && typeof bbox.left_pct==='number') ? bbox : {left_pct:15, top_pct:10, width_pct:70, height_pct:75};
-          const larguraRealParede = parseInt(data.parede_largura) || 300;
-          const fracaoParede = t ? Math.min(t.largura / larguraRealParede, 0.95) : 0.4;
-          // largura do quadro = fração do tamanho real, aplicada sobre a largura da PAREDE LIVRE (bbox)
-          const larguraNaFoto = fracaoParede * bx.width_pct;
-          // centro horizontal = centro da área de parede livre (não o centro da foto, que inclui móveis)
-          const centroX = bx.left_pct + bx.width_pct/2;
-          // Centro vertical a 160cm do chão — regra fixa de curadoria (usa a altura informada)
-          const alturaParedeCm = data.parede_altura;
-          const centroY = Math.max(12, Math.min(88, ((alturaParedeCm - 160) / alturaParedeCm) * 100));
-          const larguraFinal = Math.min(Math.max(larguraNaFoto, 8), bx.width_pct*0.98);
-          const coresMoldura = { preta:'#1a1a1a', carvalho:'#8a6d3b', aco_escovado:'#9a9a9a' };
-          const molduraInicial = coresMoldura[a.moldura_recomendada] || '#1a1a1a';
-          // Fileto e vão real de 6mm cada, proporcional ao tamanho real da obra (não pixel fixo) —
-          // numa obra pequena o vão aparece relativamente maior, numa grande relativamente menor,
-          // exatamente como acontece com uma moldura física de verdade.
-          const larguraCmObra = t ? t.largura : 100;
-          const gapPct = Math.min(Math.max((0.6/larguraCmObra)*100, 0.4), 3.5);
-
-          html += '<div class="card" style="margin-bottom:24px;">';
-          html += '<div style="display:flex;gap:8px;align-items:center;margin-bottom:16px;"><span class="badge badge-gold">'+(i+1)+'ª sugestão</span><span style="font-size:11px;color:var(--muted);">'+Math.round(o._score)+' pontos de compatibilidade</span></div>';
-
-          html += '<div style="position:relative;background:#0d0d0d;border-radius:4px;overflow:hidden;margin-bottom:20px;line-height:0;">';
-          html += '<img src="'+data.foto_local+'" style="width:100%;display:block;">';
-          html += '<div class="quadro-wrap-'+i+'" style="position:absolute;top:'+centroY+'%;left:'+centroX+'%;transform:translate(-50%,-50%);width:'+larguraFinal+'%;aspect-ratio:'+(t?t.largura:1)+'/'+(t?t.altura:1)+';">';
-          html += '<div class="moldura moldura-'+i+'" style="border:2px solid '+molduraInicial+';padding:'+gapPct.toFixed(2)+'%;background:#0a0a0a;box-sizing:border-box;width:100%;height:100%;">';
-          html += '<div style="position:relative;width:100%;height:100%;">';
-          html += '<img src="'+o.imagem_preview+'" onload="ajustarOrientacao(this,'+i+','+(t?t.largura:1)+','+(t?t.altura:1)+')" style="width:100%;height:100%;object-fit:fill;background:#f4f2ee;display:block;">';
-          html += '<div style="position:absolute;inset:0;background-image:url(\\''+data.watermark+'\\');background-repeat:repeat;mix-blend-mode:overlay;pointer-events:none;"></div>';
-          html += '</div></div></div>';
-          html += '</div>';
-
-          html += '<div style="font-size:10px;letter-spacing:.25em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;">'+(o.colecao||'')+'</div>';
-          html += '<h4 style="font-family:\\'Cormorant Garamond\\',serif;font-size:22px;margin-bottom:4px;">'+o.nome+'</h4>';
-          html += '<div style="font-size:11px;color:var(--muted);margin-bottom:12px;">Código: '+(o.codigo||o.id)+'</div>';
-          if(t) html += '<p style="font-size:13px;color:var(--gold);margin-bottom:12px;">Tamanho sugerido: '+t.label+(t.precoLabel?' · '+t.precoLabel:'')+'</p>';
-
-          html += '<div style="margin-bottom:16px;">';
-          html += '<div style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:8px;">Moldura — comparar outras opções</div>';
-          html += '<div style="display:flex;gap:8px;" id="molduras-'+i+'">';
-          html += '<button type="button" onclick="trocarMoldura('+i+',\\'#1a1a1a\\',\\'preta\\')" data-cor="preta" style="width:36px;height:36px;background:#1a1a1a;border:2px solid '+(a.moldura_recomendada==='preta'?'var(--gold)':'var(--border)')+';border-radius:3px;cursor:pointer;" title="Preta"></button>';
-          html += '<button type="button" onclick="trocarMoldura('+i+',\\'#8a6d3b\\',\\'carvalho\\')" data-cor="carvalho" style="width:36px;height:36px;background:#8a6d3b;border:2px solid '+(a.moldura_recomendada==='carvalho'?'var(--gold)':'var(--border)')+';border-radius:3px;cursor:pointer;" title="Carvalho"></button>';
-          html += '<button type="button" onclick="trocarMoldura('+i+',\\'#9a9a9a\\',\\'aco_escovado\\')" data-cor="aco_escovado" style="width:36px;height:36px;background:linear-gradient(135deg,#aaa,#777);border:2px solid '+(a.moldura_recomendada==='aco_escovado'?'var(--gold)':'var(--border)')+';border-radius:3px;cursor:pointer;" title="Aço escovado"></button>';
-          html += '</div></div>';
-
-          if(o._motivos && o._motivos.length){
-            html += '<div style="font-size:12px;color:#aaa;line-height:1.7;"><strong style="color:var(--gold);">Por que combina:</strong> '+o._motivos.join('; ')+'.</div>';
-          }
-          html += '</div>';
-        });
-
+        // Containers dos 3 cards (preenchidos por montarCard)
+        SIM.cards.forEach((c,i)=>{ html += '<div id="card-slot-'+i+'"></div>'; });
         html += '<button onclick="location.reload()" class="btn btn-outline btn-full" style="margin-top:16px;">Simular outro ambiente</button>';
+
         document.getElementById('resultado').innerHTML = html;
+        SIM.cards.forEach((c,i)=> montarCard(i));
       }
 
-      function trocarMoldura(idx, cor, slug){
-        const el = document.querySelector('.moldura-'+idx);
-        if(el) el.style.borderColor = cor;
-        const grupo = document.getElementById('molduras-'+idx);
-        if(grupo){
-          grupo.querySelectorAll('button').forEach(b=>{
-            b.style.borderColor = b.dataset.cor===slug ? 'var(--gold)' : 'var(--border)';
+      // Desenha (ou redesenha) o card do slot i com o estado atual (obra + tamanho + moldura)
+      function montarCard(i){
+        const data = SIM.data;
+        const a = data.analise;
+        const c = SIM.cards[i];
+        const o = c.obra;
+        const t = c.tamanho;
+        const nomesMoldura = {preta:'Preta', carvalho:'Carvalho', aco_escovado:'Aço escovado'};
+        const coresMoldura = { preta:'#1a1a1a', carvalho:'#8a6d3b', aco_escovado:'#9a9a9a' };
+
+        const bbox = a.parede_bbox;
+        const bx = (bbox && typeof bbox.left_pct==='number') ? bbox : {left_pct:15, top_pct:10, width_pct:70, height_pct:75};
+        const larguraRealParede = parseInt(data.parede_largura) || 300;
+        const fracaoParede = t ? Math.min(t.largura / larguraRealParede, 0.95) : 0.4;
+        const larguraNaFoto = fracaoParede * bx.width_pct;
+        const centroX = bx.left_pct + bx.width_pct/2;
+        const alturaParedeCm = data.parede_altura;
+        const centroY = Math.max(12, Math.min(88, ((alturaParedeCm - 160) / alturaParedeCm) * 100));
+        const larguraFinal = Math.min(Math.max(larguraNaFoto, 8), bx.width_pct*0.98);
+        const molduraCor = coresMoldura[c.moldura] || '#1a1a1a';
+        const larguraCmObra = t ? t.largura : 100;
+        const gapPct = Math.min(Math.max((0.6/larguraCmObra)*100, 0.4), 3.5);
+
+        let html = '<div class="card" style="margin-bottom:24px;">';
+        html += '<div style="display:flex;gap:8px;align-items:center;margin-bottom:16px;"><span class="badge badge-gold">'+(i+1)+'ª sugestão</span>'+(o._score?'<span style="font-size:11px;color:var(--muted);">'+Math.round(o._score)+' pontos de compatibilidade</span>':'')+'</div>';
+
+        // Simulação
+        html += '<div style="position:relative;background:#0d0d0d;border-radius:4px;overflow:hidden;margin-bottom:20px;line-height:0;">';
+        html += '<img src="'+data.foto_local+'" style="width:100%;display:block;">';
+        html += '<div class="quadro-wrap-'+i+'" style="position:absolute;top:'+centroY+'%;left:'+centroX+'%;transform:translate(-50%,-50%);width:'+larguraFinal+'%;aspect-ratio:'+(t?t.largura:1)+'/'+(t?t.altura:1)+';">';
+        html += '<div class="moldura-'+i+'" style="border:2px solid '+molduraCor+';padding:'+gapPct.toFixed(2)+'%;background:#0a0a0a;box-sizing:border-box;width:100%;height:100%;">';
+        html += '<div style="position:relative;width:100%;height:100%;">';
+        html += '<img src="'+o.imagem_preview+'" style="width:100%;height:100%;object-fit:fill;background:#f4f2ee;display:block;">';
+        html += '<div style="position:absolute;inset:0;background-image:url(\''+data.watermark+'\');background-repeat:repeat;mix-blend-mode:overlay;pointer-events:none;"></div>';
+        html += '</div></div></div>';
+        html += '</div>';
+
+        // Info da obra
+        html += '<div style="font-size:10px;letter-spacing:.25em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;">'+(o.colecao||'')+'</div>';
+        html += '<h4 style="font-family:\'Cormorant Garamond\',serif;font-size:22px;margin-bottom:4px;">'+o.nome+'</h4>';
+        html += '<div style="font-size:11px;color:var(--muted);margin-bottom:16px;">Código: '+(o.codigo||o.id)+'</div>';
+
+        // Dropdown de tamanho
+        const tamanhos = o._tamanhosDisponiveis || (t?[t]:[]);
+        if(tamanhos.length){
+          html += '<div style="margin-bottom:16px;">';
+          html += '<div style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:8px;">Tamanho</div>';
+          html += '<select onchange="mudarTamanho('+i+',this.value)" style="width:100%;background:#0d0d0d;border:1px solid var(--border);color:var(--text);padding:11px 14px;border-radius:3px;font-size:14px;font-family:\'Inter\',sans-serif;outline:none;cursor:pointer;">';
+          tamanhos.forEach((tm,idx)=>{
+            const sel = (t && tm.largura===t.largura && tm.altura===t.altura) ? 'selected' : '';
+            html += '<option value="'+idx+'" '+sel+'>'+tm.label+(tm.precoLabel?' · '+tm.precoLabel:'')+'</option>';
           });
+          html += '</select></div>';
         }
+
+        // Moldura
+        html += '<div style="margin-bottom:16px;">';
+        html += '<div style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:8px;">Moldura'+(c.moldura===a.moldura_recomendada?' <span style="color:var(--gold);">(recomendada)</span>':'')+'</div>';
+        html += '<div style="display:flex;gap:8px;" id="molduras-'+i+'">';
+        [['preta','#1a1a1a'],['carvalho','#8a6d3b'],['aco_escovado','linear-gradient(135deg,#aaa,#777)']].forEach(([slug,bg])=>{
+          const borda = c.moldura===slug ? 'var(--gold)' : 'var(--border)';
+          html += '<button type="button" onclick="mudarMoldura('+i+',\\''+slug+'\\')" data-cor="'+slug+'" style="width:36px;height:36px;background:'+bg+';border:2px solid '+borda+';border-radius:3px;cursor:pointer;" title="'+(nomesMoldura[slug])+'"></button>';
+        });
+        html += '</div></div>';
+
+        // Trocar obra
+        html += '<button type="button" onclick="abrirGaleria('+i+')" class="btn btn-outline" style="width:100%;margin-bottom:16px;">Trocar por outra obra</button>';
+
+        // Por que combina
+        if(o._motivos && o._motivos.length){
+          html += '<div style="font-size:12px;color:#aaa;line-height:1.7;"><strong style="color:var(--gold);">Por que combina:</strong> '+o._motivos.join('; ')+'.</div>';
+        }
+        html += '</div>';
+
+        document.getElementById('card-slot-'+i).innerHTML = html;
       }
 
-      // Corrige a orientação da moldura usando a foto REAL da obra como fonte de verdade —
-      // nunca deforma nem gira a obra, apenas ajusta a caixa (aspect-ratio) pra bater com o
-      // formato real do arquivo, independente do que o cadastro diz.
-      function ajustarOrientacao(img, idx, largura, altura){
-        const fotoVertical = img.naturalHeight > img.naturalWidth;
-        const tamanhoVertical = altura > largura;
-        if(fotoVertical !== tamanhoVertical && largura !== altura){
-          const wrap = document.querySelector('.quadro-wrap-'+idx);
-          if(wrap) wrap.style.aspectRatio = altura + '/' + largura;
+      function mudarTamanho(i, idx){
+        const tamanhos = SIM.cards[i].obra._tamanhosDisponiveis || [];
+        if(tamanhos[idx]){ SIM.cards[i].tamanho = tamanhos[idx]; montarCard(i); }
+      }
+
+      function mudarMoldura(i, slug){
+        SIM.cards[i].moldura = slug;
+        montarCard(i);
+      }
+
+      // ── Galeria de troca de obra ──
+      let GALERIA = { obras:null, slot:null };
+
+      async function abrirGaleria(i){
+        GALERIA.slot = i;
+        const modal = document.getElementById('galeria-modal');
+        modal.style.display = 'block';
+        document.body.style.overflow = 'hidden';
+        document.getElementById('galeria-grid').innerHTML = '<p style="color:var(--muted);text-align:center;padding:40px;">Carregando obras...</p>';
+        if(!GALERIA.obras){
+          try{
+            const r = await fetch('/simulador/obras');
+            const d = await r.json();
+            GALERIA.obras = d.obras || [];
+          }catch(e){ GALERIA.obras = []; }
         }
+        renderGaleria('');
+      }
+
+      function fecharGaleria(){
+        document.getElementById('galeria-modal').style.display = 'none';
+        document.body.style.overflow = '';
+      }
+
+      function renderGaleria(busca){
+        const b = (busca||'').toLowerCase();
+        const filtradas = GALERIA.obras.filter(o =>
+          !b || (o.nome||'').toLowerCase().includes(b) || (o.codigo||'').toLowerCase().includes(b) || (o.colecao||'').toLowerCase().includes(b)
+        );
+        let html = '';
+        filtradas.forEach(o=>{
+          html += '<div onclick="escolherObra('+o.id+')" style="cursor:pointer;border:1px solid var(--border);border-radius:4px;overflow:hidden;transition:border-color .2s;" onmouseover="this.style.borderColor=\'var(--gold)\'" onmouseout="this.style.borderColor=\'var(--border)\'">';
+          html += '<div style="height:150px;background:#0d0d0d;display:flex;align-items:center;justify-content:center;overflow:hidden;">';
+          html += o.imagem_preview ? '<img src="'+o.imagem_preview+'" style="max-width:100%;max-height:100%;object-fit:contain;">' : '<span style="color:var(--muted);font-size:10px;">SEM IMAGEM</span>';
+          html += '</div>';
+          html += '<div style="padding:10px;">';
+          html += '<div style="font-size:9px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);">'+(o.colecao||'')+'</div>';
+          html += '<div style="font-family:\'Cormorant Garamond\',serif;font-size:15px;">'+o.nome+'</div>';
+          html += '<div style="font-size:10px;color:var(--muted);">'+o.codigo+'</div>';
+          html += '</div></div>';
+        });
+        document.getElementById('galeria-grid').innerHTML = html || '<p style="color:var(--muted);text-align:center;padding:40px;grid-column:1/-1;">Nenhuma obra encontrada.</p>';
+      }
+
+      function escolherObra(id){
+        const nova = GALERIA.obras.find(o=>o.id===id);
+        if(!nova) return;
+        const i = GALERIA.slot;
+        // Monta o objeto obra no formato que montarCard espera
+        SIM.cards[i].obra = {
+          id: nova.id, codigo: nova.codigo, nome: nova.nome, colecao: nova.colecao,
+          imagem_preview: nova.imagem_preview,
+          _tamanhosDisponiveis: nova.tamanhos,
+          _motivos: ['escolha do cliente']
+        };
+        SIM.cards[i].tamanho = nova.tamanhos && nova.tamanhos.length ? nova.tamanhos[0] : null;
+        fecharGaleria();
+        montarCard(i);
       }
     </script>
   `,true));
@@ -1180,6 +1286,11 @@ app.post('/simulador/analisar', authMembro, async(req,res)=>{
 
     if(!sugestoes.length) return res.json({ erro:'Nenhuma obra do catálogo é compatível com essas medidas. Tente uma parede maior.' });
 
+    // Anexa a cada sugestão TODOS os tamanhos disponíveis da obra (pro dropdown de troca de tamanho)
+    for(const s of sugestoes){
+      s._tamanhosDisponiveis = tamanhosOficiais(s.formato_recomendado, s.tamanhos_recomendados);
+    }
+
     // Marca d'água genérica (uma só, o código muda visualmente por obra no front se quiser evoluir depois)
     const watermark = gerarMarcaDagua('ALMARE');
 
@@ -1192,6 +1303,25 @@ app.post('/simulador/analisar', authMembro, async(req,res)=>{
   }catch(e){
     console.error('Simulador:', e.message);
     res.json({ erro:'Erro ao processar: '+e.message });
+  }
+});
+
+// Rota que devolve todas as obras (pra galeria de troca de obra no simulador)
+app.get('/simulador/obras', authMembro, async(req,res)=>{
+  try{
+    const obras = await pool.query(`
+      SELECT id, codigo, nome, colecao, formato_recomendado, orientacao,
+             tamanhos_recomendados, imagem_preview
+      FROM almare_obras WHERE status='aprovada' AND codigo <> 'ALM-001'
+      ORDER BY colecao, nome`);
+    const lista = obras.rows.map(o => ({
+      id: o.id, codigo: o.codigo, nome: o.nome, colecao: o.colecao,
+      imagem_preview: o.imagem_preview,
+      tamanhos: tamanhosOficiais(o.formato_recomendado, o.tamanhos_recomendados)
+    }));
+    res.json({ obras: lista });
+  }catch(e){
+    res.json({ erro: e.message });
   }
 });
 
