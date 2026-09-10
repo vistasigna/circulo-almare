@@ -730,6 +730,8 @@ Sobre "parede_bbox": são as coordenadas em PORCENTAGEM de 0 a 100 da área de p
 
 ISSO É CRÍTICO E OBRIGATÓRIO: antes de definir "parede_bbox", primeiro identifique mentalmente TODOS os móveis e objetos visíveis na foto que ocupam a parede ou ficam na frente dela — sofás, poltronas, mesas, aparadores, estantes, plantas, portas, janelas, interruptores, tomadas, luminárias. A área de "parede_bbox" NUNCA pode se sobrepor a nenhum desses elementos, nem parcialmente. Se houver um móvel (como um sofá) na parte de baixo da parede, a área da bbox deve começar ACIMA do topo desse móvel, com uma margem de segurança equivalente a pelo menos 20-25cm reais de folga entre o topo do móvel e o início da bbox (isso é a distância mínima real entre um quadro pendurado e o encosto de um sofá, por exemplo). É um erro grave e inaceitável a bbox incluir qualquer parte de um móvel — verifique isso com atenção antes de responder.
 
+ATENÇÃO ESPECIAL À LARGURA HORIZONTAL: é muito comum a foto mostrar uma porta de um lado e uma estante/prateleira/móvel do outro lado, com a parede branca livre só no MEIO. Nesse caso, "left_pct" deve começar onde a porta/parede-lateral termina, e "width_pct" deve ir só até onde a estante/móvel do outro lado começa — a bbox cobre APENAS a faixa central de parede realmente livre, nunca a largura toda da foto. O centro dessa bbox é onde o quadro será pendurado, então se você incluir a estante na bbox, o quadro vai aparecer deslocado ou por cima da estante. Meça a parede livre central com precisão.
+
 Regra importante: se o ambiente estiver "carregado", recomende obra_unica_suave ou uma obra que não compita com o que já existe. Se estiver "clean", pode recomendar obra protagonista.` });
 
   const resp = await fetch('https://api.anthropic.com/v1/messages', {
@@ -1069,22 +1071,20 @@ app.get('/simulador', authMembro, async(req,res)=>{
 
         sugestoes.forEach((o,i)=>{
           const t = o._melhorTamanho;
-          // Mesma premissa usada na altura: a foto enquadra a parede inteira, de ponta a ponta.
-          // A escala usa direto o número digitado pelo cliente — sem depender de estimativa da IA.
+          // A área de parede LIVRE (sem porta/estante/móveis) foi identificada pela IA no bbox.
+          // Tudo é ancorado nela: a largura do bbox representa a largura real da parede informada
+          // pelo cliente, e o quadro é escalado e posicionado DENTRO dessa área livre.
+          const bx = (bbox && typeof bbox.left_pct==='number') ? bbox : {left_pct:15, top_pct:10, width_pct:70, height_pct:75};
           const larguraRealParede = parseInt(data.parede_largura) || 300;
-          const fracaoParede = t ? Math.min(t.largura / larguraRealParede, 1) : 0.3;
-          // A largura ideal (fração do que o cliente digitou) precisa ser aplicada dentro da
-          // área de parede livre que a IA identificou na foto (bbox) — sem isso, o quadro pode
-          // invadir porta, estante ou outros móveis que aparecem na foto mas não são parede útil.
-          const larguraNaFoto = fracaoParede * (bbox && bbox.width_pct ? bbox.width_pct : 60);
-          // A foto enquadra a parede inteira (instrução dada ao cliente), então o centro
-          // horizontal da parede é o centro da foto. Não usa o bbox da IA, que pode estar deslocado.
-          const centroX = 50;
-          // Cálculo direto e determinístico: assume que a foto enquadra a parede do chão (100%) ao teto (0%)
-          // na altura informada pelo cliente. Centro do quadro sempre a 160cm do chão — regra fixa de curadoria.
+          const fracaoParede = t ? Math.min(t.largura / larguraRealParede, 0.95) : 0.4;
+          // largura do quadro = fração do tamanho real, aplicada sobre a largura da PAREDE LIVRE (bbox)
+          const larguraNaFoto = fracaoParede * bx.width_pct;
+          // centro horizontal = centro da área de parede livre (não o centro da foto, que inclui móveis)
+          const centroX = bx.left_pct + bx.width_pct/2;
+          // Centro vertical a 160cm do chão — regra fixa de curadoria (usa a altura informada)
           const alturaParedeCm = data.parede_altura;
-          const centroY = Math.max(15, Math.min(85, ((alturaParedeCm - 160) / alturaParedeCm) * 100));
-          const larguraFinal = Math.min(Math.max(larguraNaFoto, 10), 70);
+          const centroY = Math.max(12, Math.min(88, ((alturaParedeCm - 160) / alturaParedeCm) * 100));
+          const larguraFinal = Math.min(Math.max(larguraNaFoto, 8), bx.width_pct*0.98);
           const coresMoldura = { preta:'#1a1a1a', carvalho:'#8a6d3b', aco_escovado:'#9a9a9a' };
           const molduraInicial = coresMoldura[a.moldura_recomendada] || '#1a1a1a';
           // Fileto e vão real de 6mm cada, proporcional ao tamanho real da obra (não pixel fixo) —
