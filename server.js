@@ -225,6 +225,7 @@ app.get('/', (req,res) => {
   try { jwt.verify(req.cookies.circulo_token, JWT_SECRET); return res.redirect('/portal'); } catch {}
   res.redirect('/convite');
 });
+app.get('/versao', (req,res) => res.json({ versao: 'XYZ789', tabela_precos: true, alm001_excluido: true, deploy: new Date().toISOString() }));
 app.get('/convite', (req,res) => res.redirect('/convite/geral'));
 
 app.get('/convite/:codigo', async (req,res) => {
