@@ -1020,10 +1020,10 @@ app.get('/simulador', authMembro, async(req,res)=>{
 
           html += '<div style="position:relative;background:#0d0d0d;border-radius:4px;overflow:hidden;margin-bottom:20px;line-height:0;">';
           html += '<img src="'+data.foto_local+'" style="width:100%;display:block;">';
-          html += '<div style="position:absolute;top:'+centroY+'%;left:'+centroX+'%;transform:translate(-50%,-50%);width:'+larguraFinal+'%;">';
-          html += '<div class="moldura moldura-'+i+'" style="border:2px solid '+molduraInicial+';padding:3px;background:#0a0a0a;box-sizing:border-box;">';
-          html += '<div style="position:relative;">';
-          html += '<img src="'+o.imagem_preview+'" style="width:100%;display:block;">';
+          html += '<div style="position:absolute;top:'+centroY+'%;left:'+centroX+'%;transform:translate(-50%,-50%);width:'+larguraFinal+'%;aspect-ratio:'+(t?t.largura:1)+'/'+(t?t.altura:1)+';">';
+          html += '<div class="moldura moldura-'+i+'" style="border:2px solid '+molduraInicial+';padding:3px;background:#0a0a0a;box-sizing:border-box;width:100%;height:100%;">';
+          html += '<div style="position:relative;width:100%;height:100%;">';
+          html += '<img src="'+o.imagem_preview+'" style="width:100%;height:100%;object-fit:cover;display:block;">';
           html += '<div style="position:absolute;inset:0;background-image:url(\\''+data.watermark+'\\');background-repeat:repeat;mix-blend-mode:overlay;pointer-events:none;"></div>';
           html += '</div></div></div>';
           html += '</div>';
