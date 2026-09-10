@@ -715,7 +715,7 @@ Regra importante: se o ambiente estiver "carregado", recomende obra_unica_suave 
   const resp = await fetch('https://api.anthropic.com/v1/messages', {
     method:'POST',
     headers:{ 'x-api-key':ANTHROPIC_API_KEY, 'anthropic-version':'2023-06-01', 'content-type':'application/json' },
-    body: JSON.stringify({ model:'claude-sonnet-5', max_tokens:4096, thinking:{type:'disabled'}, messages:[{ role:'user', content }] })
+    body: JSON.stringify({ model:'claude-sonnet-5', max_tokens:4096, temperature:0, thinking:{type:'disabled'}, messages:[{ role:'user', content }] })
   });
   if(!resp.ok){
     const errTxt = await resp.text();
@@ -838,8 +838,34 @@ function rankearObras(obras, analise, dados){
     return { ...o, _score:score, _melhorTamanho:melhorTamanho, _motivos:motivos };
   })
   .filter(o=>o._melhorTamanho) // só obras que têm algum tamanho
-  .sort((a,b)=>b._score-a._score)
-  .slice(0,3);
+  .sort((a,b)=>b._score-a._score);
+
+  return diversificarPorOrientacao(candidatas);
+}
+
+// Evita entregar 3 sugestões da mesma orientação quando existem boas alternativas variadas.
+// Não força diversidade artificial — se a parede realmente favorece muito um tipo, o melhor
+// score ainda vence; isso só evita repetir a mesma orientação 3x por acaso do ranking bruto.
+function diversificarPorOrientacao(candidatas){
+  const orientacaoDe = t => t.largura === t.altura ? 'quadrado' : (t.largura > t.altura ? 'horizontal' : 'vertical');
+  const escolhidas = [];
+  const usadas = new Set();
+
+  for(const o of candidatas){
+    if(escolhidas.length >= 3) break;
+    const orient = orientacaoDe(o._melhorTamanho);
+    if(escolhidas.length < 2 && usadas.has(orient)) continue; // tenta variar nos dois primeiros slots
+    escolhidas.push(o);
+    usadas.add(orient);
+  }
+  // Completa com os melhores restantes se não fechou 3 (ex: catálogo só tem uma orientação disponível)
+  if(escolhidas.length < 3){
+    for(const o of candidatas){
+      if(escolhidas.length >= 3) break;
+      if(!escolhidas.includes(o)) escolhidas.push(o);
+    }
+  }
+  return escolhidas;
 }
 
 // GET — tela do simulador
@@ -1024,6 +1050,11 @@ app.get('/simulador', authMembro, async(req,res)=>{
           const larguraFinal = Math.min(Math.max(larguraNaFoto, 10), 70);
           const coresMoldura = { preta:'#1a1a1a', carvalho:'#8a6d3b', aco_escovado:'#9a9a9a' };
           const molduraInicial = coresMoldura[a.moldura_recomendada] || '#1a1a1a';
+          // Fileto e vão real de 6mm cada, proporcional ao tamanho real da obra (não pixel fixo) —
+          // numa obra pequena o vão aparece relativamente maior, numa grande relativamente menor,
+          // exatamente como acontece com uma moldura física de verdade.
+          const larguraCmObra = t ? t.largura : 100;
+          const gapPct = Math.min(Math.max((0.6/larguraCmObra)*100, 0.4), 3.5);
 
           html += '<div class="card" style="margin-bottom:24px;">';
           html += '<div style="display:flex;gap:8px;align-items:center;margin-bottom:16px;"><span class="badge badge-gold">'+(i+1)+'ª sugestão</span><span style="font-size:11px;color:var(--muted);">'+Math.round(o._score)+' pontos de compatibilidade</span></div>';
@@ -1031,9 +1062,9 @@ app.get('/simulador', authMembro, async(req,res)=>{
           html += '<div style="position:relative;background:#0d0d0d;border-radius:4px;overflow:hidden;margin-bottom:20px;line-height:0;">';
           html += '<img src="'+data.foto_local+'" style="width:100%;display:block;">';
           html += '<div class="quadro-wrap-'+i+'" style="position:absolute;top:'+centroY+'%;left:'+centroX+'%;transform:translate(-50%,-50%);width:'+larguraFinal+'%;aspect-ratio:'+(t?t.largura:1)+'/'+(t?t.altura:1)+';">';
-          html += '<div class="moldura moldura-'+i+'" style="border:2px solid '+molduraInicial+';padding:3px;background:#0a0a0a;box-sizing:border-box;width:100%;height:100%;">';
+          html += '<div class="moldura moldura-'+i+'" style="border:2px solid '+molduraInicial+';padding:'+gapPct.toFixed(2)+'%;background:#0a0a0a;box-sizing:border-box;width:100%;height:100%;">';
           html += '<div style="position:relative;width:100%;height:100%;">';
-          html += '<img src="'+o.imagem_preview+'" onload="ajustarOrientacao(this,'+i+','+(t?t.largura:1)+','+(t?t.altura:1)+')" style="width:100%;height:100%;object-fit:contain;background:#f4f2ee;display:block;">';
+          html += '<img src="'+o.imagem_preview+'" onload="ajustarOrientacao(this,'+i+','+(t?t.largura:1)+','+(t?t.altura:1)+')" style="width:100%;height:100%;object-fit:fill;background:#f4f2ee;display:block;">';
           html += '<div style="position:absolute;inset:0;background-image:url(\\''+data.watermark+'\\');background-repeat:repeat;mix-blend-mode:overlay;pointer-events:none;"></div>';
           html += '</div></div></div>';
           html += '</div>';
