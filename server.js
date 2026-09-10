@@ -1,3 +1,4 @@
+// VERSAO-CLAUDE-XYZ789 — se voce ve este comentario no GitHub, o arquivo certo subiu
 require('dotenv').config();
 const express = require('express');
 const { Pool } = require('pg');
