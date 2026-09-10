@@ -634,6 +634,35 @@ function extrairTamanhos(raw){
   });
 }
 
+// Tabela oficial de tamanhos por proporção — fonte de verdade fixa, porque o campo de texto
+// preenchido no cadastro (tamanhos_recomendados) é inconsistente e não reflete o catálogo real
+// de tamanhos que a ALMARE efetivamente produz para cada proporção de obra.
+const TABELA_TAMANHOS_POR_FORMATO = {
+  '1:1': [
+    {largura:25, altura:25, preco:299},
+    {largura:40, altura:40, preco:449},
+    {largura:70, altura:70, preco:899},
+    {largura:150, altura:150, preco:2890},
+  ],
+  '3:2': [
+    {largura:60, altura:40, preco:519}, {largura:40, altura:60, preco:519},
+    {largura:90, altura:60, preco:819}, {largura:60, altura:90, preco:819},
+    {largura:120, altura:80, preco:1349}, {largura:80, altura:120, preco:1349},
+    {largura:150, altura:100, preco:1790}, {largura:100, altura:150, preco:1790},
+    {largura:180, altura:120, preco:2190}, {largura:120, altura:180, preco:2190},
+    {largura:225, altura:150, preco:3690}, {largura:150, altura:225, preco:3690},
+    {largura:265, altura:133, preco:5390}, {largura:133, altura:265, preco:5390},
+  ],
+};
+
+function tamanhosOficiais(formatoRecomendado, raw){
+  const chave = String(formatoRecomendado||'').replace(/\s+/g,'').trim();
+  const tabela = TABELA_TAMANHOS_POR_FORMATO[chave];
+  if(tabela) return tabela.map(t => ({...t, label: `${t.largura}×${t.altura}cm`, precoLabel: `R$ ${t.preco.toLocaleString('pt-BR')}`}));
+  // Formato sem tabela oficial cadastrada ainda — cai para o texto livre como último recurso
+  return extrairTamanhos(raw);
+}
+
 // Analisa a foto do local (onde o quadro vai) + fotos de ambiente com Claude visão.
 // Retorna leitura de estilo/paleta E a área da parede (bbox) calibrada por objetos de referência reais.
 async function analisarAmbiente(fotoLocalBase64, fotosAmbienteBase64, dados){
@@ -749,15 +778,18 @@ function rankearObras(obras, analise, dados){
     const motivos = [];
 
     // 1. Tamanho compatível — padrão real de curadoria: quadro ocupa 50-60% da largura da parede (alvo ideal 55%)
-    const tamanhos = extrairTamanhos(o.tamanhos_recomendados);
+    const tamanhos = tamanhosOficiais(o.formato_recomendado, o.tamanhos_recomendados);
     const larguraIdeal = paredeL * 0.55;
     const dentroDoLimite = tamanhos.filter(t => t.largura <= paredeL*0.85 && t.altura <= paredeA*0.85);
     const candidatos = dentroDoLimite.length ? dentroDoLimite : tamanhos;
-    if(dentroDoLimite.length){ score += 30; }
     // escolhe o tamanho disponível mais PRÓXIMO do alvo de 55% da parede — nem o maior, nem o menor, o ideal curatorial
     const melhorTamanho = candidatos.length
       ? candidatos.sort((a,b)=>Math.abs(a.largura-larguraIdeal)-Math.abs(b.largura-larguraIdeal))[0]
       : tamanhos[0];
+    // Penaliza obras cujo tamanho disponível fica longe do ideal (55% da parede) — evita
+    // recomendar peças pequenas demais numa parede grande só porque "tecnicamente cabe"
+    const diffProporcional = Math.abs(melhorTamanho.largura - larguraIdeal) / larguraIdeal;
+    score += Math.max(0, 30 - diffProporcional*45);
 
     // 2. Paleta — harmônica ou conforme preferência
     if(dados.pref_paleta && o.paleta){
@@ -966,19 +998,17 @@ app.get('/simulador', authMembro, async(req,res)=>{
 
         data.sugestoes.forEach((o,i)=>{
           const t = o._melhorTamanho;
-          // Escala real: usa a largura da PAREDE NA FOTO calculada pela IA (não o número digitado),
-          // porque a foto pode não enquadrar a parede inteira do jeito que foi medida
-          // Usa DIRETO o número que o cliente digitou — a estimativa da IA por objetos de referência
-          // provou ser instável e gerava quadros do tamanho errado (às vezes gigantes)
+          // Mesma premissa usada na altura: a foto enquadra a parede inteira, de ponta a ponta.
+          // A escala usa direto o número digitado pelo cliente — sem depender de estimativa da IA.
           const larguraRealParede = parseInt(data.parede_largura) || 300;
           const fracaoParede = t ? Math.min(t.largura / larguraRealParede, 1) : 0.3;
-          const larguraNaFoto = fracaoParede * bbox.width_pct; // % da FOTO INTEIRA
-          const centroX = bbox.left_pct + bbox.width_pct/2;
+          const larguraNaFoto = fracaoParede * 100; // % da FOTO INTEIRA, não do bbox estimado
+          const centroX = bbox && typeof bbox.left_pct==='number' ? bbox.left_pct + bbox.width_pct/2 : 50;
           // Cálculo direto e determinístico: assume que a foto enquadra a parede do chão (100%) ao teto (0%)
           // na altura informada pelo cliente. Centro do quadro sempre a 160cm do chão — regra fixa de curadoria.
           const alturaParedeCm = data.parede_altura;
           const centroY = Math.max(15, Math.min(85, ((alturaParedeCm - 160) / alturaParedeCm) * 100));
-          const larguraFinal = Math.min(Math.max(larguraNaFoto, 8), 45);
+          const larguraFinal = Math.min(Math.max(larguraNaFoto, 15), 62);
           const coresMoldura = { preta:'#1a1a1a', carvalho:'#8a6d3b', aco_escovado:'#9a9a9a' };
           const molduraInicial = coresMoldura[a.moldura_recomendada] || '#1a1a1a';
 
@@ -998,7 +1028,7 @@ app.get('/simulador', authMembro, async(req,res)=>{
           html += '<div style="font-size:10px;letter-spacing:.25em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;">'+(o.colecao||'')+'</div>';
           html += '<h4 style="font-family:\\'Cormorant Garamond\\',serif;font-size:22px;margin-bottom:4px;">'+o.nome+'</h4>';
           html += '<div style="font-size:11px;color:var(--muted);margin-bottom:12px;">Código: '+(o.codigo||o.id)+'</div>';
-          if(t) html += '<p style="font-size:13px;color:var(--gold);margin-bottom:12px;">Tamanho sugerido: '+t.label+'</p>';
+          if(t) html += '<p style="font-size:13px;color:var(--gold);margin-bottom:12px;">Tamanho sugerido: '+t.label+(t.precoLabel?' · '+t.precoLabel:'')+'</p>';
 
           html += '<div style="margin-bottom:16px;">';
           html += '<div style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:8px;">Moldura — comparar outras opções</div>';
