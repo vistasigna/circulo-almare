@@ -1002,18 +1002,21 @@ app.get('/simulador', authMembro, async(req,res)=>{
           // A escala usa direto o número digitado pelo cliente — sem depender de estimativa da IA.
           const larguraRealParede = parseInt(data.parede_largura) || 300;
           const fracaoParede = t ? Math.min(t.largura / larguraRealParede, 1) : 0.3;
-          const larguraNaFoto = fracaoParede * 100; // % da FOTO INTEIRA, não do bbox estimado
+          // A largura ideal (fração do que o cliente digitou) precisa ser aplicada dentro da
+          // área de parede livre que a IA identificou na foto (bbox) — sem isso, o quadro pode
+          // invadir porta, estante ou outros móveis que aparecem na foto mas não são parede útil.
+          const larguraNaFoto = fracaoParede * (bbox && bbox.width_pct ? bbox.width_pct : 60);
           const centroX = bbox && typeof bbox.left_pct==='number' ? bbox.left_pct + bbox.width_pct/2 : 50;
           // Cálculo direto e determinístico: assume que a foto enquadra a parede do chão (100%) ao teto (0%)
           // na altura informada pelo cliente. Centro do quadro sempre a 160cm do chão — regra fixa de curadoria.
           const alturaParedeCm = data.parede_altura;
           const centroY = Math.max(15, Math.min(85, ((alturaParedeCm - 160) / alturaParedeCm) * 100));
-          const larguraFinal = Math.min(Math.max(larguraNaFoto, 15), 62);
+          const larguraFinal = Math.min(Math.max(larguraNaFoto, 10), 70);
           const coresMoldura = { preta:'#1a1a1a', carvalho:'#8a6d3b', aco_escovado:'#9a9a9a' };
           const molduraInicial = coresMoldura[a.moldura_recomendada] || '#1a1a1a';
 
           html += '<div class="card" style="margin-bottom:24px;">';
-          html += '<div style="display:flex;gap:8px;align-items:center;margin-bottom:16px;"><span class="badge badge-gold">'+(i+1)+'ª sugestão</span><span style="font-size:11px;color:var(--muted);">'+(o._score)+' pontos de compatibilidade</span></div>';
+          html += '<div style="display:flex;gap:8px;align-items:center;margin-bottom:16px;"><span class="badge badge-gold">'+(i+1)+'ª sugestão</span><span style="font-size:11px;color:var(--muted);">'+Math.round(o._score)+' pontos de compatibilidade</span></div>';
 
           html += '<div style="position:relative;background:#0d0d0d;border-radius:4px;overflow:hidden;margin-bottom:20px;line-height:0;">';
           html += '<img src="'+data.foto_local+'" style="width:100%;display:block;">';
