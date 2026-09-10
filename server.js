@@ -778,7 +778,17 @@ function rankearObras(obras, analise, dados){
     const motivos = [];
 
     // 1. Tamanho compatível — padrão real de curadoria: quadro ocupa 50-60% da largura da parede (alvo ideal 55%)
-    const tamanhos = tamanhosOficiais(o.formato_recomendado, o.tamanhos_recomendados);
+    let tamanhos = tamanhosOficiais(o.formato_recomendado, o.tamanhos_recomendados);
+    // Trava pela orientação real cadastrada — nunca deixa o algoritmo escolher a variante
+    // horizontal de uma obra vertical (ou o contrário) só porque a largura bateu melhor
+    const orientacaoObra = String(o.orientacao||'').toLowerCase();
+    if(/vertical|retrato/.test(orientacaoObra)){
+      const filtradoVert = tamanhos.filter(t => t.altura >= t.largura);
+      if(filtradoVert.length) tamanhos = filtradoVert;
+    } else if(/horizontal|paisagem/.test(orientacaoObra)){
+      const filtradoHoriz = tamanhos.filter(t => t.largura >= t.altura);
+      if(filtradoHoriz.length) tamanhos = filtradoHoriz;
+    }
     const larguraIdeal = paredeL * 0.55;
     const dentroDoLimite = tamanhos.filter(t => t.largura <= paredeL*0.85 && t.altura <= paredeA*0.85);
     const candidatos = dentroDoLimite.length ? dentroDoLimite : tamanhos;
@@ -1020,10 +1030,10 @@ app.get('/simulador', authMembro, async(req,res)=>{
 
           html += '<div style="position:relative;background:#0d0d0d;border-radius:4px;overflow:hidden;margin-bottom:20px;line-height:0;">';
           html += '<img src="'+data.foto_local+'" style="width:100%;display:block;">';
-          html += '<div style="position:absolute;top:'+centroY+'%;left:'+centroX+'%;transform:translate(-50%,-50%);width:'+larguraFinal+'%;aspect-ratio:'+(t?t.largura:1)+'/'+(t?t.altura:1)+';">';
+          html += '<div class="quadro-wrap-'+i+'" style="position:absolute;top:'+centroY+'%;left:'+centroX+'%;transform:translate(-50%,-50%);width:'+larguraFinal+'%;aspect-ratio:'+(t?t.largura:1)+'/'+(t?t.altura:1)+';">';
           html += '<div class="moldura moldura-'+i+'" style="border:2px solid '+molduraInicial+';padding:3px;background:#0a0a0a;box-sizing:border-box;width:100%;height:100%;">';
           html += '<div style="position:relative;width:100%;height:100%;">';
-          html += '<img src="'+o.imagem_preview+'" style="width:100%;height:100%;object-fit:cover;display:block;">';
+          html += '<img src="'+o.imagem_preview+'" onload="ajustarOrientacao(this,'+i+','+(t?t.largura:1)+','+(t?t.altura:1)+')" style="width:100%;height:100%;object-fit:contain;background:#f4f2ee;display:block;">';
           html += '<div style="position:absolute;inset:0;background-image:url(\\''+data.watermark+'\\');background-repeat:repeat;mix-blend-mode:overlay;pointer-events:none;"></div>';
           html += '</div></div></div>';
           html += '</div>';
@@ -1061,6 +1071,18 @@ app.get('/simulador', authMembro, async(req,res)=>{
           });
         }
       }
+
+      // Corrige a orientação da moldura usando a foto REAL da obra como fonte de verdade —
+      // nunca deforma nem gira a obra, apenas ajusta a caixa (aspect-ratio) pra bater com o
+      // formato real do arquivo, independente do que o cadastro diz.
+      function ajustarOrientacao(img, idx, largura, altura){
+        const fotoVertical = img.naturalHeight > img.naturalWidth;
+        const tamanhoVertical = altura > largura;
+        if(fotoVertical !== tamanhoVertical && largura !== altura){
+          const wrap = document.querySelector('.quadro-wrap-'+idx);
+          if(wrap) wrap.style.aspectRatio = altura + '/' + largura;
+        }
+      }
     </script>
   `,true));
 });
@@ -1079,7 +1101,7 @@ app.post('/simulador/analisar', authMembro, async(req,res)=>{
     const obras = await pool.query(`
       SELECT id, codigo, nome, colecao, paleta, paleta_detalhe, personalidade_da_obra,
              nivel_de_destaque, ambientes_compativeis, tamanhos_recomendados,
-             formato_recomendado, imagem_preview
+             formato_recomendado, orientacao, imagem_preview
       FROM almare_obras WHERE status='aprovada'`);
 
     const sugestoes = rankearObras(obras.rows, analise, dados);
