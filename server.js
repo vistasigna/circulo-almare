@@ -658,11 +658,27 @@ const TABELA_TAMANHOS_POR_FORMATO = {
 };
 
 function tamanhosOficiais(formatoRecomendado, raw){
-  const chave = String(formatoRecomendado||'').replace(/\s+/g,'').trim();
-  const tabela = TABELA_TAMANHOS_POR_FORMATO[chave];
-  if(tabela) return tabela.map(t => ({...t, label: `${t.largura}×${t.altura}cm`, precoLabel: `R$ ${t.preco.toLocaleString('pt-BR')}`}));
-  // Formato sem tabela oficial cadastrada ainda — cai para o texto livre como último recurso
-  return extrairTamanhos(raw);
+  const bruto = String(formatoRecomendado||'').trim();
+  const chave = bruto.replace(/\s+/g,'').replace(/\(adaptar\)/i,'').trim();
+
+  // Match direto na tabela oficial (1:1 ou 3:2 exatos)
+  if(TABELA_TAMANHOS_POR_FORMATO[chave]){
+    return TABELA_TAMANHOS_POR_FORMATO[chave].map(t => ({...t, label: `${t.largura}×${t.altura}cm`, precoLabel: `R$ ${t.preco.toLocaleString('pt-BR')}`}));
+  }
+
+  // Formato "(adaptar)" ou proporção exótica: extrai a razão numérica e escolhe a família
+  // produzível mais próxima (1:1 = razão 1.0, ou 3:2 = razão 1.5)
+  const m = bruto.match(/([\d.]+)\s*:\s*([\d.]+)/);
+  if(m){
+    const razao = parseFloat(m[1]) / parseFloat(m[2]); // ex: 1.33:1 -> 1.33
+    const distQuadrado = Math.abs(razao - 1.0);
+    const distRetangulo = Math.abs(razao - 1.5);
+    const familia = distQuadrado <= distRetangulo ? '1:1' : '3:2';
+    return TABELA_TAMANHOS_POR_FORMATO[familia].map(t => ({...t, label: `${t.largura}×${t.altura}cm`, precoLabel: `R$ ${t.preco.toLocaleString('pt-BR')}`}));
+  }
+
+  // Sem formato reconhecível — assume 3:2 como padrão do catálogo (maioria retangular)
+  return TABELA_TAMANHOS_POR_FORMATO['3:2'].map(t => ({...t, label: `${t.largura}×${t.altura}cm`, precoLabel: `R$ ${t.preco.toLocaleString('pt-BR')}`}));
 }
 
 // Analisa a foto do local (onde o quadro vai) + fotos de ambiente com Claude visão.
@@ -1061,7 +1077,9 @@ app.get('/simulador', authMembro, async(req,res)=>{
           // área de parede livre que a IA identificou na foto (bbox) — sem isso, o quadro pode
           // invadir porta, estante ou outros móveis que aparecem na foto mas não são parede útil.
           const larguraNaFoto = fracaoParede * (bbox && bbox.width_pct ? bbox.width_pct : 60);
-          const centroX = bbox && typeof bbox.left_pct==='number' ? bbox.left_pct + bbox.width_pct/2 : 50;
+          // A foto enquadra a parede inteira (instrução dada ao cliente), então o centro
+          // horizontal da parede é o centro da foto. Não usa o bbox da IA, que pode estar deslocado.
+          const centroX = 50;
           // Cálculo direto e determinístico: assume que a foto enquadra a parede do chão (100%) ao teto (0%)
           // na altura informada pelo cliente. Centro do quadro sempre a 160cm do chão — regra fixa de curadoria.
           const alturaParedeCm = data.parede_altura;
