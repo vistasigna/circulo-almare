@@ -680,6 +680,8 @@ async function analisarAmbiente(fotoLocalBase64, fotosAmbienteBase64, dados){
 
 A PRIMEIRA imagem é a foto exata do local/parede onde o quadro vai ficar — é nela que você deve identificar a área da parede disponível. As imagens seguintes (se houver) são fotos adicionais do ambiente só para entender o estilo geral, não para posicionamento.
 
+IMPORTANTE: o cliente foi instruído a fotografar a parede mostrando seus 4 limites reais — teto, chão, lateral esquerda e lateral direita, sem cortar nenhum. Ou seja, você pode assumir que as bordas da PRIMEIRA foto correspondem aproximadamente aos limites reais da parede informada (${dados.parede_largura}cm de largura × ${dados.parede_altura}cm de altura). Se a foto claramente NÃO seguir essa instrução (por exemplo, mostrando só um pedaço da parede, ou mostrando muito mais do ambiente do que só a parede), sinalize isso em "aviso_precisao".
+
 Na primeira imagem, procure objetos de referência de tamanho real conhecido para calibrar a escala: porta padrão (altura aproximadamente 210cm), interruptor de luz (aproximadamente 110cm do chão), tomada (aproximadamente 30cm do chão), rodapé, altura de sofá (aproximadamente 85cm), pé-direito padrão (aproximadamente 270-300cm). Use o que estiver visível.
 
 O cliente informou que a parede disponível mede ${dados.parede_largura}cm de largura por ${dados.parede_altura}cm de altura. Compare essa informação com o que você vê na imagem usando os objetos de referência. Se a proporção da parede que você identifica na foto for claramente incompatível com a medida informada, sinalize isso em "aviso_precisao".
@@ -790,15 +792,23 @@ function rankearObras(obras, analise, dados){
       if(filtradoHoriz.length) tamanhos = filtradoHoriz;
     }
     const larguraIdeal = paredeL * 0.55;
-    const dentroDoLimite = tamanhos.filter(t => t.largura <= paredeL*0.85 && t.altura <= paredeA*0.85);
+    const alturaIdeal = paredeA * 0.55;
+    // Teto de segurança apertado nos DOIS eixos — 65%, não 85%. Um quadro tecnicamente "cabe"
+    // até quase encostar no teto, mas isso não significa que fica proporcional/curatorial.
+    const dentroDoLimite = tamanhos.filter(t => t.largura <= paredeL*0.65 && t.altura <= paredeA*0.65);
     const candidatos = dentroDoLimite.length ? dentroDoLimite : tamanhos;
-    // escolhe o tamanho disponível mais PRÓXIMO do alvo de 55% da parede — nem o maior, nem o menor, o ideal curatorial
+    // escolhe o tamanho mais próximo do alvo de 55% considerando LARGURA E ALTURA juntas —
+    // nunca otimiza só um eixo deixando o outro desproporcional
     const melhorTamanho = candidatos.length
-      ? candidatos.sort((a,b)=>Math.abs(a.largura-larguraIdeal)-Math.abs(b.largura-larguraIdeal))[0]
+      ? candidatos.sort((a,b)=>{
+          const distA = Math.abs(a.largura-larguraIdeal) + Math.abs(a.altura-alturaIdeal);
+          const distB = Math.abs(b.largura-larguraIdeal) + Math.abs(b.altura-alturaIdeal);
+          return distA - distB;
+        })[0]
       : tamanhos[0];
     // Penaliza obras cujo tamanho disponível fica longe do ideal (55% da parede) — evita
     // recomendar peças pequenas demais numa parede grande só porque "tecnicamente cabe"
-    const diffProporcional = Math.abs(melhorTamanho.largura - larguraIdeal) / larguraIdeal;
+    const diffProporcional = (Math.abs(melhorTamanho.largura - larguraIdeal)/larguraIdeal + Math.abs(melhorTamanho.altura - alturaIdeal)/alturaIdeal) / 2;
     score += Math.max(0, 30 - diffProporcional*45);
 
     // 2. Paleta — harmônica ou conforme preferência
@@ -844,21 +854,25 @@ function rankearObras(obras, analise, dados){
 }
 
 // Evita entregar 3 sugestões da mesma orientação quando existem boas alternativas variadas.
-// Não força diversidade artificial — se a parede realmente favorece muito um tipo, o melhor
-// score ainda vence; isso só evita repetir a mesma orientação 3x por acaso do ranking bruto.
+// Só diversifica DENTRO das obras que realmente competem bem (score próximo do topo) —
+// nunca puxa uma obra fraca só pra preencher variedade de orientação.
 function diversificarPorOrientacao(candidatas){
+  if(!candidatas.length) return [];
   const orientacaoDe = t => t.largura === t.altura ? 'quadrado' : (t.largura > t.altura ? 'horizontal' : 'vertical');
+  const scoreTopo = candidatas[0]._score;
+  // só entram no "pool competitivo" obras com pelo menos 65% do score da melhor colocada
+  const pool = candidatas.filter(o => o._score >= scoreTopo*0.65);
+
   const escolhidas = [];
   const usadas = new Set();
-
-  for(const o of candidatas){
+  for(const o of pool){
     if(escolhidas.length >= 3) break;
     const orient = orientacaoDe(o._melhorTamanho);
-    if(escolhidas.length < 2 && usadas.has(orient)) continue; // tenta variar nos dois primeiros slots
+    if(escolhidas.length < 2 && usadas.has(orient)) continue;
     escolhidas.push(o);
     usadas.add(orient);
   }
-  // Completa com os melhores restantes se não fechou 3 (ex: catálogo só tem uma orientação disponível)
+  // Completa com os melhores restantes (do ranking completo, não só do pool) se não fechou 3
   if(escolhidas.length < 3){
     for(const o of candidatas){
       if(escolhidas.length >= 3) break;
@@ -883,7 +897,7 @@ app.get('/simulador', authMembro, async(req,res)=>{
     <form id="form-sim" onsubmit="return enviar(event)">
       <div class="card" style="margin-bottom:20px;">
         <h3 style="font-size:18px;margin-bottom:8px;color:var(--gold);">Foto do local exato</h3>
-        <p style="font-size:12px;color:var(--muted);margin-bottom:16px;">A foto da parede onde o quadro vai ficar. É nela que a simulação será montada — tente enquadrar a parede inteira, de frente, com boa luz.</p>
+        <p style="font-size:12px;color:var(--muted);margin-bottom:16px;">A foto da parede onde o quadro vai ficar. <strong style="color:var(--gold);">Importante:</strong> enquadre a parede inteira mostrando os 4 limites — teto, chão, lateral esquerda e lateral direita — sem cortar nenhum deles. Isso é essencial para o cálculo de escala ficar correto.</p>
         <input type="file" id="foto-local" accept="image/*" required onchange="previewFotoLocal()" style="width:100%;background:#0d0d0d;border:1px solid var(--border);color:var(--text);padding:12px;border-radius:3px;font-size:13px;">
         <div id="preview-local" style="margin-top:16px;"></div>
       </div>
