@@ -822,6 +822,22 @@ function rankearObras(obras, analise, dados){
       const filtradoHoriz = tamanhos.filter(t => t.largura >= t.altura);
       if(filtradoHoriz.length) tamanhos = filtradoHoriz;
     }
+    // LIMITE FÍSICO DE ALTURA: centro do quadro fica a 165cm do chão, e precisa de 25cm de folga
+    // até o teto. Logo a altura máxima do quadro = (altura_parede - 165 - 25) * 2.
+    // Um quadro mais alto que isso não cabe fisicamente e deve ser eliminado.
+    const alturaMaxObra = Math.max(0, (paredeA - 165 - 25) * 2);
+    if(alturaMaxObra > 0){
+      const cabemNaAltura = tamanhos.filter(t => t.altura <= alturaMaxObra);
+      if(cabemNaAltura.length) tamanhos = cabemNaAltura;
+      // se NENHUM tamanho cabe na altura, a obra inteira é incompatível — marca pra descarte
+      else tamanhos = [];
+    }
+    // Também limita pela largura física (deixa 5% de folga de cada lado no mínimo)
+    const larguraMaxObra = paredeL * 0.9;
+    if(tamanhos.length && larguraMaxObra > 0){
+      const cabemNaLargura = tamanhos.filter(t => t.largura <= larguraMaxObra);
+      if(cabemNaLargura.length) tamanhos = cabemNaLargura;
+    }
     const larguraIdeal = paredeL * 0.55;
     const alturaIdeal = paredeA * 0.55;
     // Teto de segurança apertado nos DOIS eixos — 65%, não 85%. Um quadro tecnicamente "cabe"
@@ -836,7 +852,11 @@ function rankearObras(obras, analise, dados){
           const distB = Math.abs(b.largura-larguraIdeal) + Math.abs(b.altura-alturaIdeal);
           return distA - distB;
         })[0]
-      : tamanhos[0];
+      : (tamanhos[0] || null);
+    // Obra sem nenhum tamanho que caiba fisicamente na parede — descarta com score muito negativo
+    if(!melhorTamanho){
+      return { ...o, _score:-999, _melhorTamanho:null, _motivos:[], _tamanhosCabem:[] };
+    }
     // Penaliza obras cujo tamanho disponível fica longe do ideal (55% da parede) — evita
     // recomendar peças pequenas demais numa parede grande só porque "tecnicamente cabe"
     const diffProporcional = (Math.abs(melhorTamanho.largura - larguraIdeal)/larguraIdeal + Math.abs(melhorTamanho.altura - alturaIdeal)/alturaIdeal) / 2;
@@ -876,9 +896,9 @@ function rankearObras(obras, analise, dados){
       if(amb.includes(dados.finalidade.toLowerCase())){ score+=10; motivos.push('indicada para ambiente '+dados.finalidade); }
     }
 
-    return { ...o, _score:score, _melhorTamanho:melhorTamanho, _motivos:motivos };
+    return { ...o, _score:score, _melhorTamanho:melhorTamanho, _motivos:motivos, _tamanhosCabem:tamanhos };
   })
-  .filter(o=>o._melhorTamanho) // só obras que têm algum tamanho
+  .filter(o=>o._melhorTamanho && o._score > -900) // só obras com tamanho que cabe fisicamente
   .sort((a,b)=>b._score-a._score);
 
   return diversificarPorOrientacao(candidatas);
@@ -1293,19 +1313,12 @@ app.post('/simulador/analisar', authMembro, async(req,res)=>{
 
     if(!sugestoes.length) return res.json({ erro:'Nenhuma obra do catálogo é compatível com essas medidas. Tente uma parede maior.' });
 
-    // Anexa a cada sugestão os tamanhos disponíveis da obra (pro dropdown), FILTRADOS pela orientação real —
-    // uma obra vertical nunca pode virar horizontal (100×150 não pode virar 150×100)
+    // Anexa a cada sugestão os tamanhos disponíveis para o dropdown. Usa _tamanhosCabem, que já foi
+    // filtrado no ranking por orientação real E limite físico (altura e largura da parede).
     for(const s of sugestoes){
-      let tams = tamanhosOficiais(s.formato_recomendado, s.tamanhos_recomendados);
-      const orient = String(s.orientacao||'').toLowerCase();
-      if(/vertical|retrato/.test(orient)){
-        const v = tams.filter(t => t.altura >= t.largura);
-        if(v.length) tams = v;
-      } else if(/horizontal|paisagem/.test(orient)){
-        const h = tams.filter(t => t.largura >= t.altura);
-        if(h.length) tams = h;
-      }
-      s._tamanhosDisponiveis = tams;
+      s._tamanhosDisponiveis = (s._tamanhosCabem && s._tamanhosCabem.length)
+        ? s._tamanhosCabem
+        : (s._melhorTamanho ? [s._melhorTamanho] : []);
     }
 
     // Marca d'água genérica (uma só, o código muda visualmente por obra no front se quiser evoluir depois)
