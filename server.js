@@ -822,10 +822,10 @@ function rankearObras(obras, analise, dados){
       const filtradoHoriz = tamanhos.filter(t => t.largura >= t.altura);
       if(filtradoHoriz.length) tamanhos = filtradoHoriz;
     }
-    // LIMITE FÍSICO DE ALTURA: centro do quadro fica a 165cm do chão, e precisa de 25cm de folga
-    // até o teto. Logo a altura máxima do quadro = (altura_parede - 165 - 25) * 2.
+    // LIMITE FÍSICO DE ALTURA: centro do quadro fica a 160cm do chão, e precisa de 20cm de folga
+    // até o teto. Logo a altura máxima do quadro = (altura_parede - 160 - 20) * 2.
     // Um quadro mais alto que isso não cabe fisicamente e deve ser eliminado.
-    const alturaMaxObra = Math.max(0, (paredeA - 165 - 25) * 2);
+    const alturaMaxObra = Math.max(0, (paredeA - 160 - 20) * 2);
     if(alturaMaxObra > 0){
       const cabemNaAltura = tamanhos.filter(t => t.altura <= alturaMaxObra);
       if(cabemNaAltura.length) tamanhos = cabemNaAltura;
