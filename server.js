@@ -1148,13 +1148,13 @@ app.get('/simulador', authMembro, async(req,res)=>{
         html += '<div class="moldura-'+i+'" style="border:2px solid '+molduraCor+';padding:'+gapPct.toFixed(2)+'%;background:#0a0a0a;box-sizing:border-box;width:100%;height:100%;">';
         html += '<div style="position:relative;width:100%;height:100%;">';
         html += '<img src="'+o.imagem_preview+'" style="width:100%;height:100%;object-fit:fill;background:#f4f2ee;display:block;">';
-        html += '<div style="position:absolute;inset:0;background-image:url(\''+data.watermark+'\');background-repeat:repeat;mix-blend-mode:overlay;pointer-events:none;"></div>';
+        html += '<div style="position:absolute;inset:0;background-image:url('+data.watermark+');background-repeat:repeat;mix-blend-mode:overlay;pointer-events:none;"></div>';
         html += '</div></div></div>';
         html += '</div>';
 
         // Info da obra
         html += '<div style="font-size:10px;letter-spacing:.25em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;">'+(o.colecao||'')+'</div>';
-        html += '<h4 style="font-family:\'Cormorant Garamond\',serif;font-size:22px;margin-bottom:4px;">'+o.nome+'</h4>';
+        html += '<h4 style="font-family:\\'Cormorant Garamond\\',serif;font-size:22px;margin-bottom:4px;">'+o.nome+'</h4>';
         html += '<div style="font-size:11px;color:var(--muted);margin-bottom:16px;">Código: '+(o.codigo||o.id)+'</div>';
 
         // Dropdown de tamanho
@@ -1162,7 +1162,7 @@ app.get('/simulador', authMembro, async(req,res)=>{
         if(tamanhos.length){
           html += '<div style="margin-bottom:16px;">';
           html += '<div style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:8px;">Tamanho</div>';
-          html += '<select onchange="mudarTamanho('+i+',this.value)" style="width:100%;background:#0d0d0d;border:1px solid var(--border);color:var(--text);padding:11px 14px;border-radius:3px;font-size:14px;font-family:\'Inter\',sans-serif;outline:none;cursor:pointer;">';
+          html += '<select onchange="mudarTamanho('+i+',this.value)" style="width:100%;background:#0d0d0d;border:1px solid var(--border);color:var(--text);padding:11px 14px;border-radius:3px;font-size:14px;font-family:\\'Inter\\',sans-serif;outline:none;cursor:pointer;">';
           tamanhos.forEach((tm,idx)=>{
             const sel = (t && tm.largura===t.largura && tm.altura===t.altura) ? 'selected' : '';
             html += '<option value="'+idx+'" '+sel+'>'+tm.label+(tm.precoLabel?' · '+tm.precoLabel:'')+'</option>';
@@ -1233,13 +1233,13 @@ app.get('/simulador', authMembro, async(req,res)=>{
         );
         let html = '';
         filtradas.forEach(o=>{
-          html += '<div onclick="escolherObra('+o.id+')" style="cursor:pointer;border:1px solid var(--border);border-radius:4px;overflow:hidden;transition:border-color .2s;" onmouseover="this.style.borderColor=\'var(--gold)\'" onmouseout="this.style.borderColor=\'var(--border)\'">';
+          html += '<div onclick="escolherObra('+o.id+')" style="cursor:pointer;border:1px solid var(--border);border-radius:4px;overflow:hidden;transition:border-color .2s;" onmouseover="this.style.borderColor=\\'var(--gold)\\'" onmouseout="this.style.borderColor=\\'var(--border)\\'">';
           html += '<div style="height:150px;background:#0d0d0d;display:flex;align-items:center;justify-content:center;overflow:hidden;">';
           html += o.imagem_preview ? '<img src="'+o.imagem_preview+'" style="max-width:100%;max-height:100%;object-fit:contain;">' : '<span style="color:var(--muted);font-size:10px;">SEM IMAGEM</span>';
           html += '</div>';
           html += '<div style="padding:10px;">';
           html += '<div style="font-size:9px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);">'+(o.colecao||'')+'</div>';
-          html += '<div style="font-family:\'Cormorant Garamond\',serif;font-size:15px;">'+o.nome+'</div>';
+          html += '<div style="font-family:\\'Cormorant Garamond\\',serif;font-size:15px;">'+o.nome+'</div>';
           html += '<div style="font-size:10px;color:var(--muted);">'+o.codigo+'</div>';
           html += '</div></div>';
         });
@@ -1613,5 +1613,3 @@ app.post('/admin/sugestoes/:id/responder',authAdmin,async(req,res)=>{
 
 const PORT=process.env.PORT||3000;
 app.listen(PORT,()=>console.log(`Círculo ALMARE rodando na porta ${PORT}`));
-
-// rebuild 1789155943
