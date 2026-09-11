@@ -730,7 +730,14 @@ Sobre "parede_bbox": são as coordenadas em PORCENTAGEM de 0 a 100 da área de p
 
 ISSO É CRÍTICO E OBRIGATÓRIO: antes de definir "parede_bbox", primeiro identifique mentalmente TODOS os móveis e objetos visíveis na foto que ocupam a parede ou ficam na frente dela — sofás, poltronas, mesas, aparadores, estantes, plantas, portas, janelas, interruptores, tomadas, luminárias. A área de "parede_bbox" NUNCA pode se sobrepor a nenhum desses elementos, nem parcialmente. Se houver um móvel (como um sofá) na parte de baixo da parede, a área da bbox deve começar ACIMA do topo desse móvel, com uma margem de segurança equivalente a pelo menos 20-25cm reais de folga entre o topo do móvel e o início da bbox (isso é a distância mínima real entre um quadro pendurado e o encosto de um sofá, por exemplo). É um erro grave e inaceitável a bbox incluir qualquer parte de um móvel — verifique isso com atenção antes de responder.
 
-ATENÇÃO ESPECIAL À LARGURA HORIZONTAL — REGRA IMPORTANTE: um móvel só "consome" a largura da parede se ele for do CHÃO ATÉ O TETO (como um armário alto, uma estante fechada que vai até em cima, um painel de parede inteiro). Nesse caso, essa faixa deixa de ser parede útil e a bbox deve terminar onde o móvel começa.
+ATENÇÃO ESPECIAL À LARGURA HORIZONTAL — REGRA CRÍTICA E OBRIGATÓRIA: Por padrão, "left_pct" deve ser próximo de 0 e "width_pct" próximo de 100 — ou seja, a bbox cobre QUASE A LARGURA INTEIRA da foto. Você só deve reduzir a largura da bbox nos casos abaixo:
+
+(a) uma PORTA (que vai do chão até a altura de porta) — nesse caso comece a bbox depois da porta;
+(b) um móvel que vai literalmente do CHÃO ATÉ O TETO (armário alto fechado, estante que encosta no teto, painel de parede inteiro).
+
+NUNCA reduza a largura da bbox por causa de: estantes de prateleiras abertas/vazadas (mesmo que altas), aparadores, racks de TV, bancadas, cômodas, sofás, mesas, luminárias, ou qualquer móvel que tenha PAREDE VISÍVEL acima dele. Esses móveis têm parede livre em cima e o quadro pode ser pendurado acima deles usando a largura toda. Uma estante de prateleiras abertas (onde se vê a parede preta/colorida atrás das prateleiras) NÃO bloqueia a parede — ela é vazada, a parede continua ali.
+
+EXEMPLO CONCRETO: numa foto com uma porta de madeira à esquerda, parede branca no meio, e uma estante de prateleiras abertas à direita com um aparador baixo embaixo — a bbox deve ir da borda direita da porta até a borda direita da FOTO (cobrindo por cima da estante vazada e do aparador), porque só a porta bloqueia. A largura seria algo como left_pct:12, width_pct:85. É ERRADO parar a bbox antes da estante (algo como width_pct:45) — isso espreme o quadro no meio e está errado.
 
 MAS: móveis que NÃO ocupam toda a altura — estantes de prateleiras vazadas, aparadores baixos, racks de TV, bancadas, cômodas, sofás — NÃO redefinem a largura da parede. A parede continua inteira acima e atrás deles, e o quadro deve ser centralizado na PAREDE INTEIRA, usando toda a largura disponível, não espremido só no pedaço "vazio". Um quadro pendurado ACIMA de um aparador baixo é normal e correto.
 
@@ -1286,9 +1293,19 @@ app.post('/simulador/analisar', authMembro, async(req,res)=>{
 
     if(!sugestoes.length) return res.json({ erro:'Nenhuma obra do catálogo é compatível com essas medidas. Tente uma parede maior.' });
 
-    // Anexa a cada sugestão TODOS os tamanhos disponíveis da obra (pro dropdown de troca de tamanho)
+    // Anexa a cada sugestão os tamanhos disponíveis da obra (pro dropdown), FILTRADOS pela orientação real —
+    // uma obra vertical nunca pode virar horizontal (100×150 não pode virar 150×100)
     for(const s of sugestoes){
-      s._tamanhosDisponiveis = tamanhosOficiais(s.formato_recomendado, s.tamanhos_recomendados);
+      let tams = tamanhosOficiais(s.formato_recomendado, s.tamanhos_recomendados);
+      const orient = String(s.orientacao||'').toLowerCase();
+      if(/vertical|retrato/.test(orient)){
+        const v = tams.filter(t => t.altura >= t.largura);
+        if(v.length) tams = v;
+      } else if(/horizontal|paisagem/.test(orient)){
+        const h = tams.filter(t => t.largura >= t.altura);
+        if(h.length) tams = h;
+      }
+      s._tamanhosDisponiveis = tams;
     }
 
     // Marca d'água genérica (uma só, o código muda visualmente por obra no front se quiser evoluir depois)
@@ -1314,11 +1331,21 @@ app.get('/simulador/obras', authMembro, async(req,res)=>{
              tamanhos_recomendados, imagem_preview
       FROM almare_obras WHERE status='aprovada' AND codigo <> 'ALM-001'
       ORDER BY colecao, nome`);
-    const lista = obras.rows.map(o => ({
-      id: o.id, codigo: o.codigo, nome: o.nome, colecao: o.colecao,
-      imagem_preview: o.imagem_preview,
-      tamanhos: tamanhosOficiais(o.formato_recomendado, o.tamanhos_recomendados)
-    }));
+    const lista = obras.rows.map(o => {
+      let tams = tamanhosOficiais(o.formato_recomendado, o.tamanhos_recomendados);
+      const orient = String(o.orientacao||'').toLowerCase();
+      if(/vertical|retrato/.test(orient)){
+        const v = tams.filter(t => t.altura >= t.largura);
+        if(v.length) tams = v;
+      } else if(/horizontal|paisagem/.test(orient)){
+        const h = tams.filter(t => t.largura >= t.altura);
+        if(h.length) tams = h;
+      }
+      return {
+        id: o.id, codigo: o.codigo, nome: o.nome, colecao: o.colecao,
+        imagem_preview: o.imagem_preview, tamanhos: tams
+      };
+    });
     res.json({ obras: lista });
   }catch(e){
     res.json({ erro: e.message });
