@@ -832,11 +832,11 @@ function rankearObras(obras, analise, dados){
       // se NENHUM tamanho cabe na altura, a obra inteira é incompatível — marca pra descarte
       else tamanhos = [];
     }
-    // Também limita pela largura física (deixa 5% de folga de cada lado no mínimo)
-    const larguraMaxObra = paredeL * 0.9;
+    // LIMITE FÍSICO DE LARGURA: o quadro nunca pode ser mais largo que a parede.
+    // Elimina de verdade os tamanhos que não cabem (não mantém por fallback).
+    const larguraMaxObra = paredeL; // largura da parede é o teto absoluto
     if(tamanhos.length && larguraMaxObra > 0){
-      const cabemNaLargura = tamanhos.filter(t => t.largura <= larguraMaxObra);
-      if(cabemNaLargura.length) tamanhos = cabemNaLargura;
+      tamanhos = tamanhos.filter(t => t.largura <= larguraMaxObra);
     }
     const larguraIdeal = paredeL * 0.55;
     const alturaIdeal = paredeA * 0.55;
@@ -1159,27 +1159,11 @@ app.get('/simulador', authMembro, async(req,res)=>{
         const centroX = bx.left_pct + bx.width_pct/2;
         const centroY = Math.max(12, Math.min(88, ((alturaParedeCm - 160) / alturaParedeCm) * 100));
 
-        // ESCALA COM LIMITE FÍSICO NOS DOIS EIXOS — o quadro nunca ultrapassa a parede.
-        // Largura do quadro como % da foto (proporcional à largura real da parede):
+        // Escala HONESTA e proporcional: o tamanho já foi filtrado no backend para caber de verdade
+        // (altura e largura). Aqui só desenhamos na escala REAL, sem forçar redução — se chegou aqui,
+        // o quadro cabe. A largura na foto = fração real do tamanho vs largura da parede.
         const larguraFracao = t ? (t.largura / larguraRealParede) : 0.4;
-        let larguraNaFoto = larguraFracao * bx.width_pct;
-        // Verifica a ALTURA que esse quadro teria na foto e se ela estoura o teto.
-        // A foto representa a parede inteira em altura (100% da altura da foto = altura da parede).
-        // Altura do quadro em cm / altura da parede em cm = fração da altura da foto que ele ocupa.
-        if(t){
-          const alturaFracaoFoto = (t.altura / alturaParedeCm) * 100; // % da altura da foto
-          // O quadro é centralizado em centroY. Metade da altura sobe, metade desce.
-          // Espaço disponível acima do centro até o topo da foto (com folga mínima de 2%):
-          const espacoAcima = centroY - 2;
-          const espacoAbaixo = 98 - centroY;
-          const maxAlturaPermitida = Math.min(espacoAcima, espacoAbaixo) * 2; // % da foto
-          if(alturaFracaoFoto > maxAlturaPermitida){
-            // A altura estouraria — reduz a largura proporcionalmente para a altura caber
-            const fatorReducao = maxAlturaPermitida / alturaFracaoFoto;
-            larguraNaFoto = larguraNaFoto * fatorReducao;
-          }
-        }
-        // Nunca ultrapassa a largura da parede livre (bbox), com folga de 2%
+        const larguraNaFoto = larguraFracao * bx.width_pct;
         const larguraFinal = Math.min(Math.max(larguraNaFoto, 6), bx.width_pct*0.98);
         const molduraCor = coresMoldura[c.moldura] || '#1a1a1a';
         const larguraCmObra = t ? t.largura : 100;
