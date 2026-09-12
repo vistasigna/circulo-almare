@@ -654,30 +654,38 @@ const TABELA_TAMANHOS_POR_FORMATO = {
     {largura:180, altura:120, preco:2190}, {largura:120, altura:180, preco:2190},
     {largura:225, altura:150, preco:3690}, {largura:150, altura:225, preco:3690},
   ],
+  '16:9': [
+    {largura:265, altura:150, preco:5390}, {largura:150, altura:265, preco:5390},
+  ],
 };
 
 function tamanhosOficiais(formatoRecomendado, raw){
   const bruto = String(formatoRecomendado||'').trim();
   const chave = bruto.replace(/\s+/g,'').replace(/\(adaptar\)/i,'').trim();
 
-  // Match direto na tabela oficial (1:1 ou 3:2 exatos)
-  if(TABELA_TAMANHOS_POR_FORMATO[chave]){
-    return TABELA_TAMANHOS_POR_FORMATO[chave].map(t => ({...t, label: `${t.largura}×${t.altura}cm`, precoLabel: `R$ ${t.preco.toLocaleString('pt-BR')}`}));
-  }
+  const fmt = arr => arr.map(t => ({...t, label: `${t.largura}×${t.altura}cm`, precoLabel: `R$ ${t.preco.toLocaleString('pt-BR')}`}));
 
-  // Formato "(adaptar)" ou proporção exótica: extrai a razão numérica e escolhe a família
-  // produzível mais próxima (1:1 = razão 1.0, ou 3:2 = razão 1.5)
+  // Match direto na tabela oficial (1:1, 3:2, 16:9 exatos)
+  if(TABELA_TAMANHOS_POR_FORMATO[chave]){
+    return fmt(TABELA_TAMANHOS_POR_FORMATO[chave]);
+  }
+  // 2:3 e 9:16 são as versões verticais de 3:2 e 16:9 (mesma tabela, o filtro de orientação cuida do resto)
+  if(chave === '2:3') return fmt(TABELA_TAMANHOS_POR_FORMATO['3:2']);
+  if(chave === '9:16') return fmt(TABELA_TAMANHOS_POR_FORMATO['16:9']);
+
+  // Formato "(adaptar)" ou proporção exótica: extrai a razão e escolhe a família mais próxima
   const m = bruto.match(/([\d.]+)\s*:\s*([\d.]+)/);
   if(m){
-    const razao = parseFloat(m[1]) / parseFloat(m[2]); // ex: 1.33:1 -> 1.33
-    const distQuadrado = Math.abs(razao - 1.0);
-    const distRetangulo = Math.abs(razao - 1.5);
-    const familia = distQuadrado <= distRetangulo ? '1:1' : '3:2';
-    return TABELA_TAMANHOS_POR_FORMATO[familia].map(t => ({...t, label: `${t.largura}×${t.altura}cm`, precoLabel: `R$ ${t.preco.toLocaleString('pt-BR')}`}));
+    let razao = parseFloat(m[1]) / parseFloat(m[2]);
+    if(razao < 1) razao = 1/razao; // normaliza vertical pra comparar proporção (1.5, 1.78, etc)
+    // famílias produzíveis por razão: 1:1 (1.0), 3:2 (1.5), 16:9 (1.78)
+    const familias = [['1:1',1.0],['3:2',1.5],['16:9',265/150]];
+    familias.sort((a,b)=>Math.abs(razao-a[1])-Math.abs(razao-b[1]));
+    return fmt(TABELA_TAMANHOS_POR_FORMATO[familias[0][0]]);
   }
 
   // Sem formato reconhecível — assume 3:2 como padrão do catálogo (maioria retangular)
-  return TABELA_TAMANHOS_POR_FORMATO['3:2'].map(t => ({...t, label: `${t.largura}×${t.altura}cm`, precoLabel: `R$ ${t.preco.toLocaleString('pt-BR')}`}));
+  return fmt(TABELA_TAMANHOS_POR_FORMATO['3:2']);
 }
 
 // Analisa a foto do local (onde o quadro vai) + fotos de ambiente com Claude visão.
