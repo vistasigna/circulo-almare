@@ -653,7 +653,6 @@ const TABELA_TAMANHOS_POR_FORMATO = {
     {largura:150, altura:100, preco:1790}, {largura:100, altura:150, preco:1790},
     {largura:180, altura:120, preco:2190}, {largura:120, altura:180, preco:2190},
     {largura:225, altura:150, preco:3690}, {largura:150, altura:225, preco:3690},
-    {largura:265, altura:133, preco:5390}, {largura:133, altura:265, preco:5390},
   ],
 };
 
