@@ -1913,5 +1913,75 @@ app.post('/admin/sugestoes/:id/responder',authAdmin,async(req,res)=>{
   res.redirect('/admin/sugestoes');
 });
 
+
+// ─── GARANTE ESTRUTURA DO BANCO (cria o que faltar ao iniciar, nunca apaga nada) ──────────
+async function garantirTabelas(){
+  try{
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS circulo_obra_links (
+        id SERIAL PRIMARY KEY,
+        membro_id INTEGER NOT NULL REFERENCES circulo_membros(id),
+        obra_id INTEGER NOT NULL,
+        codigo VARCHAR(20) UNIQUE NOT NULL,
+        criado_em TIMESTAMP DEFAULT NOW(),
+        UNIQUE(membro_id, obra_id)
+      );`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS circulo_indicacoes (
+        id SERIAL PRIMARY KEY,
+        obra_link_id INTEGER NOT NULL REFERENCES circulo_obra_links(id),
+        nome_lead VARCHAR(200),
+        contato_lead VARCHAR(200),
+        mensagem TEXT,
+        status VARCHAR(20) DEFAULT 'novo',
+        criado_em TIMESTAMP DEFAULT NOW()
+      );`);
+    // Carência de 10 dias antes do crédito/cashback ficar disponível (dá tempo da venda confirmar)
+    await pool.query(`ALTER TABLE circulo_transacoes ADD COLUMN IF NOT EXISTS disponivel_em TIMESTAMP;`).catch(()=>{});
+    // Dados do membro reaproveitados no faturamento
+    await pool.query(`ALTER TABLE circulo_membros ADD COLUMN IF NOT EXISTS bling_id VARCHAR(50);`).catch(()=>{});
+    await pool.query(`ALTER TABLE circulo_membros ADD COLUMN IF NOT EXISTS documento VARCHAR(20);`).catch(()=>{});
+    await pool.query(`ALTER TABLE circulo_membros ADD COLUMN IF NOT EXISTS asaas_cliente_id VARCHAR(50);`).catch(()=>{});
+    // Carrinho e checkout de obras
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS circulo_pedidos (
+        id SERIAL PRIMARY KEY,
+        numero VARCHAR(30) UNIQUE NOT NULL,
+        membro_id INTEGER NOT NULL REFERENCES circulo_membros(id),
+        status VARCHAR(30) NOT NULL DEFAULT 'CARRINHO',
+        total NUMERIC(10,2) DEFAULT 0,
+        metodo_pagamento VARCHAR(20),
+        asaas_cliente_id VARCHAR(50),
+        asaas_cobranca_id VARCHAR(50),
+        bling_pedido_id VARCHAR(50),
+        bling_erro TEXT,
+        criado_em TIMESTAMP DEFAULT NOW()
+      );`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS circulo_pedido_itens (
+        id SERIAL PRIMARY KEY,
+        pedido_id INTEGER NOT NULL REFERENCES circulo_pedidos(id),
+        obra_id INTEGER NOT NULL,
+        obra_link_id INTEGER REFERENCES circulo_obra_links(id),
+        tamanho_id INTEGER,
+        tamanho_label VARCHAR(100),
+        largura NUMERIC(6,2),
+        altura NUMERIC(6,2),
+        moldura VARCHAR(20) NOT NULL DEFAULT 'preta',
+        quantidade INTEGER NOT NULL DEFAULT 1,
+        preco_unitario NUMERIC(10,2) NOT NULL,
+        subtotal NUMERIC(10,2) NOT NULL,
+        bling_produto_id VARCHAR(50),
+        criado_em TIMESTAMP DEFAULT NOW()
+      );`);
+    console.log('garantirTabelas: estrutura verificada/criada com sucesso');
+  }catch(e){
+    console.error('garantirTabelas erro:', e.message);
+  }
+}
+
 const PORT=process.env.PORT||3000;
-app.listen(PORT,()=>console.log(`Círculo ALMARE rodando na porta ${PORT}`));
+app.listen(PORT,()=>{
+  console.log(`Círculo ALMARE rodando na porta ${PORT}`);
+  garantirTabelas();
+});
