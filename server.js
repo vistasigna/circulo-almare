@@ -1179,16 +1179,29 @@ app.get('/simulador', authMembro, async(req,res)=>{
         let html = '<div class="card" style="margin-bottom:24px;">';
         html += '<div style="display:flex;gap:8px;align-items:center;margin-bottom:16px;"><span class="badge badge-gold">'+(i+1)+'ª sugestão</span>'+(o._score?'<span style="font-size:11px;color:var(--muted);">'+Math.round(o._score)+' pontos de compatibilidade</span>':'')+'</div>';
 
-        // Simulação
-        html += '<div style="position:relative;background:#0d0d0d;border-radius:4px;overflow:hidden;margin-bottom:20px;line-height:0;">';
-        html += '<img src="'+data.foto_local+'" style="width:100%;display:block;">';
-        html += '<div class="quadro-wrap-'+i+'" style="position:absolute;top:'+centroY+'%;left:'+centroX+'%;transform:translate(-50%,-50%);width:'+larguraFinal+'%;aspect-ratio:'+(t?t.largura:1)+'/'+(t?t.altura:1)+';">';
+        // Simulação — usa posição ajustada manualmente se existir, senão a calculada
+        const posX = (typeof c.posX === 'number') ? c.posX : centroX;
+        const posY = (typeof c.posY === 'number') ? c.posY : centroY;
+        html += '<div id="sim-container-'+i+'" style="position:relative;background:#0d0d0d;border-radius:4px;overflow:hidden;margin-bottom:12px;line-height:0;">';
+        html += '<img src="'+data.foto_local+'" style="width:100%;display:block;" draggable="false">';
+        html += '<div id="quadro-wrap-'+i+'" class="quadro-wrap-'+i+'" style="position:absolute;top:'+posY+'%;left:'+posX+'%;transform:translate(-50%,-50%);width:'+larguraFinal+'%;aspect-ratio:'+(t?t.largura:1)+'/'+(t?t.altura:1)+';'+(c.ajustando?'cursor:move;box-shadow:0 0 0 2px var(--gold);':'')+'">';
         html += '<div class="moldura-'+i+'" style="border:2px solid '+molduraCor+';padding:'+gapPct.toFixed(2)+'%;background:#0a0a0a;box-sizing:border-box;width:100%;height:100%;">';
         html += '<div style="position:relative;width:100%;height:100%;">';
-        html += '<img src="'+o.imagem_preview+'" style="width:100%;height:100%;object-fit:fill;background:#f4f2ee;display:block;">';
+        html += '<img src="'+o.imagem_preview+'" style="width:100%;height:100%;object-fit:fill;background:#f4f2ee;display:block;" draggable="false">';
         html += '<div style="position:absolute;inset:0;background-image:url('+data.watermark+');background-repeat:repeat;mix-blend-mode:overlay;pointer-events:none;"></div>';
         html += '</div></div></div>';
         html += '</div>';
+
+        // Botão de ajuste manual de posição
+        if(c.ajustando){
+          html += '<div style="display:flex;gap:8px;margin-bottom:20px;">';
+          html += '<button type="button" onclick="finalizarAjuste('+i+')" class="btn btn-primary" style="flex:1;">✓ Concluir ajuste</button>';
+          html += '<button type="button" onclick="resetarPosicao('+i+')" class="btn btn-outline">Centralizar</button>';
+          html += '</div>';
+          html += '<div style="font-size:11px;color:var(--gold);text-align:center;margin-bottom:20px;">Arraste o quadro para a posição desejada</div>';
+        } else {
+          html += '<button type="button" onclick="iniciarAjuste('+i+')" class="btn btn-outline" style="width:100%;margin-bottom:20px;">✥ Ajustar posição do quadro</button>';
+        }
 
         // Info da obra
         html += '<div style="font-size:10px;letter-spacing:.25em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;">'+(o.colecao||'')+'</div>';
@@ -1228,6 +1241,8 @@ app.get('/simulador', authMembro, async(req,res)=>{
         html += '</div>';
 
         document.getElementById('card-slot-'+i).innerHTML = html;
+        // Se está em modo de ajuste, reativa o arrastar (o innerHTML recriou o elemento)
+        if(SIM.cards[i].ajustando){ setTimeout(()=>ativarArrastar(i), 0); }
       }
 
       function mudarTamanho(i, idx){
@@ -1238,6 +1253,54 @@ app.get('/simulador', authMembro, async(req,res)=>{
       function mudarMoldura(i, slug){
         SIM.cards[i].moldura = slug;
         montarCard(i);
+      }
+
+      // ── Ajuste manual de posição (arrastar) ──
+      function iniciarAjuste(i){
+        SIM.cards[i].ajustando = true;
+        montarCard(i);
+        ativarArrastar(i);
+      }
+      function finalizarAjuste(i){
+        SIM.cards[i].ajustando = false;
+        montarCard(i);
+      }
+      function resetarPosicao(i){
+        delete SIM.cards[i].posX;
+        delete SIM.cards[i].posY;
+        montarCard(i);
+        if(SIM.cards[i].ajustando) ativarArrastar(i);
+      }
+      function ativarArrastar(i){
+        const wrap = document.getElementById('quadro-wrap-'+i);
+        const container = document.getElementById('sim-container-'+i);
+        if(!wrap || !container) return;
+        let arrastando = false;
+
+        function mover(e){
+          if(!arrastando) return;
+          e.preventDefault();
+          const rect = container.getBoundingClientRect();
+          const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+          const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+          let px = ((clientX - rect.left) / rect.width) * 100;
+          let py = ((clientY - rect.top) / rect.height) * 100;
+          px = Math.max(0, Math.min(100, px));
+          py = Math.max(0, Math.min(100, py));
+          SIM.cards[i].posX = px;
+          SIM.cards[i].posY = py;
+          wrap.style.left = px + '%';
+          wrap.style.top = py + '%';
+        }
+        function soltar(){
+          arrastando = false;
+          document.removeEventListener('mousemove', mover);
+          document.removeEventListener('mouseup', soltar);
+          document.removeEventListener('touchmove', mover);
+          document.removeEventListener('touchend', soltar);
+        }
+        wrap.onmousedown = function(e){ arrastando = true; e.preventDefault(); document.addEventListener('mousemove', mover); document.addEventListener('mouseup', soltar); };
+        wrap.ontouchstart = function(e){ arrastando = true; document.addEventListener('touchmove', mover, {passive:false}); document.addEventListener('touchend', soltar); };
       }
 
       // ── Galeria de troca de obra ──
