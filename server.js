@@ -809,6 +809,19 @@ function gerarMarcaDagua(codigo){
 
 
 // Rankeia obras do catálogo contra a análise do ambiente
+// ─── HELPERS para indicação/e-commerce ────────────────────────────────────────
+function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+function gerarCodigo(){ return crypto.randomBytes(5).toString('hex'); }
+// Só Embaixador ou Especificador (ativos) podem gerar link de indicação de obra
+async function podeIndicarObra(membroId){
+  const r = await pool.query(
+    `SELECT 1 FROM circulo_membro_funcoes mf JOIN circulo_funcoes f ON f.id=mf.funcao_id
+     WHERE mf.membro_id=$1 AND mf.ativo=true AND f.slug IN ('embaixador','especificador') LIMIT 1`,
+    [membroId]
+  );
+  return r.rows.length > 0;
+}
+
 function rankearObras(obras, analise, dados){
   const paredeL = parseInt(dados.parede_largura)||0;
   const paredeA = parseInt(dados.parede_altura)||0;
@@ -1629,6 +1642,143 @@ app.get('/simulador/minhas', authMembro, async(req,res)=>{
 
 
 
+// ════════════════════════════════════════════════════════════════
+// SISTEMA DE INDICAÇÃO — membro gera link de obra e compartilha
+// ════════════════════════════════════════════════════════════════
+
+// Gera/recupera o link de indicação de uma obra para o membro
+app.get('/obra/:obraId/link', authMembro, async(req,res)=>{
+  if(!(await podeIndicarObra(req.membro.id))){
+    return res.send(html('Indicar obra',`<div class="msg-erro">Esta função é para Embaixadores e Especificadores. Solicite uma dessas funções em "Funções".</div><a href="/catalogo" class="btn btn-outline" style="margin-top:16px;">← Voltar às obras</a>`,true));
+  }
+  const obraId = parseInt(req.params.obraId);
+  const obra = await pool.query('SELECT id,nome,colecao,imagem_preview FROM almare_obras WHERE id=$1',[obraId]);
+  if(!obra.rows.length) return res.send(html('Indicar obra',`<div class="msg-erro">Obra não encontrada.</div>`,true));
+
+  let link = await pool.query('SELECT codigo FROM circulo_obra_links WHERE membro_id=$1 AND obra_id=$2',[req.membro.id,obraId]);
+  if(!link.rows.length){
+    const codigo = gerarCodigo();
+    await pool.query('INSERT INTO circulo_obra_links (membro_id,obra_id,codigo) VALUES ($1,$2,$3)',[req.membro.id,obraId,codigo]);
+    link = {rows:[{codigo}]};
+  }
+  const url = `${BASE_URL}/indicar/${link.rows[0].codigo}`;
+  const o = obra.rows[0];
+  res.send(html('Indicar obra',`
+    <a href="/catalogo" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);display:inline-block;margin-bottom:24px;">← Voltar às obras</a>
+    <h2 style="font-size:26px;margin-bottom:4px;">Indicar "${esc(o.nome)}"</h2>
+    <p style="color:var(--muted);margin-bottom:28px;">Envie este link para quem você acha que pertence a essa obra. Todo interesse aparece em "Minhas indicações", com o seu nome.</p>
+    <div class="card">
+      ${o.imagem_preview?`<img src="${esc(o.imagem_preview)}" style="max-width:100%;max-height:400px;display:block;margin:0 auto 20px;border-radius:4px;">`:''}
+      <div style="font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);margin-bottom:12px;">Seu link de indicação</div>
+      <div style="background:#0d0d0d;border:1px solid var(--border);border-radius:3px;padding:14px;font-size:13px;word-break:break-all;margin-bottom:16px;">${esc(url)}</div>
+      <button onclick="navigator.clipboard.writeText('${esc(url)}');this.textContent='Copiado ✓'" class="btn btn-primary">Copiar link</button>
+      <a href="/minhas-indicacoes" class="btn btn-outline" style="margin-left:8px;">Ver minhas indicações</a>
+    </div>
+  `,true));
+});
+
+// Lista as indicações do membro
+app.get('/minhas-indicacoes', authMembro, async(req,res)=>{
+  if(!(await podeIndicarObra(req.membro.id))) return res.redirect('/catalogo');
+  const links = await pool.query(`
+    SELECT ol.id, ol.codigo, ol.obra_id, o.nome as obra_nome, o.imagem_preview,
+           (SELECT COUNT(*) FROM circulo_indicacoes ci WHERE ci.obra_link_id=ol.id) as total_leads,
+           (SELECT COUNT(*) FROM circulo_indicacoes ci WHERE ci.obra_link_id=ol.id AND ci.status='novo') as leads_novos
+    FROM circulo_obra_links ol JOIN almare_obras o ON o.id=ol.obra_id
+    WHERE ol.membro_id=$1 ORDER BY ol.criado_em DESC`, [req.membro.id]);
+
+  const itens = links.rows.map(l=>`
+    <div style="display:flex;align-items:center;gap:16px;padding:16px 0;border-bottom:1px solid var(--border);">
+      <div style="width:56px;height:56px;border-radius:4px;overflow:hidden;background:#0d0d0d;flex-shrink:0;">
+        ${l.imagem_preview?`<img src="${esc(l.imagem_preview)}" style="width:100%;height:100%;object-fit:cover;">`:''}
+      </div>
+      <div style="flex:1;">
+        <div style="font-family:'Cormorant Garamond',serif;font-size:17px;">${esc(l.obra_nome)}</div>
+        <div style="font-size:12px;color:var(--muted);">${l.total_leads} interesse${l.total_leads!=1?'s':''} recebido${l.total_leads!=1?'s':''}${l.leads_novos>0?` · <span style="color:var(--gold)">${l.leads_novos} novo${l.leads_novos!=1?'s':''}</span>`:''}</div>
+      </div>
+      <a href="/obra/${l.obra_id}/link" class="btn btn-outline" style="padding:6px 14px;font-size:10px;">Ver link</a>
+    </div>`).join('');
+
+  const detalhes = await pool.query(`
+    SELECT ci.nome_lead, ci.contato_lead, ci.mensagem, ci.status, ci.criado_em, o.nome as obra_nome
+    FROM circulo_indicacoes ci
+    JOIN circulo_obra_links ol ON ol.id=ci.obra_link_id
+    JOIN almare_obras o ON o.id=ol.obra_id
+    WHERE ol.membro_id=$1 ORDER BY ci.criado_em DESC LIMIT 50`, [req.membro.id]);
+
+  const leadsHtml = detalhes.rows.map(d=>`
+    <div style="padding:14px 0;border-bottom:1px solid var(--border);">
+      <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+        <span style="font-size:14px;">${esc(d.nome_lead||'Sem nome')} <span style="color:var(--muted);font-size:12px;">· ${esc(d.obra_nome)}</span></span>
+        <span class="badge ${d.status==='novo'?'badge-gold':'badge-muted'}">${esc(d.status)}</span>
+      </div>
+      <div style="font-size:12px;color:var(--muted);">${esc(d.contato_lead||'')}</div>
+      ${d.mensagem?`<div style="font-size:12px;color:#bbb;margin-top:4px;font-style:italic;">"${esc(d.mensagem)}"</div>`:''}
+    </div>`).join('');
+
+  res.send(html('Minhas indicações',`
+    <div class="nav-bar"><a href="/portal" class="nav-link">Passaporte</a><a href="/catalogo" class="nav-link">Obras</a><a href="/simulador" class="nav-link">Simulador</a><a href="/minhas-indicacoes" class="nav-link ativo">Indicações</a><a href="/sugestoes" class="nav-link">Voz</a><a href="/minhas-funcoes" class="nav-link">Funções</a><a href="/meu-convite" class="nav-link">Convidar</a></div>
+    <h2 style="font-size:28px;margin-bottom:8px;">Minhas indicações</h2>
+    <p style="color:var(--muted);margin-bottom:32px;">Cada obra do catálogo tem seu próprio link. Toque em "Indicar esta obra" no catálogo para gerar um.</p>
+    <div class="card" style="margin-bottom:24px;"><h3 style="font-size:16px;margin-bottom:12px;color:var(--gold);">Seus links por obra</h3>${itens||'<p style="color:var(--muted);padding:12px 0;">Você ainda não indicou nenhuma obra. Vá ao catálogo e toque em "Indicar esta obra".</p>'}</div>
+    ${leadsHtml?`<div class="card"><h3 style="font-size:16px;margin-bottom:12px;color:var(--gold);">Interesses recebidos</h3>${leadsHtml}</div>`:''}
+  `,true));
+});
+
+// Página PÚBLICA de indicação — quem recebe o link não precisa ter conta
+app.get('/indicar/:codigo', async(req,res)=>{
+  const r = await pool.query(`
+    SELECT ol.id as link_id, o.id as obra_id, o.nome, o.colecao, o.essencia,
+           o.texto_curatorial, o.o_que_permanece, o.imagem_preview, m.nome as membro_nome
+    FROM circulo_obra_links ol
+    JOIN almare_obras o ON o.id=ol.obra_id
+    JOIN circulo_membros m ON m.id=ol.membro_id
+    WHERE ol.codigo=$1`, [req.params.codigo]);
+  if(!r.rows.length) return res.status(404).send(html('Indicação',`<div class="container-sm"><div class="msg-erro">Este link não existe mais.</div></div>`));
+  const o = r.rows[0];
+  res.send(`<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>${esc(o.nome)} — ALMARE</title><style>${CSS}</style></head>
+    <body><div class="container" style="max-width:640px;padding-top:48px;">
+      <div class="logo" style="margin-bottom:6px;">ALMARE</div>
+      <div style="font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--gold);margin-bottom:40px;">Uma indicação de ${esc(o.membro_nome)}</div>
+      ${o.imagem_preview?`<img src="${esc(o.imagem_preview)}" style="width:100%;display:block;margin-bottom:32px;border-radius:4px;">`:''}
+      <div style="font-size:10px;letter-spacing:.25em;text-transform:uppercase;color:var(--muted);margin-bottom:8px;">${esc(o.colecao||'')}</div>
+      <h1 style="font-size:32px;margin-bottom:20px;">${esc(o.nome)}</h1>
+      ${o.essencia?`<p style="font-style:italic;color:var(--gold-light);margin-bottom:20px;">${esc(o.essencia)}</p>`:''}
+      ${o.texto_curatorial?`<p style="line-height:1.9;color:#ccc;margin-bottom:16px;">${esc(o.texto_curatorial)}</p>`:''}
+      ${o.o_que_permanece?`<p style="font-style:italic;color:var(--muted);margin-bottom:40px;">${esc(o.o_que_permanece)}</p>`:''}
+      <div class="card">
+        <h3 style="font-size:18px;margin-bottom:16px;">Tenho interesse nesta obra</h3>
+        <form method="POST" action="/indicar/${esc(req.params.codigo)}">
+          <div class="field"><label>Seu nome</label><input name="nome" required placeholder="Seu nome"></div>
+          <div class="field"><label>Contato (WhatsApp ou e-mail)</label><input name="contato" required placeholder="Como falar com você"></div>
+          <div class="field"><label>Mensagem <span style="color:var(--muted)">(opcional)</span></label><textarea name="mensagem" placeholder="Alguma observação"></textarea></div>
+          <button type="submit" class="btn btn-primary btn-full">Enviar interesse</button>
+        </form>
+      </div>
+      <div style="text-align:center;margin-top:24px;font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);">ALMARE · Obras autorais de edição limitada</div>
+    </div></body></html>`);
+});
+
+// Registra o interesse (lead) da página pública
+app.post('/indicar/:codigo', async(req,res)=>{
+  const r = await pool.query('SELECT id FROM circulo_obra_links WHERE codigo=$1',[req.params.codigo]);
+  if(!r.rows.length) return res.status(404).send(html('Indicação',`<div class="container-sm"><div class="msg-erro">Link inválido.</div></div>`));
+  const { nome, contato, mensagem } = req.body;
+  await pool.query(
+    'INSERT INTO circulo_indicacoes (obra_link_id,nome_lead,contato_lead,mensagem) VALUES ($1,$2,$3,$4)',
+    [r.rows[0].id, nome||null, contato||null, mensagem||null]
+  );
+  res.send(html('Interesse enviado',`
+    <div class="container-sm" style="text-align:center;padding-top:60px;">
+      <div style="font-size:48px;margin-bottom:24px;color:var(--gold);">✦</div>
+      <h2 style="font-size:30px;margin-bottom:16px;">Seu interesse foi enviado.</h2>
+      <p style="color:var(--muted);line-height:1.9;">Em breve alguém da ALMARE entrará em contato com você.</p>
+    </div>
+  `));
+});
+
+
 // ─── CATÁLOGO ─────────────────────────────────────────────────────────────────
 app.get('/catalogo',authMembro,async(req,res)=>{
   try{
@@ -1760,6 +1910,7 @@ app.get('/catalogo',authMembro,async(req,res)=>{
           html+=\`<div style="font-size:10px;letter-spacing:.25em;text-transform:uppercase;color:var(--muted);margin-bottom:6px;">\${colecao}</div>\`;
           html+=\`<h2 style="font-family:'Cormorant Garamond',serif;font-size:28px;font-weight:400;margin-bottom:24px;">\${nome}</h2>\`;
           html+=\`<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 32px;">\${src.innerHTML}</div>\`;
+          html+=\`<a href="/obra/\${id}/link" class="btn btn-primary btn-full" style="margin-top:24px;">Indicar esta obra</a>\`;
           document.getElementById('modal-body').innerHTML=html;
           document.getElementById('modal').style.display='block';
           document.body.style.overflow='hidden';
