@@ -948,7 +948,10 @@ app.get('/simulador', authMembro, async(req,res)=>{
 
   res.send(html('Simulador',`
     <div class="nav-bar"><a href="/portal" class="nav-link">Passaporte</a><a href="/catalogo" class="nav-link">Obras</a><a href="/simulador" class="nav-link ativo">Simulador</a>${navImpacto}<a href="/sugestoes" class="nav-link">Voz</a><a href="/minhas-funcoes" class="nav-link">Funções</a><a href="/meu-convite" class="nav-link">Convidar</a></div>
-    <a href="/portal" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);display:inline-block;margin-bottom:24px;">← Voltar ao portal</a>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;flex-wrap:wrap;gap:12px;">
+      <a href="/portal" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);">← Voltar ao portal</a>
+      <a href="/simulador/minhas" class="btn btn-outline" style="padding:8px 16px;font-size:10px;">Minhas simulações</a>
+    </div>
     <h2 style="font-size:28px;margin-bottom:8px;">Simulador de ambiente</h2>
     <p style="color:var(--muted);margin-bottom:32px;">Envie a foto do local exato e informe as medidas. A curadoria ALMARE sugere as obras que melhor se integram ao espaço.</p>
 
@@ -1100,6 +1103,36 @@ app.get('/simulador', authMembro, async(req,res)=>{
       // Estado global — guarda os dados da simulação atual para permitir edições (trocar tamanho/obra)
       let SIM = { data:null, cards:[] };
 
+      // Se veio ?abrir=ID na URL, carrega uma simulação salva direto
+      (function(){
+        const params = new URLSearchParams(window.location.search);
+        const abrirId = params.get('abrir');
+        if(abrirId){
+          document.addEventListener('DOMContentLoaded', async ()=>{
+            const formEl = document.getElementById('form-sim');
+            if(formEl) formEl.style.display='none';
+            const load = document.getElementById('loading');
+            if(load) load.style.display='block';
+            try{
+              const r = await fetch('/simulador/salva/'+abrirId);
+              const d = await r.json();
+              if(load) load.style.display='none';
+              if(d.erro){ document.getElementById('resultado').innerHTML='<div class="msg-erro">'+d.erro+'</div>'; return; }
+              // reconstrói SIM.data no formato que renderResultado espera
+              renderResultado({
+                analise: d.analise || { parede_bbox:{left_pct:5,top_pct:5,width_pct:90,height_pct:90}, moldura_recomendada:'preta', paleta_dominante:'', temperatura:'', estilo:'', carga_visual:'', justificativa_ambiente:'' },
+                sugestoes: d.cards.map(c=>({ ...c.obra, _melhorTamanho:c.tamanho, _tamanhosDisponiveis:c.obra._tamanhosDisponiveis })),
+                watermark: d.watermark || '',
+                foto_local: d.foto_local,
+                parede_largura: d.parede_largura,
+                parede_altura: d.parede_altura,
+                _cardsRestore: d.cards
+              });
+            }catch(e){ if(load) load.style.display='none'; }
+          });
+        }
+      })();
+
       function renderResultado(data){
         document.getElementById('resultado').innerHTML = '';
         SIM.data = data;
@@ -1107,11 +1140,16 @@ app.get('/simulador', authMembro, async(req,res)=>{
         const sugestoes = (data.sugestoes || []).slice(0, 3);
 
         // Estado editável de cada card (tamanho e obra podem mudar; moldura começa na recomendada)
-        SIM.cards = sugestoes.map(o => ({
-          obra: o,
-          tamanho: o._melhorTamanho,
-          moldura: a.moldura_recomendada || 'preta'
-        }));
+        SIM.cards = sugestoes.map((o,idx) => {
+          const restore = (data._cardsRestore && data._cardsRestore[idx]) ? data._cardsRestore[idx] : null;
+          return {
+            obra: o,
+            tamanho: restore ? restore.tamanho : o._melhorTamanho,
+            moldura: restore ? restore.moldura : (a.moldura_recomendada || 'preta'),
+            posX: restore ? restore.posX : undefined,
+            posY: restore ? restore.posY : undefined
+          };
+        });
 
         const nomesMoldura = {preta:'Preta', carvalho:'Carvalho', aco_escovado:'Aço escovado'};
 
@@ -1143,7 +1181,10 @@ app.get('/simulador', authMembro, async(req,res)=>{
 
         // Containers dos 3 cards (preenchidos por montarCard)
         SIM.cards.forEach((c,i)=>{ html += '<div id="card-slot-'+i+'"></div>'; });
-        html += '<button onclick="location.reload()" class="btn btn-outline btn-full" style="margin-top:16px;">Simular outro ambiente</button>';
+        html += '<div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap;">';
+        html += '<button onclick="abrirSalvar()" class="btn btn-primary" style="flex:1;min-width:180px;">Salvar esta simulação</button>';
+        html += '<button onclick="location.reload()" class="btn btn-outline" style="flex:1;min-width:180px;">Simular outro ambiente</button>';
+        html += '</div>';
 
         document.getElementById('resultado').innerHTML = html;
         SIM.cards.forEach((c,i)=> montarCard(i));
@@ -1256,6 +1297,40 @@ app.get('/simulador', authMembro, async(req,res)=>{
       }
 
       // ── Ajuste manual de posição (arrastar) ──
+      // ── Salvar simulação ──
+      function abrirSalvar(){
+        const nome = prompt('Dê um nome para esta simulação (ex: Sala do cliente João):');
+        if(nome === null) return; // cancelou
+        if(!nome.trim()){ alert('Digite um nome.'); return; }
+        salvarSimulacao(nome.trim());
+      }
+      async function salvarSimulacao(nome){
+        // Monta os cards com só o essencial pra reabrir
+        const cardsSalvar = SIM.cards.map(c => ({
+          obra: {
+            id: c.obra.id, codigo: c.obra.codigo, nome: c.obra.nome, colecao: c.obra.colecao,
+            imagem_preview: c.obra.imagem_preview, _tamanhosDisponiveis: c.obra._tamanhosDisponiveis || [],
+            _motivos: c.obra._motivos || []
+          },
+          tamanho: c.tamanho, moldura: c.moldura,
+          posX: c.posX, posY: c.posY
+        }));
+        try{
+          const r = await fetch('/simulador/salvar', {
+            method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({
+              nome, foto_local: SIM.data.foto_local,
+              parede_largura: SIM.data.parede_largura, parede_altura: SIM.data.parede_altura,
+              analise: SIM.data.analise, watermark: SIM.data.watermark,
+              cards: cardsSalvar
+            })
+          });
+          const d = await r.json();
+          if(d.erro){ alert(d.erro); return; }
+          alert('Simulação salva! Você pode consultá-la em "Minhas simulações".');
+        }catch(e){ alert('Erro ao salvar: '+e.message); }
+      }
+
       function iniciarAjuste(i){
         SIM.cards[i].ajustando = true;
         montarCard(i);
@@ -1437,6 +1512,119 @@ app.get('/simulador/obras', authMembro, async(req,res)=>{
   }catch(e){
     res.json({ erro: e.message });
   }
+});
+
+// ── SALVAR / LISTAR / APAGAR SIMULAÇÕES ──
+const DIAS_EXPIRACAO_SIM = 20;
+
+// Limpa simulações expiradas (roda oportunisticamente quando alguém acessa)
+async function limparSimulacoesExpiradas(){
+  try{
+    await pool.query(`DELETE FROM circulo_simulacoes WHERE criado_em < NOW() - INTERVAL '${DIAS_EXPIRACAO_SIM} days'`);
+  }catch(e){ console.error('Limpeza simulacoes:', e.message); }
+}
+
+// Salvar uma simulação
+app.post('/simulador/salvar', authMembro, async(req,res)=>{
+  try{
+    await limparSimulacoesExpiradas();
+    const { nome, foto_local, parede_largura, parede_altura, cards } = req.body;
+    if(!nome || !nome.trim()) return res.json({ erro:'Dê um nome para a simulação.' });
+    if(!foto_local || !cards) return res.json({ erro:'Dados da simulação incompletos.' });
+
+    // Checa limite de 10
+    const cont = await pool.query('SELECT COUNT(*) FROM circulo_simulacoes WHERE membro_id=$1', [req.membro.id]);
+    if(parseInt(cont.rows[0].count) >= 10){
+      return res.json({ erro:'Você atingiu o limite de 10 simulações salvas. Apague uma antes de salvar outra.' });
+    }
+
+    await pool.query(
+      `INSERT INTO circulo_simulacoes (membro_id, nome, foto_local, parede_largura, parede_altura, cards_json)
+       VALUES ($1,$2,$3,$4,$5,$6)`,
+      [req.membro.id, nome.trim(), foto_local, parseInt(parede_largura)||null, parseInt(parede_altura)||null, JSON.stringify(cards)]
+    );
+    res.json({ ok:true });
+  }catch(e){
+    console.error('Salvar simulacao:', e.message);
+    res.json({ erro:'Erro ao salvar: '+e.message });
+  }
+});
+
+// Listar simulações salvas do membro
+app.get('/simulador/salvas', authMembro, async(req,res)=>{
+  try{
+    await limparSimulacoesExpiradas();
+    const r = await pool.query(
+      `SELECT id, nome, criado_em, criado_em + INTERVAL '${DIAS_EXPIRACAO_SIM} days' AS expira_em
+       FROM circulo_simulacoes WHERE membro_id=$1 ORDER BY criado_em DESC`, [req.membro.id]
+    );
+    res.json({ simulacoes: r.rows });
+  }catch(e){ res.json({ erro:e.message }); }
+});
+
+// Abrir uma simulação salva (dados completos)
+app.get('/simulador/salva/:id', authMembro, async(req,res)=>{
+  try{
+    const r = await pool.query('SELECT * FROM circulo_simulacoes WHERE id=$1 AND membro_id=$2', [req.params.id, req.membro.id]);
+    if(!r.rows.length) return res.json({ erro:'Simulação não encontrada.' });
+    const s = r.rows[0];
+    res.json({
+      nome: s.nome, foto_local: s.foto_local,
+      parede_largura: s.parede_largura, parede_altura: s.parede_altura,
+      cards: JSON.parse(s.cards_json)
+    });
+  }catch(e){ res.json({ erro:e.message }); }
+});
+
+// Apagar uma simulação
+app.post('/simulador/salva/:id/apagar', authMembro, async(req,res)=>{
+  try{
+    await pool.query('DELETE FROM circulo_simulacoes WHERE id=$1 AND membro_id=$2', [req.params.id, req.membro.id]);
+    res.json({ ok:true });
+  }catch(e){ res.json({ erro:e.message }); }
+});
+
+// Tela: Minhas simulações
+app.get('/simulador/minhas', authMembro, async(req,res)=>{
+  const fRows=await pool.query(`SELECT f.slug FROM circulo_membro_funcoes mf JOIN circulo_funcoes f ON f.id=mf.funcao_id WHERE mf.membro_id=$1 AND mf.ativo=true`,[req.membro.id]);
+  const slugs=fRows.rows.map(r=>r.slug);
+  const navImpacto=slugs.some(s=>['embaixador','especificador','artista','colaborador'].includes(s))?'<a href="/meu-impacto" class="nav-link">Impacto</a>':'';
+  res.send(html('Minhas simulações',`
+    <div class="nav-bar"><a href="/portal" class="nav-link">Passaporte</a><a href="/catalogo" class="nav-link">Obras</a><a href="/simulador" class="nav-link ativo">Simulador</a>${navImpacto}<a href="/sugestoes" class="nav-link">Voz</a><a href="/minhas-funcoes" class="nav-link">Funções</a><a href="/meu-convite" class="nav-link">Convidar</a></div>
+    <a href="/simulador" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);display:inline-block;margin-bottom:24px;">← Voltar ao simulador</a>
+    <h2 style="font-size:28px;margin-bottom:8px;">Minhas simulações</h2>
+    <p style="color:var(--muted);margin-bottom:32px;">Suas simulações salvas. Elas ficam disponíveis por 20 dias. Limite de 10 salvas.</p>
+    <div id="lista-sim"><p style="color:var(--muted);">Carregando...</p></div>
+    <script>
+      async function carregarSalvas(){
+        try{
+          const r = await fetch('/simulador/salvas');
+          const d = await r.json();
+          if(d.erro){ document.getElementById('lista-sim').innerHTML='<div class="msg-erro">'+d.erro+'</div>'; return; }
+          if(!d.simulacoes.length){ document.getElementById('lista-sim').innerHTML='<p style="color:var(--muted);">Nenhuma simulação salva ainda.</p>'; return; }
+          let html='';
+          d.simulacoes.forEach(s=>{
+            const data = new Date(s.criado_em).toLocaleDateString('pt-BR');
+            const exp = new Date(s.expira_em).toLocaleDateString('pt-BR');
+            html+='<div class="card" style="margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;">';
+            html+='<div><div style="font-family:\\'Cormorant Garamond\\',serif;font-size:20px;margin-bottom:4px;">'+s.nome+'</div>';
+            html+='<div style="font-size:11px;color:var(--muted);">Criada em '+data+' · expira em '+exp+'</div></div>';
+            html+='<div style="display:flex;gap:8px;">';
+            html+='<a href="/simulador?abrir='+s.id+'" class="btn btn-primary" style="padding:8px 16px;font-size:10px;">Abrir</a>';
+            html+='<button onclick="apagarSim('+s.id+')" class="btn btn-outline" style="padding:8px 16px;font-size:10px;">Apagar</button>';
+            html+='</div></div>';
+          });
+          document.getElementById('lista-sim').innerHTML=html;
+        }catch(e){ document.getElementById('lista-sim').innerHTML='<div class="msg-erro">Erro: '+e.message+'</div>'; }
+      }
+      async function apagarSim(id){
+        if(!confirm('Apagar esta simulação?')) return;
+        await fetch('/simulador/salva/'+id+'/apagar', {method:'POST'});
+        carregarSalvas();
+      }
+      carregarSalvas();
+    </script>
+  `,true));
 });
 
 
