@@ -1779,6 +1779,161 @@ app.post('/indicar/:codigo', async(req,res)=>{
 });
 
 
+// ════════════════════════════════════════════════════════════════
+// CARRINHO DE COMPRAS (checkout/pagamento vem na função 3)
+// ════════════════════════════════════════════════════════════════
+const MOLDURA_NOME = { preta:'Preta', carvalho:'Carvalho', aco_escovado:'Aço escovado' };
+
+// Retorna os tamanhos de uma obra (com id sequencial pro select), respeitando orientação
+async function tamanhosDaObra(obraId){
+  const o = await pool.query('SELECT formato_recomendado, tamanhos_recomendados, orientacao FROM almare_obras WHERE id=$1',[obraId]);
+  if(!o.rows.length) return [];
+  let tams = tamanhosOficiais(o.rows[0].formato_recomendado, o.rows[0].tamanhos_recomendados);
+  const orient = String(o.rows[0].orientacao||'').toLowerCase();
+  if(/vertical|retrato/.test(orient)){ const v=tams.filter(t=>t.altura>=t.largura); if(v.length) tams=v; }
+  else if(/horizontal|paisagem/.test(orient)){ const h=tams.filter(t=>t.largura>=t.altura); if(h.length) tams=h; }
+  // dá um id sequencial estável a cada tamanho
+  return tams.map((t,i)=>({ id:i, label:t.label, largura:t.largura, altura:t.altura, preco:t.preco }));
+}
+
+async function pegarOuCriarCarrinho(membroId){
+  let p = await pool.query(`SELECT * FROM circulo_pedidos WHERE membro_id=$1 AND status='CARRINHO'`,[membroId]);
+  if(p.rows.length) return p.rows[0];
+  const numero = 'C'+Date.now().toString(36).toUpperCase();
+  const r = await pool.query(
+    `INSERT INTO circulo_pedidos (numero,membro_id,status,total) VALUES ($1,$2,'CARRINHO',0) RETURNING *`,
+    [numero, membroId]
+  );
+  return r.rows[0];
+}
+
+async function recalcularTotalCarrinho(pedidoId){
+  const r = await pool.query('SELECT COALESCE(SUM(subtotal),0) as t FROM circulo_pedido_itens WHERE pedido_id=$1',[pedidoId]);
+  await pool.query('UPDATE circulo_pedidos SET total=$1 WHERE id=$2',[r.rows[0].t, pedidoId]);
+}
+
+// Adicionar obra ao carrinho
+app.post('/comprar/:obraId/adicionar', authMembro, async(req,res)=>{
+  const obraId = parseInt(req.params.obraId);
+  const { tamanho_id, moldura, codigo_indicacao } = req.body;
+  const quantidade = Math.max(1, Math.min(20, parseInt(req.body.quantidade)||1));
+  try{
+    const tamanhos = await tamanhosDaObra(obraId);
+    const tamanho = tamanhos.find(t=>t.id===parseInt(tamanho_id));
+    if(!tamanho || !MOLDURA_NOME[moldura]) return res.redirect('/catalogo');
+
+    let obraLinkId = null;
+    if(codigo_indicacao){
+      const link = await pool.query('SELECT id FROM circulo_obra_links WHERE codigo=$1',[codigo_indicacao]);
+      if(link.rows.length) obraLinkId = link.rows[0].id;
+    }
+    const pedido = await pegarOuCriarCarrinho(req.membro.id);
+    const subtotal = Math.round(tamanho.preco*quantidade*100)/100;
+    await pool.query(
+      `INSERT INTO circulo_pedido_itens (pedido_id,obra_id,obra_link_id,tamanho_id,tamanho_label,largura,altura,moldura,quantidade,preco_unitario,subtotal)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+      [pedido.id,obraId,obraLinkId,tamanho.id,tamanho.label,tamanho.largura,tamanho.altura,moldura,quantidade,tamanho.preco,subtotal]
+    );
+    await recalcularTotalCarrinho(pedido.id);
+    res.redirect('/carrinho');
+  }catch(e){
+    res.send(html('Erro',`<div class="container-sm"><div class="msg-erro">${esc(e.message)}</div></div>`,true));
+  }
+});
+
+// Ver o carrinho
+app.get('/carrinho', authMembro, async(req,res)=>{
+  const pedidoRes = await pool.query(`SELECT * FROM circulo_pedidos WHERE membro_id=$1 AND status='CARRINHO'`,[req.membro.id]);
+  const navBar = '<div class="nav-bar"><a href="/portal" class="nav-link">Passaporte</a><a href="/catalogo" class="nav-link">Obras</a><a href="/simulador" class="nav-link">Simulador</a><a href="/carrinho" class="nav-link ativo">Carrinho</a><a href="/sugestoes" class="nav-link">Voz</a><a href="/minhas-funcoes" class="nav-link">Funções</a></div>';
+  if(!pedidoRes.rows.length){
+    return res.send(html('Carrinho',`${navBar}<h2 style="font-size:28px;margin-bottom:16px;">Seu carrinho</h2><p style="color:var(--muted);">Vazio. Volte ao <a href="/catalogo">catálogo</a> para escolher uma obra.</p>`,true));
+  }
+  const p = pedidoRes.rows[0];
+  const itens = await pool.query(`
+    SELECT pi.*, o.nome as obra_nome, o.imagem_preview
+    FROM circulo_pedido_itens pi JOIN almare_obras o ON o.id=pi.obra_id
+    WHERE pi.pedido_id=$1 ORDER BY pi.criado_em`, [p.id]);
+
+  const linhas = itens.rows.map(it=>`
+    <div style="display:flex;align-items:center;gap:16px;padding:16px 0;border-bottom:1px solid var(--border);">
+      <div style="width:64px;height:64px;border-radius:4px;overflow:hidden;background:#0d0d0d;flex-shrink:0;">
+        ${it.imagem_preview?`<img src="${esc(it.imagem_preview)}" style="width:100%;height:100%;object-fit:cover;">`:''}
+      </div>
+      <div style="flex:1;">
+        <div style="font-family:'Cormorant Garamond',serif;font-size:17px;">${esc(it.obra_nome)}</div>
+        <div style="font-size:12px;color:var(--muted);">${esc(it.tamanho_label)} · Moldura ${esc(MOLDURA_NOME[it.moldura]||it.moldura)} · Qtd ${it.quantidade}</div>
+        <div style="font-size:13px;color:var(--gold);margin-top:2px;">R$ ${parseFloat(it.subtotal).toFixed(2).replace('.',',')}</div>
+      </div>
+      <form method="POST" action="/carrinho/${it.id}/remover"><button class="btn btn-outline" style="padding:6px 12px;font-size:10px;">Remover</button></form>
+    </div>`).join('');
+
+  res.send(html('Carrinho',`
+    ${navBar}
+    <h2 style="font-size:28px;margin-bottom:24px;">Seu carrinho</h2>
+    <div class="card" style="margin-bottom:20px;">
+      ${linhas}
+      <div style="display:flex;justify-content:space-between;align-items:center;padding-top:20px;margin-top:8px;border-top:1px solid var(--border);">
+        <span style="font-size:14px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);">Total</span>
+        <span style="font-family:'Cormorant Garamond',serif;font-size:28px;color:var(--gold);">R$ ${parseFloat(p.total).toFixed(2).replace('.',',')}</span>
+      </div>
+    </div>
+    <div class="card">
+      <h3 style="font-size:18px;margin-bottom:16px;">Finalizar compra</h3>
+      <p style="color:var(--muted);font-size:13px;margin-bottom:16px;">O pagamento online estará disponível em breve. Por enquanto, entre em contato para concluir o pedido.</p>
+      <button class="btn btn-primary btn-full" disabled style="opacity:.5;cursor:not-allowed;">Finalizar e pagar (em breve)</button>
+    </div>
+  `,true));
+});
+
+// Remover item do carrinho
+app.post('/carrinho/:itemId/remover', authMembro, async(req,res)=>{
+  const item = await pool.query(`SELECT pi.*, p.membro_id FROM circulo_pedido_itens pi JOIN circulo_pedidos p ON p.id=pi.pedido_id WHERE pi.id=$1`,[req.params.itemId]);
+  if(item.rows.length && item.rows[0].membro_id===req.membro.id){
+    const pedidoId = item.rows[0].pedido_id;
+    await pool.query('DELETE FROM circulo_pedido_itens WHERE id=$1',[req.params.itemId]);
+    const restantes = await pool.query('SELECT COUNT(*) as n FROM circulo_pedido_itens WHERE pedido_id=$1',[pedidoId]);
+    if(parseInt(restantes.rows[0].n)===0) await pool.query('DELETE FROM circulo_pedidos WHERE id=$1',[pedidoId]);
+    else await recalcularTotalCarrinho(pedidoId);
+  }
+  res.redirect('/carrinho');
+});
+
+
+// Página de compra de uma obra (escolher tamanho, moldura, quantidade)
+app.get('/obra/:obraId/comprar', authMembro, async(req,res)=>{
+  const obraId = parseInt(req.params.obraId);
+  const obra = await pool.query('SELECT id,nome,colecao,imagem_preview FROM almare_obras WHERE id=$1 AND status=\'aprovada\'',[obraId]);
+  if(!obra.rows.length) return res.send(html('Comprar',`<div class="msg-erro">Obra não encontrada.</div>`,true));
+  const o = obra.rows[0];
+  const tamanhos = await tamanhosDaObra(obraId);
+  if(!tamanhos.length) return res.send(html('Comprar',`<div class="msg-erro">Esta obra não tem tamanhos disponíveis.</div>`,true));
+
+  const opcoesTam = tamanhos.map(t=>`<option value="${t.id}">${esc(t.label)} · R$ ${t.preco.toLocaleString('pt-BR')}</option>`).join('');
+  const codigoInd = req.query.ref || '';
+
+  res.send(html('Comprar',`
+    <a href="/catalogo" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);display:inline-block;margin-bottom:24px;">← Voltar às obras</a>
+    <h2 style="font-size:26px;margin-bottom:4px;">${esc(o.nome)}</h2>
+    <div style="font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);margin-bottom:24px;">${esc(o.colecao||'')}</div>
+    ${o.imagem_preview?`<img src="${esc(o.imagem_preview)}" style="max-width:100%;max-height:360px;display:block;margin:0 auto 24px;border-radius:4px;">`:''}
+    <div class="card">
+      <form method="POST" action="/comprar/${obraId}/adicionar">
+        <input type="hidden" name="codigo_indicacao" value="${esc(codigoInd)}">
+        <div class="field"><label>Tamanho</label><select name="tamanho_id" required>${opcoesTam}</select></div>
+        <div class="field"><label>Moldura</label>
+          <select name="moldura" required>
+            <option value="preta">Preta</option>
+            <option value="carvalho">Carvalho</option>
+            <option value="aco_escovado">Aço escovado</option>
+          </select>
+        </div>
+        <div class="field"><label>Quantidade</label><input type="number" name="quantidade" value="1" min="1" max="20"></div>
+        <button type="submit" class="btn btn-primary btn-full">Adicionar ao carrinho</button>
+      </form>
+    </div>
+  `,true));
+});
+
 // ─── CATÁLOGO ─────────────────────────────────────────────────────────────────
 app.get('/catalogo',authMembro,async(req,res)=>{
   try{
@@ -1837,7 +1992,7 @@ app.get('/catalogo',authMembro,async(req,res)=>{
     const opcoesPaleta=paletas.map(p=>`<option value="${p.toLowerCase().replace(/\s+/g,'-')}">${p}</option>`).join('');
 
     res.send(html('Catálogo',`
-      <div class="nav-bar"><a href="/portal" class="nav-link">Passaporte</a><a href="/catalogo" class="nav-link ativo">Obras</a><a href="/simulador" class="nav-link">Simulador</a>${navImpacto}<a href="/sugestoes" class="nav-link">Voz</a><a href="/minhas-funcoes" class="nav-link">Funções</a><a href="/meu-convite" class="nav-link">Convidar</a></div>
+      <div class="nav-bar"><a href="/portal" class="nav-link">Passaporte</a><a href="/catalogo" class="nav-link ativo">Obras</a><a href="/simulador" class="nav-link">Simulador</a><a href="/carrinho" class="nav-link">Carrinho</a>${navImpacto}<a href="/sugestoes" class="nav-link">Voz</a><a href="/minhas-funcoes" class="nav-link">Funções</a><a href="/meu-convite" class="nav-link">Convidar</a></div>
 
       <!-- BARRA DE FILTROS -->
       <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:32px;align-items:center;">
@@ -1910,7 +2065,8 @@ app.get('/catalogo',authMembro,async(req,res)=>{
           html+=\`<div style="font-size:10px;letter-spacing:.25em;text-transform:uppercase;color:var(--muted);margin-bottom:6px;">\${colecao}</div>\`;
           html+=\`<h2 style="font-family:'Cormorant Garamond',serif;font-size:28px;font-weight:400;margin-bottom:24px;">\${nome}</h2>\`;
           html+=\`<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 32px;">\${src.innerHTML}</div>\`;
-          html+=\`<a href="/obra/\${id}/link" class="btn btn-primary btn-full" style="margin-top:24px;">Indicar esta obra</a>\`;
+          html+=\`<a href="/obra/\${id}/link" class="btn btn-outline btn-full" style="margin-top:24px;">Indicar esta obra</a>\`;
+          html+=\`<a href="/obra/\${id}/comprar" class="btn btn-primary btn-full" style="margin-top:10px;">Adicionar ao carrinho</a>\`;
           document.getElementById('modal-body').innerHTML=html;
           document.getElementById('modal').style.display='block';
           document.body.style.overflow='hidden';
