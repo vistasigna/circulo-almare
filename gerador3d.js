@@ -20,26 +20,39 @@ const CORES_MOLDURA = {
 
 const NOMES_MOLDURA = { preta: 'Preta', carvalho: 'Carvalho', aco_escovado: 'Aco-Escovado' };
 
-// Monta a geometria (peca inteira: face da obra + corpo da moldura) num componente nomeado.
-function montarGeometria(builder, larguraCm, alturaCm, profundidadeCm, corMoldura, imagemBytes, nomeComponente) {
-  const largura = cm(larguraCm), altura = cm(alturaCm), profundidade = cm(profundidadeCm);
+const BORDA_CM = 4; // largura da moldura visivel ao redor da obra
 
-  // Materiais precisam existir ANTES de qualquer addComponentDefinition
+// Monta a geometria (peca inteira: face da obra encaixada + moldura com borda visivel) num componente nomeado.
+// Eixos: X = largura, Z = altura (SketchUp usa Z como "para cima", nao Y), Y = profundidade (0=fundo/parede, profundidade=frente/visivel)
+// Toda face abaixo foi conferida manualmente (produto vetorial) pra garantir normal apontando pra fora.
+function montarGeometria(builder, larguraCm, alturaCm, profundidadeCm, corMoldura, imagemBytes, nomeComponente) {
+  const L = cm(larguraCm), A = cm(alturaCm), P = cm(profundidadeCm), B = cm(BORDA_CM);
+  const bx = Math.min(B, L/2 - 0.1), bz = Math.min(B, A/2 - 0.1); // nunca deixa a borda maior que a metade da peca
+
   const materialMoldura = builder.addMaterial('Moldura', corMoldura);
-  const materialObra = builder.addTextureMaterial('Obra', imagemBytes, 'obra.jpg', altura, largura);
+  const materialObra = builder.addTextureMaterial('Obra', imagemBytes, 'obra.jpg', A - 2*bz, L - 2*bx);
 
   return builder.addComponentDefinition(nomeComponente, (def) => {
-    // Face frontal — a obra em si
-    def.addFace([
-      [0, 0, profundidade], [largura, 0, profundidade], [largura, altura, profundidade], [0, altura, profundidade]
-    ], { material: materialObra });
+    // Face da obra — encaixada, na frente (Y=P), com borda de moldura visivel ao redor. Normal +Y (conferida).
+    def.addFace([[bx,P,A-bz],[L-bx,P,A-bz],[L-bx,P,bz],[bx,P,bz]], { material: materialObra });
 
-    // Corpo da moldura (bastidor simples: baixo, topo, esquerda, direita, fundo)
-    def.addFace([[0,0,0],[largura,0,0],[largura,0,profundidade],[0,0,profundidade]], { material: materialMoldura });
-    def.addFace([[0,altura,0],[0,altura,profundidade],[largura,altura,profundidade],[largura,altura,0]], { material: materialMoldura });
-    def.addFace([[0,0,0],[0,altura,0],[0,altura,profundidade],[0,0,profundidade]], { material: materialMoldura });
-    def.addFace([[largura,0,0],[largura,0,profundidade],[largura,altura,profundidade],[largura,altura,0]], { material: materialMoldura });
-    def.addFace([[0,0,0],[largura,0,0],[largura,altura,0],[0,altura,0]], { material: materialMoldura });
+    // Moldura frontal — 4 tiras formando o quadro ao redor da obra, todas no plano Y=P, normal +Y (conferida)
+    def.addFace([[0,P,bz],[L,P,bz],[L,P,0],[0,P,0]], { material: materialMoldura }); // tira de baixo
+    def.addFace([[0,P,A],[L,P,A],[L,P,A-bz],[0,P,A-bz]], { material: materialMoldura }); // tira de cima
+    def.addFace([[0,P,A-bz],[bx,P,A-bz],[bx,P,bz],[0,P,bz]], { material: materialMoldura }); // tira esquerda
+    def.addFace([[L-bx,P,A-bz],[L,P,A-bz],[L,P,bz],[L-bx,P,bz]], { material: materialMoldura }); // tira direita
+
+    // Fundo da moldura (encostado na parede) — plano Y=0, normal -Y (conferida)
+    def.addFace([[0,0,0],[L,0,0],[L,0,A],[0,0,A]], { material: materialMoldura });
+
+    // Lateral esquerda (plano X=0) — normal -X (conferida)
+    def.addFace([[0,0,0],[0,0,A],[0,P,A],[0,P,0]], { material: materialMoldura });
+    // Lateral direita (plano X=L) — normal +X (conferida)
+    def.addFace([[L,0,0],[L,P,0],[L,P,A],[L,0,A]], { material: materialMoldura });
+    // Topo (plano Z=A) — normal +Z (conferida)
+    def.addFace([[0,0,A],[L,0,A],[L,P,A],[0,P,A]], { material: materialMoldura });
+    // Base (plano Z=0) — normal -Z (conferida)
+    def.addFace([[0,0,0],[0,P,0],[L,P,0],[L,0,0]], { material: materialMoldura });
   });
 }
 
