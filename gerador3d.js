@@ -43,51 +43,83 @@ async function montarGeometria(builder, larguraCm, alturaCm, profundidadeCm, cor
 
   const materialMoldura = builder.addMaterial('Moldura', corMoldura);
   const materialVao = builder.addMaterial('Vao', corVao(corMoldura));
-  // IMPORTANTE (achado lendo o codigo-fonte da lib): quando se usa frontUv (posicionamento
-  // explicito), o valor do UV e DIVIDIDO por appliedHeight/appliedWidth internamente.
-  // Por isso NAO se deve passar o tamanho real da peca aqui — isso encolhia o UV pra uma fracao
-  // minuscula (o "cantinho" que apareceu). Alem disso, se appliedWidth/appliedHeight nao respeitam
-  // a proporcao REAL da imagem, o "tile" pode cortar um pedaco da imagem pra caber num formato
-  // errado. Por isso mede a imagem de verdade (sharp) e usa a proporcao dela, nao um valor fixo.
-  const meta = await sharp(Buffer.from(imagemBytes)).metadata();
-  const propImagem = (meta.width && meta.height) ? meta.width / meta.height : 1;
-  const appliedWidth = propImagem >= 1 ? 1 : propImagem;
-  const appliedHeight = propImagem >= 1 ? 1 / propImagem : 1;
-  const materialObra = builder.addTextureMaterial('Obra', imagemBytes, 'obra.jpg', appliedHeight, appliedWidth);
+
+  // Area util da obra (dentro do filete + vao), em polegadas
+  const larguraObra = L - 2*(bx+rx);
+  const alturaObra  = A - 2*(bz+rz);
+
+  // Garante que a imagem tenha EXATAMENTE a proporcao da area util. Se a imagem original tiver
+  // proporcao um pouco diferente do tamanho escolhido, ela e reenquadrada (centralizada) aqui —
+  // assim o mapeamento 1:1 abaixo nunca estica nem deixa sobra.
+  const propAlvo = larguraObra / alturaObra;
+  let imagemFinal = Buffer.from(imagemBytes);
+  try {
+    const metaImg = await sharp(imagemFinal).metadata();
+    if (metaImg.width && metaImg.height) {
+      const propAtual = metaImg.width / metaImg.height;
+      if (Math.abs(propAtual - propAlvo) > 0.01) {
+        imagemFinal = await sharp(imagemFinal)
+          .resize(metaImg.width, Math.max(1, Math.round(metaImg.width / propAlvo)), { fit: 'cover', position: 'centre' })
+          .jpeg({ quality: 88 })
+          .toBuffer();
+      }
+    }
+  } catch (e) {
+    // Se a imagem nao puder ser reenquadrada, segue com a original — melhor um enquadramento
+    // imperfeito do que falhar o download inteiro.
+    console.error('Reenquadramento da imagem falhou, usando original:', e.message);
+  }
+
+  // A REGRA (documentada no codigo-fonte da lib): o UV posicionado e DIVIDIDO por
+  // appliedWidth/appliedHeight. Ou seja: UV / appliedSize = quantas vezes a imagem se repete.
+  // Para a imagem aparecer EXATAMENTE UMA VEZ cobrindo a face (sem cortar e sem repetir),
+  // o UV precisa ir de 0 ate o tamanho real da face, e o appliedSize precisa ser esse MESMO
+  // tamanho. Assim a divisao da exatamente 1. Foi a falta dessa coerencia entre os dois valores
+  // que causou todos os sintomas anteriores (ladrilhado, so um cantinho, e o corte parcial).
+  const materialObra = builder.addTextureMaterial('Obra', imagemFinal, 'obra.jpg', alturaObra, larguraObra);
+
+  // ANCORAGEM NA ORIGEM (correcao do corte da imagem):
+  // A projecao da textura e ancorada na ORIGEM DO MODELO, nao no canto da face. Se a face da obra
+  // comecar a X cm da origem, a imagem entra deslocada exatamente nessa proporcao (confirmado
+  // numericamente: deslocamento medido = posicao do canto / tamanho da face). Por isso a geometria
+  // e montada com o canto inferior esquerdo DA OBRA exatamente em (0,0) — o filete e o vao ficam
+  // em coordenada negativa. Assim o deslocamento e zero e a imagem encaixa perfeita na face.
+  const xA0 = 0, xA1 = larguraObra;          // area da obra
+  const zA0 = 0, zA1 = alturaObra;
+  const xV0 = -rx, xV1 = larguraObra + rx;   // limite externo do vao (= interno do filete)
+  const zV0 = -rz, zV1 = alturaObra + rz;
+  const xF0 = -(rx+bx), xF1 = larguraObra + rx + bx; // limite externo do filete (= borda da peca)
+  const zF0 = -(rz+bz), zF1 = alturaObra + rz + bz;
 
   return builder.addComponentDefinition(nomeComponente, (def) => {
-    // Face da obra — encaixada, na frente (Y=P), com vao + filete ao redor. Normal +Y (conferida).
-    const pObra = [[bx+rx,P,A-bz-rz],[L-bx-rx,P,A-bz-rz],[L-bx-rx,P,bz+rz],[bx+rx,P,bz+rz]];
-    // UV compensado pela proporcao aplicada (appliedWidth/appliedHeight) — como o UV e dividido por
-    // esses valores internamente, multiplicar aqui pelos mesmos valores cancela a divisao e garante
-    // que a imagem inteira apareça (0 a 1 de verdade), sem cortar por assumir formato quadrado.
-    const uvObra = [[pObra[0],[0,0]],[pObra[1],[appliedWidth,0]],[pObra[3],[0,appliedHeight]]];
-    def.addFace(pObra, { material: materialObra, frontUv: uvObra });
+    // Face da obra — canto inferior esquerdo na origem, na frente (Y=P). Normal +Y (conferida).
+    const pObra = [[xA0,P,zA1],[xA1,P,zA1],[xA1,P,zA0],[xA0,P,zA0]];
+    def.addFace(pObra, { material: materialObra });
 
     // Vao — anel escuro (sombra, sem luz direta) entre a obra e o filete. Normal +Y (conferida).
-    def.addFace([[bx+rx,P,bz+rz],[L-bx-rx,P,bz+rz],[L-bx,P,bz],[bx,P,bz]], { material: materialVao }); // baixo
-    def.addFace([[bx,P,A-bz],[L-bx,P,A-bz],[L-bx-rx,P,A-bz-rz],[bx+rx,P,A-bz-rz]], { material: materialVao }); // cima
-    def.addFace([[bx,P,A-bz],[bx+rx,P,A-bz-rz],[bx+rx,P,bz+rz],[bx,P,bz]], { material: materialVao }); // esquerda
-    def.addFace([[L-bx,P,bz],[L-bx-rx,P,bz+rz],[L-bx-rx,P,A-bz-rz],[L-bx,P,A-bz]], { material: materialVao }); // direita
+    def.addFace([[xA0,P,zA0],[xA1,P,zA0],[xV1,P,zV0],[xV0,P,zV0]], { material: materialVao }); // baixo
+    def.addFace([[xV0,P,zV1],[xV1,P,zV1],[xA1,P,zA1],[xA0,P,zA1]], { material: materialVao }); // cima
+    def.addFace([[xV0,P,zV1],[xA0,P,zA1],[xA0,P,zA0],[xV0,P,zV0]], { material: materialVao }); // esquerda
+    def.addFace([[xA1,P,zA0],[xV1,P,zV0],[xV1,P,zV1],[xA1,P,zA1]], { material: materialVao }); // direita
 
-    // Filete frontal — 4 tiras TRAPEZOIDAIS formando cantos com corte de 45 graus (como moldura real),
-    // nao retangulos com junta reta. Todas no plano Y=P, normal +Y (conferida).
-    def.addFace([[bx,P,bz],[L-bx,P,bz],[L,P,0],[0,P,0]], { material: materialMoldura }); // tira de baixo
-    def.addFace([[0,P,A],[L,P,A],[L-bx,P,A-bz],[bx,P,A-bz]], { material: materialMoldura }); // tira de cima
-    def.addFace([[0,P,A],[bx,P,A-bz],[bx,P,bz],[0,P,0]], { material: materialMoldura }); // tira esquerda
-    def.addFace([[L-bx,P,bz],[L-bx,P,A-bz],[L,P,A],[L,P,0]], { material: materialMoldura }); // tira direita
+    // Filete frontal — 4 tiras TRAPEZOIDAIS formando cantos com corte de 45 graus (moldura real).
+    // Todas no plano Y=P, normal +Y (conferida).
+    def.addFace([[xV0,P,zV0],[xV1,P,zV0],[xF1,P,zF0],[xF0,P,zF0]], { material: materialMoldura }); // baixo
+    def.addFace([[xF0,P,zF1],[xF1,P,zF1],[xV1,P,zV1],[xV0,P,zV1]], { material: materialMoldura }); // cima
+    def.addFace([[xF0,P,zF1],[xV0,P,zV1],[xV0,P,zV0],[xF0,P,zF0]], { material: materialMoldura }); // esquerda
+    def.addFace([[xV1,P,zV0],[xV1,P,zV1],[xF1,P,zF1],[xF1,P,zF0]], { material: materialMoldura }); // direita
 
     // Fundo da moldura (encostado na parede) — plano Y=0, normal -Y (conferida)
-    def.addFace([[0,0,0],[L,0,0],[L,0,A],[0,0,A]], { material: materialMoldura });
+    def.addFace([[xF0,0,zF0],[xF1,0,zF0],[xF1,0,zF1],[xF0,0,zF1]], { material: materialMoldura });
 
-    // Lateral esquerda (plano X=0) — normal -X (conferida)
-    def.addFace([[0,0,0],[0,0,A],[0,P,A],[0,P,0]], { material: materialMoldura });
-    // Lateral direita (plano X=L) — normal +X (conferida)
-    def.addFace([[L,0,0],[L,P,0],[L,P,A],[L,0,A]], { material: materialMoldura });
-    // Topo (plano Z=A) — normal +Z (conferida)
-    def.addFace([[0,0,A],[L,0,A],[L,P,A],[0,P,A]], { material: materialMoldura });
-    // Base (plano Z=0) — normal -Z (conferida)
-    def.addFace([[0,0,0],[0,P,0],[L,P,0],[L,0,0]], { material: materialMoldura });
+    // Lateral esquerda (plano X=xF0) — normal -X (conferida)
+    def.addFace([[xF0,0,zF0],[xF0,0,zF1],[xF0,P,zF1],[xF0,P,zF0]], { material: materialMoldura });
+    // Lateral direita (plano X=xF1) — normal +X (conferida)
+    def.addFace([[xF1,0,zF0],[xF1,P,zF0],[xF1,P,zF1],[xF1,0,zF1]], { material: materialMoldura });
+    // Topo (plano Z=zF1) — normal +Z (conferida)
+    def.addFace([[xF0,0,zF1],[xF1,0,zF1],[xF1,P,zF1],[xF0,P,zF1]], { material: materialMoldura });
+    // Base (plano Z=zF0) — normal -Z (conferida)
+    def.addFace([[xF0,0,zF0],[xF0,P,zF0],[xF1,P,zF0],[xF1,0,zF0]], { material: materialMoldura });
   });
 }
 
