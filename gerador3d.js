@@ -10,7 +10,7 @@ const { create, buildScene, toOBJ, toMTL, toDXF } = require('openskp');
 const CM_PARA_POLEGADA = 1 / 2.54;
 function cm(valor) { return valor * CM_PARA_POLEGADA; }
 
-const PROFUNDIDADE_CM = 4; // espessura padrao da moldura/bastidor
+const PROFUNDIDADE_CM = 3.8; // profundidade real da moldura: 38mm
 
 const CORES_MOLDURA = {
   preta: [26, 26, 26],
@@ -20,20 +20,28 @@ const CORES_MOLDURA = {
 
 const NOMES_MOLDURA = { preta: 'Preta', carvalho: 'Carvalho', aco_escovado: 'Aco-Escovado' };
 
-const BORDA_CM = 4; // largura da moldura visivel ao redor da obra
-const RESPIRO_CM = 1.5; // faixa neutra (passe-partout) entre a obra e a moldura
-const COR_RESPIRO = [230, 227, 220]; // bege claro neutro, como um paspatur real
+const BORDA_CM = 0.6; // filete (moldura visivel ao redor da obra): 6mm — medida real, fixa, nao proporcional ao tamanho da peca
+const RESPIRO_CM = 0.7; // vao entre a obra e o filete: 7mm — medida real, fixa
 
-// Monta a geometria (peca inteira: obra + respiro + moldura com corte de 45) num componente nomeado.
+// O vao (respiro) e um recuo real sem luz direta — por isso e escuro, na mesma cor da moldura
+// porem mais escura (sombra), nunca uma cor clara tipo paspatur.
+function corVao(corMoldura) {
+  return corMoldura.map(c => Math.round(c * 0.35));
+}
+
+// Monta a geometria (peca inteira: obra + vao escuro + filete com corte de 45) num componente nomeado.
 // Eixos: X = largura, Z = altura (SketchUp usa Z como "para cima", nao Y), Y = profundidade (0=fundo/parede, profundidade=frente/visivel)
 // Toda face abaixo foi conferida manualmente (produto vetorial) pra garantir normal apontando pra fora.
 function montarGeometria(builder, larguraCm, alturaCm, profundidadeCm, corMoldura, imagemBytes, nomeComponente) {
   const L = cm(larguraCm), A = cm(alturaCm), P = cm(profundidadeCm), B = cm(BORDA_CM), R = cm(RESPIRO_CM);
-  const bx = Math.min(B, L/2 - 0.1), bz = Math.min(B, A/2 - 0.1); // nunca deixa a borda maior que a metade da peca
-  const rx = Math.min(R, bx - 0.05), rz = Math.min(R, bz - 0.05); // respiro nunca maior que a propria borda
+  const bx = B, bz = B; // medida fixa real (6mm) — nao muda com o tamanho da peca
+  const rx = R, rz = R; // medida fixa real (7mm) — nao muda com o tamanho da peca
+  if (bx + rx >= L/2 || bz + rz >= A/2) {
+    throw new Error(`Peça pequena demais (${larguraCm}x${alturaCm}cm) para o filete+vão de medida fixa (${BORDA_CM+RESPIRO_CM}cm de cada lado).`);
+  }
 
   const materialMoldura = builder.addMaterial('Moldura', corMoldura);
-  const materialRespiro = builder.addMaterial('Respiro', COR_RESPIRO);
+  const materialVao = builder.addMaterial('Vao', corVao(corMoldura));
   // IMPORTANTE (achado lendo o codigo-fonte da lib): quando se usa frontUv (posicionamento
   // explicito), o valor do UV e DIVIDIDO por appliedHeight/appliedWidth internamente.
   // Por isso NAO se deve passar o tamanho real da peca aqui — isso encolhia o UV pra uma fracao
@@ -42,20 +50,19 @@ function montarGeometria(builder, larguraCm, alturaCm, profundidadeCm, corMoldur
   const materialObra = builder.addTextureMaterial('Obra', imagemBytes, 'obra.jpg', 1, 1);
 
   return builder.addComponentDefinition(nomeComponente, (def) => {
-    // Face da obra — encaixada, na frente (Y=P), com respiro + moldura ao redor. Normal +Y (conferida).
+    // Face da obra — encaixada, na frente (Y=P), com vao + filete ao redor. Normal +Y (conferida).
     const pObra = [[bx+rx,P,A-bz-rz],[L-bx-rx,P,A-bz-rz],[L-bx-rx,P,bz+rz],[bx+rx,P,bz+rz]];
-    // UV normalizado 0-1. V invertido (0=topo) em relacao a tentativa anterior — a imagem saiu de cabeca
-    // para baixo, entao a convencao de origem do V e o oposto do que eu tinha assumido.
+    // UV normalizado 0-1. V com 0=topo — corrige a imagem que saia de cabeca para baixo.
     const uvObra = [[pObra[0],[0,0]],[pObra[1],[1,0]],[pObra[3],[0,1]]];
     def.addFace(pObra, { material: materialObra, frontUv: uvObra });
 
-    // Respiro — anel neutro simples (sem meia-esquadria) entre a obra e a moldura. Normal +Y (conferida).
-    def.addFace([[bx+rx,P,bz+rz],[L-bx-rx,P,bz+rz],[L-bx,P,bz],[bx,P,bz]], { material: materialRespiro }); // baixo
-    def.addFace([[bx,P,A-bz],[L-bx,P,A-bz],[L-bx-rx,P,A-bz-rz],[bx+rx,P,A-bz-rz]], { material: materialRespiro }); // cima
-    def.addFace([[bx,P,A-bz],[bx+rx,P,A-bz-rz],[bx+rx,P,bz+rz],[bx,P,bz]], { material: materialRespiro }); // esquerda
-    def.addFace([[L-bx,P,bz],[L-bx-rx,P,bz+rz],[L-bx-rx,P,A-bz-rz],[L-bx,P,A-bz]], { material: materialRespiro }); // direita
+    // Vao — anel escuro (sombra, sem luz direta) entre a obra e o filete. Normal +Y (conferida).
+    def.addFace([[bx+rx,P,bz+rz],[L-bx-rx,P,bz+rz],[L-bx,P,bz],[bx,P,bz]], { material: materialVao }); // baixo
+    def.addFace([[bx,P,A-bz],[L-bx,P,A-bz],[L-bx-rx,P,A-bz-rz],[bx+rx,P,A-bz-rz]], { material: materialVao }); // cima
+    def.addFace([[bx,P,A-bz],[bx+rx,P,A-bz-rz],[bx+rx,P,bz+rz],[bx,P,bz]], { material: materialVao }); // esquerda
+    def.addFace([[L-bx,P,bz],[L-bx-rx,P,bz+rz],[L-bx-rx,P,A-bz-rz],[L-bx,P,A-bz]], { material: materialVao }); // direita
 
-    // Moldura frontal — 4 tiras TRAPEZOIDAIS formando cantos com corte de 45 graus (como moldura real),
+    // Filete frontal — 4 tiras TRAPEZOIDAIS formando cantos com corte de 45 graus (como moldura real),
     // nao retangulos com junta reta. Todas no plano Y=P, normal +Y (conferida).
     def.addFace([[bx,P,bz],[L-bx,P,bz],[L,P,0],[0,P,0]], { material: materialMoldura }); // tira de baixo
     def.addFace([[0,P,A],[L,P,A],[L-bx,P,A-bz],[bx,P,A-bz]], { material: materialMoldura }); // tira de cima
