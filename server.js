@@ -503,8 +503,8 @@ app.post('/cadastro-passo2', async (req,res) => {
     const total = await pool.query('SELECT COUNT(*) FROM circulo_membros');
     const codigo = `ALM-${String(parseInt(total.rows[0].count)+1).padStart(4,'0')}`;
     const {rows} = await pool.query(
-      `INSERT INTO circulo_membros (nome,email,senha_hash,status,aprovado_em,codigo_membro) VALUES ($1,$2,$3,'ativo',NOW(),$4) RETURNING id`,
-      [nome, email, hash, codigo]
+      `INSERT INTO circulo_membros (nome,email,senha_hash,status,aprovado_em,codigo_membro,bling_id,documento) VALUES ($1,$2,$3,'ativo',NOW(),$4,$5,$6) RETURNING id`,
+      [nome, email, hash, codigo, blingIdFinal, (documento||'').replace(/\D/g,'') || null]
     );
     const mid = rows[0].id;
 
@@ -2168,9 +2168,31 @@ app.post('/admin/login',(req,res)=>{
 });
 app.get('/admin/logout',(req,res)=>{res.clearCookie('circulo_admin');res.redirect('/admin/login');});
 
+// ─── SINCRONIZAR MEMBROS ANTIGOS COM O BLING (retroativo, so nome+email — sem documento/endereco que nunca foram guardados) ──
+app.post('/admin/bling/sincronizar', authAdmin, async (req, res) => {
+  const pendentes = await pool.query("SELECT id, nome, email FROM circulo_membros WHERE bling_id IS NULL");
+  let ok = 0, falhas = [];
+  for (const m of pendentes.rows) {
+    try {
+      const blingId = await salvarContatoBling({ nome: m.nome, email: m.email }, null);
+      if (blingId) {
+        await pool.query('UPDATE circulo_membros SET bling_id=$1 WHERE id=$2', [blingId, m.id]);
+        ok++;
+      } else {
+        falhas.push(m.nome);
+      }
+    } catch (e) {
+      falhas.push(`${m.nome} (${e.message})`);
+    }
+  }
+  res.redirect(`/admin?bling_sync=${ok}&bling_falhas=${encodeURIComponent(falhas.join(', '))}`);
+});
+
 app.get('/admin',authAdmin,async(req,res)=>{
   const blingCfg = await pool.query('SELECT autorizado, expira_em FROM circulo_bling_config WHERE id=1').catch(()=>({rows:[]}));
   const blingConectado = blingCfg.rows[0]?.autorizado;
+  const pendentesBling = await pool.query("SELECT COUNT(*) FROM circulo_membros WHERE bling_id IS NULL").catch(()=>({rows:[{count:0}]}));
+  const qtdPendentesBling = parseInt(pendentesBling.rows[0].count);
   // Funções pendentes de aprovação
   const pendentes=await pool.query(`
     SELECT mf.id as mf_id, m.nome, m.email, m.codigo_membro, f.nome as funcao, f.slug, m.id as membro_id
@@ -2218,9 +2240,21 @@ app.get('/admin',authAdmin,async(req,res)=>{
       <div>
         <strong>Conexão Bling do Círculo</strong><br>
         <span style="font-size:12px;color:var(--muted)">${blingConectado?'✓ Conectado (isolado, exclusivo do Círculo)':'⚠ Não conectado — cadastros não sincronizam com o Bling'}</span>
+        ${blingConectado && qtdPendentesBling > 0 ? `<br><span style="font-size:12px;color:var(--gold)">${qtdPendentesBling} membro(s) ainda sem contato no Bling</span>` : ''}
       </div>
-      <a href="/auth/bling/conectar" class="btn ${blingConectado?'btn-outline':'btn-primary'}" style="padding:8px 16px;font-size:11px;">${blingConectado?'Reconectar':'Conectar Bling'}</a>
+      <div style="display:flex;gap:8px">
+        ${blingConectado && qtdPendentesBling > 0 ? `
+          <form method="POST" action="/admin/bling/sincronizar" style="display:inline">
+            <button class="btn btn-primary" style="padding:8px 16px;font-size:11px;">Sincronizar ${qtdPendentesBling} pendente(s)</button>
+          </form>` : ''}
+        <a href="/auth/bling/conectar" class="btn btn-outline" style="padding:8px 16px;font-size:11px;">${blingConectado?'Reconectar':'Conectar Bling'}</a>
+      </div>
     </div>
+    ${req.query.bling_sync !== undefined ? `
+    <div class="card" style="margin-bottom:24px;background:rgba(0,255,150,0.05);">
+      <strong>Sincronização concluída:</strong> ${req.query.bling_sync} membro(s) enviado(s) ao Bling com sucesso.
+      ${req.query.bling_falhas ? `<br><span style="font-size:12px;color:var(--muted)">Falharam: ${decodeURIComponent(req.query.bling_falhas)}</span>` : ''}
+    </div>` : ''}
     ${pendentes.rows.length?`
     <div class="card" style="margin-bottom:24px;">
       <h3 style="font-size:18px;margin-bottom:20px;color:var(--gold);">Funções aguardando aprovação</h3>
