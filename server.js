@@ -16,8 +16,9 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejec
 const JWT_SECRET = process.env.JWT_SECRET || 'circulo-almare-secret-2026';
 const ADMIN_SENHA = process.env.ADMIN_SENHA || 'admin123';
 const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
-const BLING_CLIENT_ID = process.env.BLING_CLIENT_ID;
-const BLING_CLIENT_SECRET = process.env.BLING_CLIENT_SECRET;
+const BLING_CLIENT_ID = process.env.CIRCULO_BLING_CLIENT_ID;
+const BLING_CLIENT_SECRET = process.env.CIRCULO_BLING_CLIENT_SECRET;
+const BLING_REDIRECT_URI = process.env.CIRCULO_BLING_REDIRECT_URI || `${process.env.BASE_URL || ''}/auth/bling/callback`;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 
 function gerarToken(payload, opts) { return jwt.sign(payload, JWT_SECRET, opts || { expiresIn: '7d' }); }
@@ -36,10 +37,45 @@ function authAdmin(req, res, next) {
   catch { res.clearCookie('circulo_admin'); return res.redirect('/admin/login'); }
 }
 
-// ─── BLING ────────────────────────────────────────────────────────────────────
+// ─── BLING (conexao propria e isolada do Circulo — nunca compartilhada com outro sistema) ──────
+let _blingStateTemp = null;
+
+app.get('/auth/bling/conectar', authAdmin, (req, res) => {
+  _blingStateTemp = crypto.randomBytes(16).toString('hex');
+  const url = `https://www.bling.com.br/Api/v3/oauth/authorize?response_type=code&client_id=${BLING_CLIENT_ID}&state=${_blingStateTemp}&redirect_uri=${encodeURIComponent(BLING_REDIRECT_URI)}`;
+  res.redirect(url);
+});
+
+app.get('/auth/bling/callback', async (req, res) => {
+  try {
+    const { code, state } = req.query;
+    if (!code) return res.status(400).send('Código de autorização não recebido.');
+    if (state !== _blingStateTemp) return res.status(400).send('Estado inválido — tenta conectar de novo pelo painel admin.');
+
+    const creds = Buffer.from(`${BLING_CLIENT_ID}:${BLING_CLIENT_SECRET}`).toString('base64');
+    const resp = await fetch('https://www.bling.com.br/Api/v3/oauth/token', {
+      method: 'POST',
+      headers: { 'Authorization': `Basic ${creds}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ grant_type: 'authorization_code', code, redirect_uri: BLING_REDIRECT_URI })
+    });
+    const data = await resp.json();
+    if (!data.access_token) return res.status(400).send('Erro ao obter token do Bling: ' + (data.error_description || data.error || 'desconhecido'));
+
+    await pool.query(`
+      INSERT INTO circulo_bling_config (id, access_token, refresh_token, expira_em, autorizado)
+      VALUES (1, $1, $2, $3, TRUE)
+      ON CONFLICT (id) DO UPDATE SET access_token=$1, refresh_token=$2, expira_em=$3, autorizado=TRUE
+    `, [data.access_token, data.refresh_token, new Date(Date.now() + data.expires_in * 1000)]);
+
+    res.redirect('/admin');
+  } catch (e) {
+    res.status(500).send('Erro ao conectar com o Bling: ' + e.message);
+  }
+});
+
 async function getBlingToken() {
-  const r = await pool.query('SELECT * FROM almare_bling_config LIMIT 1');
-  if (!r.rows.length) throw new Error('Token Bling não configurado');
+  const r = await pool.query('SELECT * FROM circulo_bling_config WHERE id=1');
+  if (!r.rows.length || !r.rows[0].autorizado) throw new Error('Bling do Círculo não conectado. Vá em /admin e clique em Conectar Bling.');
   const config = r.rows[0];
   if (new Date(config.expira_em) <= new Date()) {
     const creds = Buffer.from(`${BLING_CLIENT_ID}:${BLING_CLIENT_SECRET}`).toString('base64');
@@ -50,7 +86,7 @@ async function getBlingToken() {
     });
     const data = await resp.json();
     if (!data.access_token) throw new Error('Erro ao renovar token Bling');
-    await pool.query('UPDATE almare_bling_config SET access_token=$1, refresh_token=$2, expira_em=$3 WHERE id=1',
+    await pool.query('UPDATE circulo_bling_config SET access_token=$1, refresh_token=$2, expira_em=$3 WHERE id=1',
       [data.access_token, data.refresh_token, new Date(Date.now() + data.expires_in * 1000)]);
     return data.access_token;
   }
@@ -2133,6 +2169,8 @@ app.post('/admin/login',(req,res)=>{
 app.get('/admin/logout',(req,res)=>{res.clearCookie('circulo_admin');res.redirect('/admin/login');});
 
 app.get('/admin',authAdmin,async(req,res)=>{
+  const blingCfg = await pool.query('SELECT autorizado, expira_em FROM circulo_bling_config WHERE id=1').catch(()=>({rows:[]}));
+  const blingConectado = blingCfg.rows[0]?.autorizado;
   // Funções pendentes de aprovação
   const pendentes=await pool.query(`
     SELECT mf.id as mf_id, m.nome, m.email, m.codigo_membro, f.nome as funcao, f.slug, m.id as membro_id
@@ -2175,6 +2213,13 @@ app.get('/admin',authAdmin,async(req,res)=>{
       <div class="stat-box"><div class="num">${pendentes.rows.length}</div><div class="lbl">Funções pendentes</div></div>
       <div class="stat-box"><div class="num">${membros.rows.length}</div><div class="lbl">Membros ativos</div></div>
       <div class="stat-box"><div class="num">${membros.rows.reduce((a,m)=>a+parseInt(m.obras_que_encontraram_lar||0),0)}</div><div class="lbl">Obras que encontraram lar</div></div>
+    </div>
+    <div class="card" style="margin-bottom:24px;display:flex;justify-content:space-between;align-items:center;">
+      <div>
+        <strong>Conexão Bling do Círculo</strong><br>
+        <span style="font-size:12px;color:var(--muted)">${blingConectado?'✓ Conectado (isolado, exclusivo do Círculo)':'⚠ Não conectado — cadastros não sincronizam com o Bling'}</span>
+      </div>
+      <a href="/auth/bling/conectar" class="btn ${blingConectado?'btn-outline':'btn-primary'}" style="padding:8px 16px;font-size:11px;">${blingConectado?'Reconectar':'Conectar Bling'}</a>
     </div>
     ${pendentes.rows.length?`
     <div class="card" style="margin-bottom:24px;">
@@ -2224,6 +2269,16 @@ app.post('/admin/sugestoes/:id/responder',authAdmin,async(req,res)=>{
 // ─── GARANTE ESTRUTURA DO BANCO (cria o que faltar ao iniciar, nunca apaga nada) ──────────
 async function garantirTabelas(){
   try{
+    // Conexao Bling PROPRIA do Circulo — isolada de qualquer outro sistema (nunca compartilha tabela/token com o ALMARE)
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS circulo_bling_config (
+        id INTEGER PRIMARY KEY DEFAULT 1,
+        access_token TEXT,
+        refresh_token TEXT,
+        expira_em TIMESTAMPTZ,
+        autorizado BOOLEAN DEFAULT FALSE,
+        CONSTRAINT circulo_bling_config_singleton CHECK (id = 1)
+      );`);
     await pool.query(`
       CREATE TABLE IF NOT EXISTS circulo_obra_links (
         id SERIAL PRIMARY KEY,
