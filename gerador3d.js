@@ -2,6 +2,7 @@
 // Nao ha arquivo pre-fabricado: cada download e gerado na hora, parametrizado por
 // obra + tamanho + moldura + formato.
 const { create, buildScene, toOBJ, toMTL, toDXF } = require('openskp');
+const sharp = require('sharp');
 
 // CRITICO: a biblioteca (assim como o SketchUp nativamente) trabalha em POLEGADAS.
 // Toda medida precisa ser convertida de cm pra polegada ANTES de entrar na geometria,
@@ -32,7 +33,7 @@ function corVao(corMoldura) {
 // Monta a geometria (peca inteira: obra + vao escuro + filete com corte de 45) num componente nomeado.
 // Eixos: X = largura, Z = altura (SketchUp usa Z como "para cima", nao Y), Y = profundidade (0=fundo/parede, profundidade=frente/visivel)
 // Toda face abaixo foi conferida manualmente (produto vetorial) pra garantir normal apontando pra fora.
-function montarGeometria(builder, larguraCm, alturaCm, profundidadeCm, corMoldura, imagemBytes, nomeComponente) {
+async function montarGeometria(builder, larguraCm, alturaCm, profundidadeCm, corMoldura, imagemBytes, nomeComponente) {
   const L = cm(larguraCm), A = cm(alturaCm), P = cm(profundidadeCm), B = cm(BORDA_CM), R = cm(RESPIRO_CM);
   const bx = B, bz = B; // medida fixa real (6mm) — nao muda com o tamanho da peca
   const rx = R, rz = R; // medida fixa real (7mm) — nao muda com o tamanho da peca
@@ -45,15 +46,22 @@ function montarGeometria(builder, larguraCm, alturaCm, profundidadeCm, corMoldur
   // IMPORTANTE (achado lendo o codigo-fonte da lib): quando se usa frontUv (posicionamento
   // explicito), o valor do UV e DIVIDIDO por appliedHeight/appliedWidth internamente.
   // Por isso NAO se deve passar o tamanho real da peca aqui — isso encolhia o UV pra uma fracao
-  // minuscula (o "cantinho" que apareceu). Deixando no padrao (1,1), a divisao nao altera nada,
-  // e o UV normalizado (0 a 1) funciona como esperado.
-  const materialObra = builder.addTextureMaterial('Obra', imagemBytes, 'obra.jpg', 1, 1);
+  // minuscula (o "cantinho" que apareceu). Alem disso, se appliedWidth/appliedHeight nao respeitam
+  // a proporcao REAL da imagem, o "tile" pode cortar um pedaco da imagem pra caber num formato
+  // errado. Por isso mede a imagem de verdade (sharp) e usa a proporcao dela, nao um valor fixo.
+  const meta = await sharp(Buffer.from(imagemBytes)).metadata();
+  const propImagem = (meta.width && meta.height) ? meta.width / meta.height : 1;
+  const appliedWidth = propImagem >= 1 ? 1 : propImagem;
+  const appliedHeight = propImagem >= 1 ? 1 / propImagem : 1;
+  const materialObra = builder.addTextureMaterial('Obra', imagemBytes, 'obra.jpg', appliedHeight, appliedWidth);
 
   return builder.addComponentDefinition(nomeComponente, (def) => {
     // Face da obra — encaixada, na frente (Y=P), com vao + filete ao redor. Normal +Y (conferida).
     const pObra = [[bx+rx,P,A-bz-rz],[L-bx-rx,P,A-bz-rz],[L-bx-rx,P,bz+rz],[bx+rx,P,bz+rz]];
-    // UV normalizado 0-1. V com 0=topo — corrige a imagem que saia de cabeca para baixo.
-    const uvObra = [[pObra[0],[0,0]],[pObra[1],[1,0]],[pObra[3],[0,1]]];
+    // UV compensado pela proporcao aplicada (appliedWidth/appliedHeight) — como o UV e dividido por
+    // esses valores internamente, multiplicar aqui pelos mesmos valores cancela a divisao e garante
+    // que a imagem inteira apareça (0 a 1 de verdade), sem cortar por assumir formato quadrado.
+    const uvObra = [[pObra[0],[0,0]],[pObra[1],[appliedWidth,0]],[pObra[3],[0,appliedHeight]]];
     def.addFace(pObra, { material: materialObra, frontUv: uvObra });
 
     // Vao — anel escuro (sombra, sem luz direta) entre a obra e o filete. Normal +Y (conferida).
@@ -89,13 +97,13 @@ function nomeArquivoLimpo(obraNome, larguraCm, alturaCm, moldura) {
 }
 
 // Gera o arquivo no formato pedido. Retorna { buffer, nomeArquivo }.
-function gerarModelo3D({ obraCodigo, obraNome, larguraCm, alturaCm, moldura, formato, imagemBytes }) {
+async function gerarModelo3D({ obraCodigo, obraNome, larguraCm, alturaCm, moldura, formato, imagemBytes }) {
   if (!CORES_MOLDURA[moldura]) throw new Error('Moldura inválida: ' + moldura);
   if (!['skp','obj','dxf'].includes(formato)) throw new Error('Formato inválido: ' + formato);
 
   const nomeComponente = `${obraCodigo}_${nomeArquivoLimpo(obraNome, larguraCm, alturaCm, moldura)}`;
   const builder = create();
-  const def = montarGeometria(builder, larguraCm, alturaCm, PROFUNDIDADE_CM, CORES_MOLDURA[moldura], imagemBytes, nomeComponente);
+  const def = await montarGeometria(builder, larguraCm, alturaCm, PROFUNDIDADE_CM, CORES_MOLDURA[moldura], imagemBytes, nomeComponente);
   builder.addInstance(def);
 
   const skpBytes = builder.toBytes();

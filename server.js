@@ -2208,7 +2208,7 @@ app.post('/modelos-3d/baixar', authMembro, async(req,res)=>{
       const base64Img = obra.rows[0].imagem_preview.replace(/^data:image\/\w+;base64,/, '');
       const imagemBytes = Buffer.from(base64Img, 'base64');
 
-      const resultado = gerarModelo3D({
+      const resultado = await gerarModelo3D({
         obraCodigo: item.obraCodigo, obraNome: item.obraNome,
         larguraCm: item.largura, alturaCm: item.altura, moldura: item.moldura, formato: item.formato,
         imagemBytes
