@@ -615,7 +615,7 @@ app.get('/portal',authMembro,async(req,res)=>{
     const resumo=await pool.query('SELECT * FROM circulo_resumo_membro WHERE id=$1',[req.membro.id]);
     const m=resumo.rows[0]||{};
     const funcoes=await pool.query(`
-      SELECT f.nome, f.slug, mf.ativo FROM circulo_membro_funcoes mf
+      SELECT f.nome, f.slug, f.descricao, mf.ativo FROM circulo_membro_funcoes mf
       JOIN circulo_funcoes f ON f.id=mf.funcao_id
       WHERE mf.membro_id=$1`,[req.membro.id]);
     const convite=await pool.query('SELECT codigo FROM circulo_convites WHERE membro_id=$1 LIMIT 1',[req.membro.id]);
@@ -623,9 +623,12 @@ app.get('/portal',authMembro,async(req,res)=>{
     const link=convite.rows.length?`${BASE_URL}/convite/${convite.rows[0].codigo}`:'';
     const data=m.membro_desde?new Date(m.membro_desde).toLocaleDateString('pt-BR',{month:'long',year:'numeric'}):'';
 
-    const fnomes = funcoes.rows.filter(f=>f.ativo).map(f=>
-      `<span class="badge badge-gold">${f.nome}</span>`
-    ).join(' ');
+    const funcoesAtivas = funcoes.rows.filter(f=>f.ativo);
+    const funcoesCards = funcoesAtivas.map(f=>`
+      <div style="background:linear-gradient(135deg,rgba(212,175,55,.12),rgba(212,175,55,.03));border:1px solid var(--gold);border-radius:6px;padding:14px 18px;">
+        <div style="font-family:'Cormorant Garamond',serif;font-size:18px;color:var(--gold);margin-bottom:3px;">${f.nome}</div>
+        ${f.descricao ? `<div style="font-size:12px;color:var(--muted);">${f.descricao}</div>` : ''}
+      </div>`).join('');
     // Membro sempre aparece
 
     const evHtml=eventos.rows.map(e=>`<div style="padding:12px 0;border-bottom:1px solid var(--border);font-size:13px;"><span>${e.descricao}</span><span style="float:right;font-size:11px;color:var(--muted)">${new Date(e.data_evento).toLocaleDateString('pt-BR')}</span></div>`).join('');
@@ -638,12 +641,15 @@ app.get('/portal',authMembro,async(req,res)=>{
           <div>
             <h2 style="font-size:26px;margin-bottom:4px;">${m.nome||req.membro.nome}</h2>
             <div style="font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);margin-bottom:12px;">Membro desde ${data} · ${m.codigo_membro||''}</div>
-            <div><span class="badge badge-gold">Membro</span>${fnomes ? " " + fnomes : ""}</div>
-          </div>
-
-
           </div>
         </div>
+      </div>
+      <div style="margin-bottom:24px;">
+        <div style="font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);margin-bottom:12px;">Suas funções no Círculo</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;">
+          ${funcoesCards || '<div style="padding:14px 18px;border:1px solid var(--border);border-radius:6px;color:var(--muted);font-size:13px;">Nenhuma função ativa ainda.</div>'}
+        </div>
+        <a href="/minhas-funcoes" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--gold);display:inline-block;margin-top:12px;">+ Gerenciar funções</a>
       </div>
       <div class="grid-3" style="margin-bottom:24px;">
         <div class="stat-box"><div class="num">${m.obras_que_encontraram_lar||0}</div><div class="lbl">Obras que encontraram lar</div></div>
