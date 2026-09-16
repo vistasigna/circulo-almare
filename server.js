@@ -2072,92 +2072,76 @@ app.get('/obra/:obraId/comprar', authMembro, async(req,res)=>{
 
 // ─── CATÁLOGO ─────────────────────────────────────────────────────────────────
 // ─── IDENTIFICAR — membro tira foto de uma peça fisica e o sistema reconhece qual obra e ──────
-// ─── ESPECIFICADOR — download de modelos 3D (.skp/.dwg/.obj) por obra+tamanho+moldura ──
+// ─── ESPECIFICADOR — modelos 3D gerados SOB DEMANDA (.skp/.obj/.dxf) ──
+// Nao ha arquivo pre-fabricado: cada download e gerado na hora do pedido,
+// a partir da imagem real da obra + tamanho + moldura escolhidos.
+const { gerarModelo3D, NOMES_MOLDURA } = require('./gerador3d');
+
 app.get('/modelos-3d', authMembro, async(req,res)=>{
   if(!(await ehEspecificador(req.membro.id))){
     return res.send(html('Modelos 3D', `<div class="card"><p style="color:var(--muted)">Esta ferramenta é exclusiva de membros com a função <strong style="color:var(--gold)">Especificador</strong> ativa. <a href="/minhas-funcoes" style="color:var(--gold)">Ativar função →</a></p></div>`, true));
   }
   const temImpacto = await temFuncaoComImpacto(req.membro.id);
-  const obrasComModelo = await pool.query(`
-    SELECT o.id, o.codigo, o.nome, o.colecao, o.imagem_preview
-    FROM almare_obras o
-    WHERE o.status='aprovada' AND EXISTS (SELECT 1 FROM circulo_modelos_3d m WHERE m.obra_id=o.id)
-    ORDER BY o.nome`);
+  const obras = await pool.query(`
+    SELECT id, codigo, nome, colecao, formato_recomendado, tamanhos_recomendados, orientacao, imagem_preview
+    FROM almare_obras WHERE status='aprovada' AND codigo <> 'ALM-001' AND imagem_preview IS NOT NULL
+    ORDER BY nome`);
 
   let corpo = navBar('modelos3d', temImpacto, true);
   corpo += `<h2 style="font-size:28px;margin-bottom:8px;">Modelos 3D</h2>`;
-  corpo += `<p style="color:var(--muted);margin-bottom:24px;">Escolha a obra, o tamanho e a moldura, e monte sua lista de download. Formatos disponíveis: .skp, .dwg, .obj.</p>`;
+  corpo += `<p style="color:var(--muted);margin-bottom:24px;">Escolha a obra, o tamanho, a moldura e o formato. O arquivo é gerado na hora — monte sua lista e baixe tudo de uma vez.</p>`;
 
   corpo += `<div id="carrinho-3d-resumo" class="card" style="margin-bottom:24px;display:none;position:sticky;top:12px;z-index:10;border-color:var(--gold);">
     <div style="display:flex;justify-content:space-between;align-items:center;">
       <div><strong id="carrinho-3d-contagem">0</strong> arquivo(s) na lista</div>
       <div style="display:flex;gap:8px;">
         <button onclick="limparCarrinho3d()" class="btn btn-outline" style="padding:8px 14px;font-size:11px;">Limpar</button>
-        <button onclick="baixarCarrinho3d()" class="btn btn-primary" style="padding:8px 14px;font-size:11px;">Baixar tudo (.zip)</button>
+        <button onclick="baixarCarrinho3d()" class="btn btn-primary" style="padding:8px 14px;font-size:11px;">Gerar e baixar (.zip)</button>
       </div>
     </div>
     <div id="carrinho-3d-itens" style="margin-top:10px;font-size:12px;color:var(--muted);"></div>
   </div>`;
 
-  if(!obrasComModelo.rows.length){
-    corpo += `<div class="card"><p style="color:var(--muted)">Nenhum modelo 3D disponível ainda. Em breve.</p></div>`;
-  }
-
-  obrasComModelo.rows.forEach(o=>{
-    corpo += `<div class="card" style="margin-bottom:16px;" data-obra="${o.id}">
+  obras.rows.forEach(o=>{
+    corpo += `<div class="card" style="margin-bottom:16px;" data-obra="${o.id}" data-codigo="${o.codigo}" data-nome="${o.nome.replace(/"/g,'&quot;')}">
       <div style="display:flex;gap:14px;align-items:center;margin-bottom:14px;">
-        ${o.imagem_preview?`<img src="${o.imagem_preview}" style="width:56px;height:56px;object-fit:cover;border-radius:4px;">`:''}
+        <img src="${o.imagem_preview}" style="width:56px;height:56px;object-fit:cover;border-radius:4px;">
         <div><div style="font-size:10px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);">${o.colecao||''}</div>
         <div style="font-family:'Cormorant Garamond',serif;font-size:19px;">${o.nome}</div></div>
       </div>
-      <div id="opcoes-${o.id}" style="color:var(--muted);font-size:12px;">Carregando opções...</div>
+      <div id="opcoes-${o.id}" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
+        <div style="flex:1;min-width:140px;"><label style="font-size:10px;color:var(--muted);">Tamanho</label>
+          <select id="tam-${o.id}" style="width:100%;padding:8px;background:#0d0d0d;border:1px solid var(--border);color:#fff;border-radius:3px;">Carregando...</select></div>
+        <div style="min-width:130px;"><label style="font-size:10px;color:var(--muted);">Moldura</label>
+          <select id="mold-${o.id}" style="width:100%;padding:8px;background:#0d0d0d;border:1px solid var(--border);color:#fff;border-radius:3px;">
+            <option value="preta">Preta</option><option value="carvalho">Carvalho</option><option value="aco_escovado">Aço escovado</option>
+          </select></div>
+        <div style="min-width:100px;"><label style="font-size:10px;color:var(--muted);">Formato</label>
+          <select id="fmt-${o.id}" style="width:100%;padding:8px;background:#0d0d0d;border:1px solid var(--border);color:#fff;border-radius:3px;">
+            <option value="skp">.skp</option><option value="obj">.obj</option><option value="dxf">.dxf</option>
+          </select></div>
+        <button type="button" onclick="adicionarItem3d(${o.id})" class="btn btn-outline" style="padding:8px 14px;font-size:11px;">+ Adicionar</button>
+      </div>
     </div>`;
   });
 
   corpo += `<script>
     let CARRINHO3D = [];
-    const NOMES_MOLDURA_3D = { preta:'Preta', carvalho:'Carvalho', aco_escovado:'Aço escovado' };
 
     document.querySelectorAll('[data-obra]').forEach(async (cardEl) => {
       const obraId = cardEl.dataset.obra;
-      const r = await fetch('/modelos-3d/opcoes/' + obraId);
+      const r = await fetch('/modelos-3d/tamanhos/' + obraId);
       const d = await r.json();
-      const box = document.getElementById('opcoes-' + obraId);
-      if(!d.opcoes || !d.opcoes.length){ box.innerHTML = 'Sem modelos disponíveis.'; return; }
-
-      // Agrupa por tamanho+moldura, juntando os formatos disponiveis
-      const grupos = {};
-      d.opcoes.forEach(op => {
-        const chave = op.largura+'x'+op.altura+'_'+op.moldura;
-        if(!grupos[chave]) grupos[chave] = { largura:op.largura, altura:op.altura, moldura:op.moldura, formatos:[] };
-        grupos[chave].formatos.push(op.formato);
-      });
-
-      let html2 = '<div style="display:flex;flex-direction:column;gap:8px;">';
-      Object.values(grupos).forEach(g => {
-        const id = obraId+'_'+g.largura+'x'+g.altura+'_'+g.moldura;
-        html2 += '<div style="display:flex;justify-content:space-between;align-items:center;border-top:1px solid var(--border);padding-top:8px;">';
-        html2 += '<span style="color:var(--text);font-size:13px;">'+g.largura+'×'+g.altura+'cm · '+(NOMES_MOLDURA_3D[g.moldura]||g.moldura)+'</span>';
-        html2 += '<span style="display:flex;gap:6px;">';
-        g.formatos.forEach(f => {
-          html2 += '<button type="button" id="btn-'+id+'-'+f+'" onclick="toggleItem3d(\\''+obraId+'\\',\\''+d.nome.replace(/'/g,"")+'\\','+g.largura+','+g.altura+',\\''+g.moldura+'\\',\\''+f+'\\')" class="btn btn-outline" style="padding:5px 10px;font-size:10px;">.'+f+'</button>';
-        });
-        html2 += '</span></div>';
-      });
-      html2 += '</div>';
-      box.innerHTML = html2;
+      const sel = document.getElementById('tam-' + obraId);
+      sel.innerHTML = (d.tamanhos||[]).map((t,idx)=>'<option value=\\''+t.largura+'x'+t.altura+'\\'>'+t.label+'</option>').join('');
     });
 
-    function toggleItem3d(obraId, obraNome, largura, altura, moldura, formato){
-      const idx = CARRINHO3D.findIndex(i => i.obraId===obraId && i.largura===largura && i.altura===altura && i.moldura===moldura && i.formato===formato);
-      const btn = document.getElementById('btn-'+obraId+'_'+largura+'x'+altura+'_'+moldura+'-'+formato);
-      if(idx >= 0){
-        CARRINHO3D.splice(idx,1);
-        if(btn){ btn.classList.remove('btn-primary'); btn.classList.add('btn-outline'); }
-      } else {
-        CARRINHO3D.push({ obraId, obraNome, largura, altura, moldura, formato });
-        if(btn){ btn.classList.remove('btn-outline'); btn.classList.add('btn-primary'); }
-      }
+    function adicionarItem3d(obraId){
+      const cardEl = document.querySelector('[data-obra="'+obraId+'"]');
+      const [largura, altura] = document.getElementById('tam-'+obraId).value.split('x').map(Number);
+      const moldura = document.getElementById('mold-'+obraId).value;
+      const formato = document.getElementById('fmt-'+obraId).value;
+      CARRINHO3D.push({ obraId: Number(obraId), obraCodigo: cardEl.dataset.codigo, obraNome: cardEl.dataset.nome, largura, altura, moldura, formato });
       atualizarResumoCarrinho3d();
     }
 
@@ -2168,20 +2152,18 @@ app.get('/modelos-3d', authMembro, async(req,res)=>{
       if(CARRINHO3D.length === 0){ resumo.style.display = 'none'; return; }
       resumo.style.display = 'block';
       contagem.textContent = CARRINHO3D.length;
-      itens.innerHTML = CARRINHO3D.map(i => i.obraNome+' · '+i.largura+'×'+i.altura+'cm · '+(NOMES_MOLDURA_3D[i.moldura]||i.moldura)+' · .'+i.formato).join('<br>');
+      const nomesMoldura = { preta:'Preta', carvalho:'Carvalho', aco_escovado:'Aço escovado' };
+      itens.innerHTML = CARRINHO3D.map((i,idx) => i.obraNome+' · '+i.largura+'×'+i.altura+'cm · '+(nomesMoldura[i.moldura]||i.moldura)+' · .'+i.formato+' <a href="#" onclick="removerItem3d('+idx+');return false;" style="color:var(--danger);margin-left:6px;">✕</a>').join('<br>');
     }
 
-    function limparCarrinho3d(){
-      CARRINHO3D = [];
-      document.querySelectorAll('[id^="btn-"]').forEach(b=>{ b.classList.remove('btn-primary'); b.classList.add('btn-outline'); });
-      atualizarResumoCarrinho3d();
-    }
+    function removerItem3d(idx){ CARRINHO3D.splice(idx,1); atualizarResumoCarrinho3d(); }
+    function limparCarrinho3d(){ CARRINHO3D = []; atualizarResumoCarrinho3d(); }
 
     async function baixarCarrinho3d(){
       if(!CARRINHO3D.length) return;
       const btn = event.target;
       const textoOriginal = btn.textContent;
-      btn.disabled = true; btn.textContent = 'Preparando...';
+      btn.disabled = true; btn.textContent = 'Gerando arquivos...';
       try{
         const r = await fetch('/modelos-3d/baixar', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ itens: CARRINHO3D }) });
         if(!r.ok){ const t = await r.text(); alert('Erro: '+t); btn.disabled=false; btn.textContent=textoOriginal; return; }
@@ -2191,7 +2173,7 @@ app.get('/modelos-3d', authMembro, async(req,res)=>{
         a.href = url; a.download = 'ALMARE_modelos-3d.zip';
         document.body.appendChild(a); a.click(); a.remove();
         window.URL.revokeObjectURL(url);
-      }catch(e){ alert('Erro ao baixar: '+e.message); }
+      }catch(e){ alert('Erro ao gerar: '+e.message); }
       btn.disabled = false; btn.textContent = textoOriginal;
     }
   </script>`;
@@ -2199,11 +2181,16 @@ app.get('/modelos-3d', authMembro, async(req,res)=>{
   res.send(html('Modelos 3D', corpo, true));
 });
 
-app.get('/modelos-3d/opcoes/:obraId', authMembro, async(req,res)=>{
+// Tamanhos validos pra essa obra (mesma regra ja usada no simulador — respeita formato/orientacao)
+app.get('/modelos-3d/tamanhos/:obraId', authMembro, async(req,res)=>{
   try{
-    const obra = await pool.query('SELECT nome FROM almare_obras WHERE id=$1', [req.params.obraId]);
-    const opcoes = await pool.query('SELECT largura, altura, moldura, formato FROM circulo_modelos_3d WHERE obra_id=$1 ORDER BY largura, moldura, formato', [req.params.obraId]);
-    res.json({ nome: obra.rows[0]?.nome || '', opcoes: opcoes.rows });
+    const o = await pool.query('SELECT formato_recomendado, tamanhos_recomendados, orientacao FROM almare_obras WHERE id=$1', [req.params.obraId]);
+    if(!o.rows.length) return res.json({ tamanhos: [] });
+    let tams = tamanhosOficiais(o.rows[0].formato_recomendado, o.rows[0].tamanhos_recomendados);
+    const orient = String(o.rows[0].orientacao||'').toLowerCase();
+    if(/vertical|retrato/.test(orient)){ const v = tams.filter(t=>t.altura>=t.largura); if(v.length) tams=v; }
+    else if(/horizontal|paisagem/.test(orient)){ const h = tams.filter(t=>t.largura>=t.altura); if(h.length) tams=h; }
+    res.json({ tamanhos: tams });
   }catch(e){ res.status(500).json({ erro: e.message }); }
 });
 
@@ -2212,20 +2199,22 @@ app.post('/modelos-3d/baixar', authMembro, async(req,res)=>{
     if(!(await ehEspecificador(req.membro.id))) return res.status(403).send('Acesso restrito a especificadores.');
     const { itens } = req.body;
     if(!itens || !itens.length) return res.status(400).send('Nenhum item selecionado.');
-    if(itens.length > 50) return res.status(400).send('Máximo de 50 arquivos por download.');
+    if(itens.length > 30) return res.status(400).send('Máximo de 30 arquivos por download.');
 
-    const nomesMoldura = { preta:'Preta', carvalho:'Carvalho', aco_escovado:'Aco-Escovado' };
     const zip = new AdmZip();
-
     for(const item of itens){
-      const r = await pool.query(
-        'SELECT arquivo_nome, arquivo_data, formato FROM circulo_modelos_3d WHERE obra_id=$1 AND largura=$2 AND altura=$3 AND moldura=$4 AND formato=$5',
-        [item.obraId, item.largura, item.altura, item.moldura, item.formato]);
-      if(!r.rows.length) continue;
-      const m = r.rows[0];
-      const nomeObraLimpo = (item.obraNome||'obra').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^\w\s-]/g,'').trim().replace(/\s+/g,'-');
-      const nomeArquivo = `${nomeObraLimpo}_${item.largura}x${item.altura}cm_${nomesMoldura[item.moldura]||item.moldura}.${m.formato}`;
-      zip.addFile(nomeArquivo, m.arquivo_data);
+      const obra = await pool.query('SELECT imagem_preview FROM almare_obras WHERE id=$1', [item.obraId]);
+      if(!obra.rows.length || !obra.rows[0].imagem_preview) continue;
+      const base64Img = obra.rows[0].imagem_preview.replace(/^data:image\/\w+;base64,/, '');
+      const imagemBytes = Buffer.from(base64Img, 'base64');
+
+      const resultado = gerarModelo3D({
+        obraCodigo: item.obraCodigo, obraNome: item.obraNome,
+        larguraCm: item.largura, alturaCm: item.altura, moldura: item.moldura, formato: item.formato,
+        imagemBytes
+      });
+      zip.addFile(resultado.nomeArquivo, resultado.buffer);
+      if(resultado.mtlBuffer) zip.addFile(resultado.nomeArquivoMtl, resultado.mtlBuffer);
 
       await pool.query(
         `INSERT INTO circulo_downloads_3d (membro_id, obra_id, obra_nome, largura, altura, moldura, formato) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
@@ -2237,8 +2226,8 @@ app.post('/modelos-3d/baixar', authMembro, async(req,res)=>{
     res.setHeader('Content-Disposition', 'attachment; filename="ALMARE_modelos-3d.zip"');
     res.send(buf);
   }catch(e){
-    console.error('ERRO DOWNLOAD 3D:', e.message);
-    res.status(500).send('Erro ao preparar download: ' + e.message);
+    console.error('ERRO GERACAO 3D:', e.message);
+    res.status(500).send('Erro ao gerar modelo: ' + e.message);
   }
 });
 
@@ -2565,28 +2554,23 @@ app.post('/admin/bling/sincronizar', authAdmin, async (req, res) => {
   res.redirect(`/admin?bling_sync=${ok}&bling_falhas=${encodeURIComponent(falhas.join(', '))}`);
 });
 
-// ─── ADMIN — MODELOS 3D (upload dos arquivos .skp/.dwg/.obj por obra+tamanho+moldura) ──
-const upload3d = multer({ storage: multer.memoryStorage(), limits: { fileSize: 60 * 1024 * 1024 } });
-
+// ─── ADMIN — MODELOS 3D: dashboard de downloads (a geracao e sob demanda, nao ha upload) ──
 app.get('/admin/modelos-3d', authAdmin, async(req,res)=>{
-  const obras = await pool.query(`SELECT id, codigo, nome, formato_recomendado, tamanhos_recomendados, imagem_preview FROM almare_obras WHERE status='aprovada' AND codigo <> 'ALM-001' ORDER BY nome`);
-  const modelos = await pool.query(`SELECT * FROM circulo_modelos_3d ORDER BY obra_id, largura, moldura, formato`);
   const stats = await pool.query(`SELECT COUNT(*) total, COUNT(DISTINCT membro_id) especificadores FROM circulo_downloads_3d`);
-  const topObras = await pool.query(`
-    SELECT obra_nome, COUNT(*) qtd FROM circulo_downloads_3d GROUP BY obra_nome ORDER BY qtd DESC LIMIT 5`);
-
-  const modelosPorObra = {};
-  modelos.rows.forEach(m => { (modelosPorObra[m.obra_id] = modelosPorObra[m.obra_id] || []).push(m); });
-
+  const topObras = await pool.query(`SELECT obra_nome, COUNT(*) qtd FROM circulo_downloads_3d GROUP BY obra_nome ORDER BY qtd DESC LIMIT 10`);
+  const recentes = await pool.query(`
+    SELECT d.*, m.nome as membro_nome FROM circulo_downloads_3d d
+    LEFT JOIN circulo_membros m ON m.id=d.membro_id
+    ORDER BY d.baixado_em DESC LIMIT 20`);
   const nomesMoldura = {preta:'Preta', carvalho:'Carvalho', aco_escovado:'Aço escovado'};
 
   let corpo = `<a href="/admin" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);">← Voltar ao admin</a>`;
-  corpo += `<h2 style="font-size:28px;margin:12px 0 24px;">Modelos 3D para especificadores</h2>`;
+  corpo += `<h2 style="font-size:28px;margin:12px 0 8px;">Modelos 3D</h2>`;
+  corpo += `<p style="color:var(--muted);font-size:13px;margin-bottom:24px;">Os arquivos sao gerados na hora do pedido do especificador — nao ha upload manual.</p>`;
 
   corpo += `<div class="grid-3" style="margin-bottom:24px;">
     <div class="stat-box"><div class="num">${stats.rows[0].total}</div><div class="lbl">Downloads totais</div></div>
     <div class="stat-box"><div class="num">${stats.rows[0].especificadores}</div><div class="lbl">Especificadores ativos</div></div>
-    <div class="stat-box"><div class="num">${modelos.rows.length}</div><div class="lbl">Modelos cadastrados</div></div>
   </div>`;
 
   if(topObras.rows.length){
@@ -2595,73 +2579,20 @@ app.get('/admin/modelos-3d', authAdmin, async(req,res)=>{
     corpo += `</div>`;
   }
 
-  obras.rows.forEach(o => {
-    const tams = tamanhosOficiais(o.formato_recomendado, o.tamanhos_recomendados);
-    const meus = modelosPorObra[o.id] || [];
-    corpo += `<div class="card" style="margin-bottom:16px;">`;
-    corpo += `<div style="display:flex;gap:12px;align-items:center;margin-bottom:14px;">`;
-    corpo += o.imagem_preview ? `<img src="${o.imagem_preview}" style="width:48px;height:48px;object-fit:cover;border-radius:4px;">` : '';
-    corpo += `<div><strong>${o.nome}</strong> <span style="color:var(--muted);font-size:12px;">${o.codigo}</span></div></div>`;
-
-    if(meus.length){
-      corpo += `<div style="margin-bottom:14px;">`;
-      meus.forEach(m => {
-        corpo += `<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border);font-size:12px;">
-          <span>${m.largura}×${m.altura}cm · ${nomesMoldura[m.moldura]||m.moldura} · <strong>.${m.formato}</strong> · ${m.arquivo_nome}</span>
-          <form method="POST" action="/admin/modelos-3d/${m.id}/apagar" onsubmit="return confirm('Apagar este modelo?')"><button class="btn btn-outline" style="padding:3px 10px;font-size:10px;color:var(--danger);border-color:var(--danger);">Apagar</button></form>
-        </div>`;
-      });
-      corpo += `</div>`;
-    }
-
-    corpo += `<form method="POST" action="/admin/modelos-3d/upload" enctype="multipart/form-data" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">`;
-    corpo += `<input type="hidden" name="obra_id" value="${o.id}">`;
-    corpo += `<div class="field" style="flex:1;min-width:140px;"><label style="font-size:10px;">Tamanho</label><select name="tamanho_idx" required style="width:100%;padding:8px;background:#0d0d0d;border:1px solid var(--border);color:#fff;border-radius:3px;">`;
-    tams.forEach((t,idx)=>{ corpo += `<option value="${idx}" data-larg="${t.largura}" data-alt="${t.altura}">${t.label}</option>`; });
-    corpo += `</select></div>`;
-    corpo += `<div class="field" style="min-width:120px;"><label style="font-size:10px;">Moldura</label><select name="moldura" required style="width:100%;padding:8px;background:#0d0d0d;border:1px solid var(--border);color:#fff;border-radius:3px;">
-      <option value="preta">Preta</option><option value="carvalho">Carvalho</option><option value="aco_escovado">Aço escovado</option>
-    </select></div>`;
-    corpo += `<div class="field" style="min-width:100px;"><label style="font-size:10px;">Formato</label><select name="formato" required style="width:100%;padding:8px;background:#0d0d0d;border:1px solid var(--border);color:#fff;border-radius:3px;">
-      <option value="skp">.skp</option><option value="dwg">.dwg</option><option value="obj">.obj</option>
-    </select></div>`;
-    corpo += `<input type="hidden" name="largura" class="in-larg-${o.id}"><input type="hidden" name="altura" class="in-alt-${o.id}">`;
-    corpo += `<div class="field" style="flex:2;min-width:180px;"><label style="font-size:10px;">Arquivo</label><input type="file" name="arquivo" required style="width:100%;padding:6px;background:#0d0d0d;border:1px solid var(--border);color:#fff;border-radius:3px;font-size:11px;"></div>`;
-    corpo += `<button class="btn btn-primary" style="padding:9px 18px;font-size:11px;">Enviar</button>`;
-    corpo += `</form></div>`;
-  });
-
-  corpo += `<script>
-    document.querySelectorAll('select[name="tamanho_idx"]').forEach(sel=>{
-      const form = sel.closest('form');
-      function atualizar(){
-        const opt = sel.options[sel.selectedIndex];
-        form.querySelector('input[name="largura"]').value = opt.dataset.larg;
-        form.querySelector('input[name="altura"]').value = opt.dataset.alt;
-      }
-      sel.addEventListener('change', atualizar); atualizar();
+  if(recentes.rows.length){
+    corpo += `<div class="card"><div style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);margin-bottom:10px;">Downloads recentes</div>`;
+    recentes.rows.forEach(d => {
+      corpo += `<div style="display:flex;justify-content:space-between;padding:6px 0;border-top:1px solid var(--border);font-size:12px;">
+        <span>${d.obra_nome} · ${d.largura}×${d.altura}cm · ${nomesMoldura[d.moldura]||d.moldura} · .${d.formato}</span>
+        <span style="color:var(--muted);">${d.membro_nome||'—'}</span>
+      </div>`;
     });
-  </script>`;
+    corpo += `</div>`;
+  } else {
+    corpo += `<div class="card"><p style="color:var(--muted)">Nenhum download ainda.</p></div>`;
+  }
 
   res.send(html('Modelos 3D', corpo));
-});
-
-app.post('/admin/modelos-3d/upload', authAdmin, upload3d.single('arquivo'), async(req,res)=>{
-  try{
-    const { obra_id, largura, altura, moldura, formato } = req.body;
-    if(!req.file) return res.redirect('/admin/modelos-3d');
-    await pool.query(`
-      INSERT INTO circulo_modelos_3d (obra_id, largura, altura, moldura, formato, arquivo_nome, arquivo_data)
-      VALUES ($1,$2,$3,$4,$5,$6,$7)
-      ON CONFLICT (obra_id, largura, altura, moldura, formato) DO UPDATE SET arquivo_nome=$6, arquivo_data=$7, criado_em=NOW()`,
-      [obra_id, largura, altura, moldura, formato, req.file.originalname, req.file.buffer]);
-    res.redirect('/admin/modelos-3d');
-  }catch(e){ console.error('Upload modelo 3D:', e.message); res.redirect('/admin/modelos-3d'); }
-});
-
-app.post('/admin/modelos-3d/:id/apagar', authAdmin, async(req,res)=>{
-  await pool.query('DELETE FROM circulo_modelos_3d WHERE id=$1', [req.params.id]).catch(()=>{});
-  res.redirect('/admin/modelos-3d');
 });
 
 app.get('/admin',authAdmin,async(req,res)=>{
@@ -2713,7 +2644,7 @@ app.get('/admin',authAdmin,async(req,res)=>{
       <div class="stat-box"><div class="num">${membros.rows.reduce((a,m)=>a+parseInt(m.obras_que_encontraram_lar||0),0)}</div><div class="lbl">Obras que encontraram lar</div></div>
     </div>
     <div class="card" style="margin-bottom:24px;display:flex;justify-content:space-between;align-items:center;">
-      <div><strong>Modelos 3D para especificadores</strong><br><span style="font-size:12px;color:var(--muted)">Arquivos .skp/.dwg/.obj por obra, tamanho e moldura</span></div>
+      <div><strong>Modelos 3D para especificadores</strong><br><span style="font-size:12px;color:var(--muted)">Gerados sob demanda (.skp/.obj/.dxf) — dashboard de downloads</span></div>
       <a href="/admin/modelos-3d" class="btn btn-outline" style="padding:8px 16px;font-size:11px;">Gerenciar</a>
     </div>
     <div class="card" style="margin-bottom:24px;display:flex;justify-content:space-between;align-items:center;">
