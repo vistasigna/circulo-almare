@@ -36,7 +36,10 @@ function montarGeometria(builder, larguraCm, alturaCm, profundidadeCm, corMoldur
     // Face da obra — encaixada, na frente (Y=P), com borda de moldura visivel ao redor. Normal +Y (conferida).
     // UV explicito (0,0 a 1,1) — sem isso a textura ladrilha (repete) em vez de cobrir a face uma unica vez.
     const pObra = [[bx,P,A-bz],[L-bx,P,A-bz],[L-bx,P,bz],[bx,P,bz]];
-    const uvObra = [[pObra[0],[0,1]],[pObra[1],[1,1]],[pObra[3],[0,0]]]; // 3 pontos bastam — o 4o e resolvido pela geometria
+    // O UV do SketchUp usa unidade REAL (polegada), nao 0-1 normalizado — por isso usa a
+    // propria largura/altura da face (ja em polegadas) como extensao do UV, nao 0/1.
+    const larguraObra = L - 2*bx, alturaObra = A - 2*bz;
+    const uvObra = [[pObra[0],[0,alturaObra]],[pObra[1],[larguraObra,alturaObra]],[pObra[3],[0,0]]];
     def.addFace(pObra, { material: materialObra, frontUv: uvObra });
 
     // Moldura frontal — 4 tiras formando o quadro ao redor da obra, todas no plano Y=P, normal +Y (conferida)
