@@ -137,7 +137,10 @@ async function salvarContatoBling(dados, blingId) {
       body: JSON.stringify(body)
     });
     const result = await resp.json();
-    if (!resp.ok || result.error) throw new Error(result.error?.description || result.error?.message || JSON.stringify(result));
+    if (!resp.ok || result.error) {
+      const detalhes = result.error?.fields?.map(f => `${f.element}: ${f.msg}`).join(' | ');
+      throw new Error(detalhes || result.error?.description || result.error?.message || JSON.stringify(result));
+    }
     return blingId;
   } else {
     const resp = await fetch('https://api.bling.com.br/Api/v3/contatos', {
@@ -146,7 +149,10 @@ async function salvarContatoBling(dados, blingId) {
       body: JSON.stringify(body)
     });
     const result = await resp.json();
-    if (!resp.ok || result.error) throw new Error(result.error?.description || result.error?.message || JSON.stringify(result));
+    if (!resp.ok || result.error) {
+      const detalhes = result.error?.fields?.map(f => `${f.element}: ${f.msg}`).join(' | ');
+      throw new Error(detalhes || result.error?.description || result.error?.message || JSON.stringify(result));
+    }
     return result?.data?.id || null;
   }
 }
@@ -2195,6 +2201,7 @@ app.post('/admin/bling/sincronizar', authAdmin, async (req, res) => {
     } catch (e) {
       falhas.push(`${m.nome} (${e.message})`);
     }
+    await new Promise(r => setTimeout(r, 600)); // respeita o limite de requisicoes por segundo do Bling
   }
   res.redirect(`/admin?bling_sync=${ok}&bling_falhas=${encodeURIComponent(falhas.join(', '))}`);
 });
