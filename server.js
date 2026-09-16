@@ -6,6 +6,9 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const cookieParser = require('cookie-parser');
 const crypto = require('crypto');
+const multer = require('multer');
+const sharp = require('sharp');
+const uploadFoto = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
 const app = express();
 app.use(express.json({ limit: '25mb' }));
@@ -208,6 +211,8 @@ const CSS = `
   .nav-bar{display:flex;gap:8px;margin-bottom:32px;flex-wrap:wrap}
   .nav-link{padding:8px 16px;font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);border:1px solid var(--border);border-radius:3px;transition:all .2s}
   .nav-link:hover,.nav-link.ativo{color:var(--gold);border-color:var(--gold)}
+  .nav-link-destaque{background:var(--gold);color:#0d0d0d!important;border-color:var(--gold)!important;font-weight:700}
+  .nav-link-destaque:hover{opacity:.85;color:#0d0d0d!important}
   .stat-box{background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:20px;text-align:center}
   .stat-box .num{font-family:'Cormorant Garamond',serif;font-size:36px;color:var(--gold)}
   .stat-box .lbl{font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);margin-top:4px}
@@ -220,17 +225,36 @@ const CSS = `
 `;
 
 function html(titulo, corpo, nav=false) {
-  const navHtml = nav ? `<div style="display:flex;gap:12px;align-items:center;justify-content:flex-end;margin-top:12px;flex-wrap:wrap;">
-    <a href="/portal" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted)">Portal</a>
-    <a href="/catalogo" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted)">Obras</a>
-    <a href="/meu-impacto" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted)">Impacto</a>
-    <a href="/sugestoes" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted)">Voz</a>
-    <a href="/minhas-funcoes" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted)">Funções</a>
-    <a href="/logout" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--danger)">Sair</a>
-  </div>` : '';
+  const sairHtml = nav ? `<a href="/logout" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--danger);margin-top:12px;display:inline-block">Sair</a>` : '';
   return `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <title>${titulo} — Círculo ALMARE</title><style>${CSS}</style></head>
-  <body><div class="container"><header><div class="logo">ALMARE</div><div class="logo-sub">Círculo</div>${navHtml}</header>${corpo}</div></body></html>`;
+  <body><div class="container"><header><div class="logo">ALMARE</div><div class="logo-sub">Círculo</div><div style="text-align:right">${sairHtml}</div></header>${corpo}</div></body></html>`;
+}
+
+async function temFuncaoComImpacto(membroId) {
+  const r = await pool.query(`
+    SELECT 1 FROM circulo_membro_funcoes mf JOIN circulo_funcoes f ON f.id=mf.funcao_id
+    WHERE mf.membro_id=$1 AND mf.ativo=true AND f.slug IN ('embaixador','especificador','artista','colaborador') LIMIT 1`, [membroId]);
+  return r.rows.length > 0;
+}
+
+function navBar(ativo, temImpacto=false) {
+  const base = [
+    { key: 'passaporte', href: '/portal', label: 'Passaporte' },
+    { key: 'obras', href: '/catalogo', label: 'Obras' },
+    { key: 'simulador', href: '/simulador', label: 'Simulador' },
+    { key: 'identificar', href: '/identificar', label: 'Identificar' },
+    { key: 'carrinho', href: '/carrinho', label: 'Carrinho' },
+  ];
+  const impacto = temImpacto ? [{ key: 'impacto', href: '/meu-impacto', label: 'Impacto' }] : [];
+  const indicacoes = [{ key: 'indicacoes', href: '/minhas-indicacoes', label: 'Indicações' }];
+  const fim = [
+    { key: 'voz', href: '/sugestoes', label: 'Voz' },
+    { key: 'convidar', href: '/meu-convite', label: 'Convidar' },
+  ];
+  const item = l => `<a href="${l.href}" class="nav-link${ativo===l.key?' ativo':''}">${l.label}</a>`;
+  const funcoesDestaque = `<a href="/minhas-funcoes" class="nav-link nav-link-destaque${ativo==='funcoes'?' ativo':''}">Funções</a>`;
+  return `<div class="nav-bar">${base.map(item).join('')}${impacto.map(item).join('')}${indicacoes.map(item).join('')}${fim.map(item).join('')}${funcoesDestaque}</div>`;
 }
 
 // Funções que o membro pode pedir no cadastro
@@ -608,7 +632,7 @@ app.get('/portal',authMembro,async(req,res)=>{
     const temFuncaoExtra = funcoes.rows.some(f=>f.ativo && ['embaixador','especificador','artista','colaborador'].includes(f.slug));
 
     res.send(html('Portal',`
-      <div class="nav-bar"><a href="/portal" class="nav-link ativo">Passaporte</a><a href="/catalogo" class="nav-link">Obras</a><a href="/simulador" class="nav-link">Simulador</a>${temFuncaoExtra ? '<a href="/meu-impacto" class="nav-link">Impacto</a>' : ''}<a href="/sugestoes" class="nav-link">Voz</a><a href="/minhas-funcoes" class="nav-link">Funções</a><a href="/meu-convite" class="nav-link">Convidar</a></div>
+      ${navBar('passaporte', temFuncaoExtra)}
       <div class="card" style="margin-bottom:24px;">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:16px;">
           <div>
@@ -653,7 +677,7 @@ app.get('/minhas-funcoes',authMembro,async(req,res)=>{
     </div>`).join('');
 
   res.send(html('Minhas funções',`
-    <div class="nav-bar"><a href="/portal" class="nav-link">Passaporte</a><a href="/catalogo" class="nav-link">Obras</a><a href="/simulador" class="nav-link">Simulador</a><a href="/meu-impacto" class="nav-link">Impacto</a><a href="/sugestoes" class="nav-link">Voz</a><a href="/minhas-funcoes" class="nav-link ativo">Funções</a><a href="/meu-convite" class="nav-link">Convidar</a></div>
+    ${navBar('funcoes', funcoes.rows.some(f=>f.ativo && ['embaixador','especificador','artista','colaborador'].includes(f.slug)))}
     <a href="/portal" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);display:inline-block;margin-bottom:24px;">← Voltar ao portal</a>
     <h2 style="font-size:28px;margin-bottom:8px;">Suas funções</h2>
     <p style="color:var(--muted);margin-bottom:32px;">Funções ativas podem ser desativadas a qualquer momento. Funções aguardando estão pendentes de aprovação.</p>
@@ -1011,7 +1035,7 @@ app.get('/simulador', authMembro, async(req,res)=>{
   const navImpacto=slugs.some(s=>['embaixador','especificador','artista','colaborador'].includes(s))?'<a href="/meu-impacto" class="nav-link">Impacto</a>':'';
 
   res.send(html('Simulador',`
-    <div class="nav-bar"><a href="/portal" class="nav-link">Passaporte</a><a href="/catalogo" class="nav-link">Obras</a><a href="/simulador" class="nav-link ativo">Simulador</a>${navImpacto}<a href="/sugestoes" class="nav-link">Voz</a><a href="/minhas-funcoes" class="nav-link">Funções</a><a href="/meu-convite" class="nav-link">Convidar</a></div>
+    ${navBar('simulador', !!navImpacto)}
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;flex-wrap:wrap;gap:12px;">
       <a href="/portal" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);">← Voltar ao portal</a>
       <a href="/simulador/minhas" class="btn btn-outline" style="padding:8px 16px;font-size:10px;">Minhas simulações</a>
@@ -1654,7 +1678,7 @@ app.get('/simulador/minhas', authMembro, async(req,res)=>{
   const slugs=fRows.rows.map(r=>r.slug);
   const navImpacto=slugs.some(s=>['embaixador','especificador','artista','colaborador'].includes(s))?'<a href="/meu-impacto" class="nav-link">Impacto</a>':'';
   res.send(html('Minhas simulações',`
-    <div class="nav-bar"><a href="/portal" class="nav-link">Passaporte</a><a href="/catalogo" class="nav-link">Obras</a><a href="/simulador" class="nav-link ativo">Simulador</a>${navImpacto}<a href="/sugestoes" class="nav-link">Voz</a><a href="/minhas-funcoes" class="nav-link">Funções</a><a href="/meu-convite" class="nav-link">Convidar</a></div>
+    ${navBar('simulador', !!navImpacto)}
     <a href="/simulador" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);display:inline-block;margin-bottom:24px;">← Voltar ao simulador</a>
     <h2 style="font-size:28px;margin-bottom:8px;">Minhas simulações</h2>
     <p style="color:var(--muted);margin-bottom:32px;">Suas simulações salvas. Elas ficam disponíveis por 20 dias. Limite de 10 salvas.</p>
@@ -1768,7 +1792,7 @@ app.get('/minhas-indicacoes', authMembro, async(req,res)=>{
     </div>`).join('');
 
   res.send(html('Minhas indicações',`
-    <div class="nav-bar"><a href="/portal" class="nav-link">Passaporte</a><a href="/catalogo" class="nav-link">Obras</a><a href="/simulador" class="nav-link">Simulador</a><a href="/minhas-indicacoes" class="nav-link ativo">Indicações</a><a href="/sugestoes" class="nav-link">Voz</a><a href="/minhas-funcoes" class="nav-link">Funções</a><a href="/meu-convite" class="nav-link">Convidar</a></div>
+    ${navBar('indicacoes', await temFuncaoComImpacto(req.membro.id))}
     <h2 style="font-size:28px;margin-bottom:8px;">Minhas indicações</h2>
     <p style="color:var(--muted);margin-bottom:32px;">Cada obra do catálogo tem seu próprio link. Toque em "Indicar esta obra" no catálogo para gerar um.</p>
     <div class="card" style="margin-bottom:24px;"><h3 style="font-size:16px;margin-bottom:12px;color:var(--gold);">Seus links por obra</h3>${itens||'<p style="color:var(--muted);padding:12px 0;">Você ainda não indicou nenhuma obra. Vá ao catálogo e toque em "Indicar esta obra".</p>'}</div>
@@ -1895,9 +1919,9 @@ app.post('/comprar/:obraId/adicionar', authMembro, async(req,res)=>{
 // Ver o carrinho
 app.get('/carrinho', authMembro, async(req,res)=>{
   const pedidoRes = await pool.query(`SELECT * FROM circulo_pedidos WHERE membro_id=$1 AND status='CARRINHO'`,[req.membro.id]);
-  const navBar = '<div class="nav-bar"><a href="/portal" class="nav-link">Passaporte</a><a href="/catalogo" class="nav-link">Obras</a><a href="/simulador" class="nav-link">Simulador</a><a href="/carrinho" class="nav-link ativo">Carrinho</a><a href="/sugestoes" class="nav-link">Voz</a><a href="/minhas-funcoes" class="nav-link">Funções</a></div>';
+  const navBarHtml = navBar('carrinho', await temFuncaoComImpacto(req.membro.id));
   if(!pedidoRes.rows.length){
-    return res.send(html('Carrinho',`${navBar}<h2 style="font-size:28px;margin-bottom:16px;">Seu carrinho</h2><p style="color:var(--muted);">Vazio. Volte ao <a href="/catalogo">catálogo</a> para escolher uma obra.</p>`,true));
+    return res.send(html('Carrinho',`${navBarHtml}<h2 style="font-size:28px;margin-bottom:16px;">Seu carrinho</h2><p style="color:var(--muted);">Vazio. Volte ao <a href="/catalogo">catálogo</a> para escolher uma obra.</p>`,true));
   }
   const p = pedidoRes.rows[0];
   const itens = await pool.query(`
@@ -1919,7 +1943,7 @@ app.get('/carrinho', authMembro, async(req,res)=>{
     </div>`).join('');
 
   res.send(html('Carrinho',`
-    ${navBar}
+    ${navBarHtml}
     <h2 style="font-size:28px;margin-bottom:24px;">Seu carrinho</h2>
     <div class="card" style="margin-bottom:20px;">
       ${linhas}
@@ -1986,6 +2010,112 @@ app.get('/obra/:obraId/comprar', authMembro, async(req,res)=>{
 });
 
 // ─── CATÁLOGO ─────────────────────────────────────────────────────────────────
+// ─── IDENTIFICAR — membro tira foto de uma peça fisica e o sistema reconhece qual obra e ──────
+app.get('/identificar', authMembro, async(req,res)=>{
+  const temImpacto = await temFuncaoComImpacto(req.membro.id);
+  res.send(html('Identificar obra',`
+    ${navBar('identificar', temImpacto)}
+    <h2 style="font-size:28px;margin-bottom:8px;">Identificar obra</h2>
+    <p style="color:var(--muted);margin-bottom:32px;">Tire uma foto de uma peça física e o sistema reconhece qual obra do acervo ALMARE ela é.</p>
+    <div class="card">
+      <div class="field">
+        <label>Foto da peça</label>
+        <input type="file" id="id-foto" accept="image/*" capture="environment" style="width:100%;padding:10px;background:#0d0d0d;border:1px solid var(--border);border-radius:3px;color:#fff">
+      </div>
+      <div id="id-preview" style="margin:16px 0;"></div>
+      <button class="btn btn-primary" id="id-btn" onclick="identificarFoto()">Identificar</button>
+      <div id="id-resultado" style="margin-top:20px;"></div>
+    </div>
+    <script>
+      document.getElementById('id-foto').addEventListener('change', function(e){
+        const f = e.target.files[0];
+        if (!f) return;
+        document.getElementById('id-preview').innerHTML = '<img src="'+URL.createObjectURL(f)+'" style="max-width:240px;border-radius:4px;">';
+      });
+      async function identificarFoto(){
+        const inp = document.getElementById('id-foto');
+        const btn = document.getElementById('id-btn');
+        const res = document.getElementById('id-resultado');
+        if (!inp.files[0]) { alert('Escolhe uma foto primeiro.'); return; }
+        btn.disabled = true; btn.textContent = 'Identificando...';
+        res.innerHTML = '';
+        try {
+          const fd = new FormData();
+          fd.append('foto', inp.files[0]);
+          const r = await fetch('/identificar', { method: 'POST', body: fd });
+          const texto = await r.text();
+          let d; try { d = JSON.parse(texto); } catch(e) { throw new Error('O servidor demorou ou teve uma instabilidade. Tenta de novo.'); }
+          if (!r.ok) throw new Error(d.erro || 'Erro ao identificar');
+          if (!d.encontrado) {
+            res.innerHTML = '<div class="msg-erro">Não consegui identificar com segurança. '+(d.justificativa||'')+'</div>';
+          } else {
+            res.innerHTML = '<div style="display:flex;gap:16px;align-items:center;padding:16px;border:1px solid var(--gold);border-radius:4px;">'
+              + (d.obra.imagem_preview ? '<img src="'+d.obra.imagem_preview+'" style="width:80px;height:80px;object-fit:cover;border-radius:4px;flex-shrink:0;">' : '')
+              + '<div><div style="font-family:\\'Cormorant Garamond\\',serif;font-size:20px;">'+d.obra.nome+'</div>'
+              + '<div style="font-size:12px;color:var(--muted);margin-bottom:8px;">'+d.obra.codigo+' · '+(d.obra.colecao||'')+' · Confiança: '+d.confianca+'</div>'
+              + '<a href="/obra/'+d.obra.id+'/comprar" class="btn btn-outline" style="padding:6px 14px;font-size:11px;">Ver obra</a></div></div>';
+          }
+        } catch(e) {
+          res.innerHTML = '<div class="msg-erro">'+e.message+'</div>';
+        }
+        btn.disabled = false; btn.textContent = 'Identificar';
+      }
+    </script>
+  `,true));
+});
+
+app.post('/identificar', authMembro, uploadFoto.single('foto'), async(req,res)=>{
+  try {
+    if (!req.file) return res.status(400).json({ erro: 'Nenhuma foto enviada' });
+
+    const fotoResized = await sharp(req.file.buffer).resize({ width: 500, height: 500, fit: 'inside' }).jpeg({ quality: 75 }).toBuffer();
+    const fotoB64 = fotoResized.toString('base64');
+
+    const obras = await pool.query(`SELECT id, codigo, nome, colecao, imagem_preview FROM almare_obras WHERE imagem_preview IS NOT NULL ORDER BY id`);
+    if (!obras.rows.length) return res.status(404).json({ erro: 'Nenhuma obra cadastrada no acervo ainda' });
+
+    const referencias = [];
+    for (const o of obras.rows) {
+      try {
+        const base64Original = o.imagem_preview.replace(/^data:image\/\w+;base64,/, '');
+        const buf = Buffer.from(base64Original, 'base64');
+        const mini = await sharp(buf).resize({ width: 300, height: 300, fit: 'inside' }).jpeg({ quality: 70 }).toBuffer();
+        referencias.push({ codigo: o.codigo, nome: o.nome, colecao: o.colecao, b64: mini.toString('base64') });
+      } catch (e) {}
+    }
+
+    const content = [
+      { type: 'text', text: `Voce e um especialista em reconhecimento visual de obras de arte. A primeira imagem abaixo e uma FOTO de uma peca fisica que precisa ser identificada. As imagens seguintes sao referencias do banco de dados, cada uma com um codigo.\n\nCompare a foto com cada referencia considerando: padrao de cores, textura, composicao, formas — mesmo com variacao de iluminacao, angulo ou reflexo.\n\nResponda APENAS com JSON, sem markdown:\n{"codigo_identificado":"ALM-XXX ou null se nenhuma bater","confianca":"Alta/Media/Baixa/Nenhuma","justificativa":"1 frase curta"}` },
+      { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: fotoB64 } }
+    ];
+    referencias.forEach(r => {
+      content.push({ type: 'text', text: `Referencia ${r.codigo} — ${r.nome || 'sem nome'} (${r.colecao || 'sem colecao'}):` });
+      content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: r.b64 } });
+    });
+
+    const apiRes = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 500, messages: [{ role: 'user', content }] })
+    });
+    const apiData = await apiRes.json();
+    if (apiData.error) throw new Error(apiData.error.message);
+    const txt = apiData.content?.map(i => i.text || '').join('') || '';
+    const resultado = JSON.parse(txt.replace(/```json|```/g, '').trim());
+
+    if (!resultado.codigo_identificado || resultado.confianca === 'Nenhuma') {
+      return res.json({ encontrado: false, justificativa: resultado.justificativa });
+    }
+    const obraEncontrada = await pool.query('SELECT * FROM almare_obras WHERE codigo=$1', [resultado.codigo_identificado]);
+    if (!obraEncontrada.rows.length) return res.json({ encontrado: false, justificativa: 'Código identificado não encontrado no banco' });
+
+    res.json({ encontrado: true, confianca: resultado.confianca, justificativa: resultado.justificativa, obra: obraEncontrada.rows[0] });
+  } catch (e) {
+    console.error('ERRO IDENTIFICAR:', e.message);
+    res.status(500).json({ erro: e.message });
+  }
+});
+
 app.get('/catalogo',authMembro,async(req,res)=>{
   try{
     const fRows=await pool.query(`SELECT f.slug FROM circulo_membro_funcoes mf JOIN circulo_funcoes f ON f.id=mf.funcao_id WHERE mf.membro_id=$1 AND mf.ativo=true`,[req.membro.id]);
@@ -2043,7 +2173,7 @@ app.get('/catalogo',authMembro,async(req,res)=>{
     const opcoesPaleta=paletas.map(p=>`<option value="${p.toLowerCase().replace(/\s+/g,'-')}">${p}</option>`).join('');
 
     res.send(html('Catálogo',`
-      <div class="nav-bar"><a href="/portal" class="nav-link">Passaporte</a><a href="/catalogo" class="nav-link ativo">Obras</a><a href="/simulador" class="nav-link">Simulador</a><a href="/carrinho" class="nav-link">Carrinho</a>${navImpacto}<a href="/sugestoes" class="nav-link">Voz</a><a href="/minhas-funcoes" class="nav-link">Funções</a><a href="/meu-convite" class="nav-link">Convidar</a></div>
+      ${navBar('obras', !!navImpacto)}
 
       <!-- BARRA DE FILTROS -->
       <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:32px;align-items:center;">
@@ -2149,7 +2279,7 @@ app.get('/meu-impacto',authMembro,async(req,res)=>{
     const saldo=await pool.query('SELECT * FROM circulo_saldo_credito WHERE membro_id=$1',[req.membro.id]);
     const s=saldo.rows[0]||{saldo_disponivel:0,saldo_total:0};
     const linhas=trans.rows.map(t=>`<tr><td>Obra #${t.obra_id}</td><td>R$ ${parseFloat(t.valor_obra).toFixed(2).replace('.',',')}</td><td><span class="badge ${t.modalidade==='credito'?'badge-gold':'badge-muted'}">${t.modalidade==='credito'?'Crédito':'Cashback'}</span></td><td style="color:var(--gold)">R$ ${parseFloat(t.valor_beneficio).toFixed(2).replace('.',',')}</td><td><span class="badge ${t.status==='pago'?'badge-success':'badge-pending'}">${t.status}</span></td></tr>`).join('');
-    res.send(html('Impacto',`<div class="nav-bar"><a href="/portal" class="nav-link">Passaporte</a><a href="/catalogo" class="nav-link">Obras</a><a href="/simulador" class="nav-link">Simulador</a><a href="/meu-impacto" class="nav-link ativo">Impacto</a><a href="/sugestoes" class="nav-link">Voz</a><a href="/minhas-funcoes" class="nav-link">Funções</a><a href="/meu-convite" class="nav-link">Convidar</a></div><div class="grid-2" style="margin-bottom:32px;"><div class="stat-box"><div class="num">R$ ${parseFloat(s.saldo_disponivel).toFixed(2).replace('.',',')}</div><div class="lbl">Crédito disponível</div></div><div class="stat-box"><div class="num">R$ ${parseFloat(s.saldo_total).toFixed(2).replace('.',',')}</div><div class="lbl">Total histórico</div></div></div><div class="card"><h3 style="font-size:18px;margin-bottom:20px;">Histórico</h3>${trans.rows.length?`<table><thead><tr><th>Obra</th><th>Valor</th><th>Modalidade</th><th>Benefício</th><th>Status</th></tr></thead><tbody>${linhas}</tbody></table>`:'<p style="color:var(--muted)">Nenhuma venda ainda.</p>'}</div>`,true));
+    res.send(html('Impacto',`${navBar('impacto', true)}<div class="grid-2" style="margin-bottom:32px;"><div class="stat-box"><div class="num">R$ ${parseFloat(s.saldo_disponivel).toFixed(2).replace('.',',')}</div><div class="lbl">Crédito disponível</div></div><div class="stat-box"><div class="num">R$ ${parseFloat(s.saldo_total).toFixed(2).replace('.',',')}</div><div class="lbl">Total histórico</div></div></div><div class="card"><h3 style="font-size:18px;margin-bottom:20px;">Histórico</h3>${trans.rows.length?`<table><thead><tr><th>Obra</th><th>Valor</th><th>Modalidade</th><th>Benefício</th><th>Status</th></tr></thead><tbody>${linhas}</tbody></table>`:'<p style="color:var(--muted)">Nenhuma venda ainda.</p>'}</div>`,true));
   }catch(e){res.send(html('Impacto',`<div class="msg-erro">${e.message}</div>`,true));}
 });
 
@@ -2157,7 +2287,7 @@ app.get('/meu-impacto',authMembro,async(req,res)=>{
 app.get('/sugestoes',authMembro,async(req,res)=>{
   const lista=await pool.query('SELECT * FROM circulo_sugestoes WHERE membro_id=$1 ORDER BY criado_em DESC',[req.membro.id]);
   const itens=lista.rows.map(s=>`<div style="padding:16px 0;border-bottom:1px solid var(--border);"><div style="display:flex;justify-content:space-between;margin-bottom:6px;"><span class="badge ${s.status==='incorporada'?'badge-success':s.status==='em_analise'?'badge-pending':'badge-muted'}">${s.status}</span><span style="font-size:11px;color:var(--muted)">${new Date(s.criado_em).toLocaleDateString('pt-BR')}</span></div><p style="font-size:13px;line-height:1.6;">${s.texto}</p>${s.resposta?`<p style="font-size:12px;color:var(--gold);margin-top:8px;font-style:italic;">↳ ${s.resposta}</p>`:''}</div>`).join('');
-  res.send(html('Voz',`<div class="nav-bar"><a href="/portal" class="nav-link">Passaporte</a><a href="/catalogo" class="nav-link">Obras</a><a href="/simulador" class="nav-link">Simulador</a><a href="/meu-impacto" class="nav-link">Impacto</a><a href="/sugestoes" class="nav-link ativo">Voz</a><a href="/minhas-funcoes" class="nav-link">Funções</a><a href="/meu-convite" class="nav-link">Convidar</a></div><h2 style="font-size:28px;margin-bottom:8px;">Sua voz no Círculo</h2><p style="color:var(--muted);margin-bottom:32px;">Sugira temas, formatos, ambientes. Anderson lê tudo.</p><div class="card" style="margin-bottom:24px;"><form method="POST" action="/sugestoes"><div class="field"><label>Sua sugestão</label><textarea name="texto" required placeholder="Uma ideia..."></textarea></div><button type="submit" class="btn btn-primary">Enviar</button></form></div>${lista.rows.length?`<div class="card"><h3 style="font-size:16px;margin-bottom:16px;">Anteriores</h3>${itens}</div>`:''}`,true));
+  res.send(html('Voz',`${navBar('voz', await temFuncaoComImpacto(req.membro.id))}<h2 style="font-size:28px;margin-bottom:8px;">Sua voz no Círculo</h2><p style="color:var(--muted);margin-bottom:32px;">Sugira temas, formatos, ambientes. Anderson lê tudo.</p><div class="card" style="margin-bottom:24px;"><form method="POST" action="/sugestoes"><div class="field"><label>Sua sugestão</label><textarea name="texto" required placeholder="Uma ideia..."></textarea></div><button type="submit" class="btn btn-primary">Enviar</button></form></div>${lista.rows.length?`<div class="card"><h3 style="font-size:16px;margin-bottom:16px;">Anteriores</h3>${itens}</div>`:''}`,true));
 });
 app.post('/sugestoes',authMembro,async(req,res)=>{
   await pool.query('INSERT INTO circulo_sugestoes (membro_id,texto) VALUES ($1,$2)',[req.membro.id,req.body.texto]);
@@ -2169,7 +2299,7 @@ app.get('/meu-convite',authMembro,async(req,res)=>{
   const conv=await pool.query('SELECT * FROM circulo_convites WHERE membro_id=$1 LIMIT 1',[req.membro.id]);
   const c=conv.rows[0];
   const link=c?`${BASE_URL}/convite/${c.codigo}`:'';
-  res.send(html('Convidar',`<div class="nav-bar"><a href="/portal" class="nav-link">Passaporte</a><a href="/catalogo" class="nav-link">Obras</a><a href="/simulador" class="nav-link">Simulador</a><a href="/meu-impacto" class="nav-link">Impacto</a><a href="/sugestoes" class="nav-link">Voz</a><a href="/minhas-funcoes" class="nav-link">Funções</a><a href="/meu-convite" class="nav-link ativo">Convidar</a></div><h2 style="font-size:28px;margin-bottom:8px;">Seu link de convite</h2><p style="color:var(--muted);margin-bottom:32px;">Compartilhe com quem acredita que pertence ao Círculo.</p><div class="card"><div style="font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);margin-bottom:12px;">Link pessoal</div><div style="background:#0d0d0d;border:1px solid var(--border);border-radius:3px;padding:14px;font-size:13px;word-break:break-all;margin-bottom:16px;">${link}</div><button onclick="navigator.clipboard.writeText('${link}');this.textContent='Copiado ✓'" class="btn btn-outline">Copiar link</button><div style="margin-top:20px;font-size:12px;color:var(--muted)">${c?c.usos:0} pessoa(s) entrou pela sua indicação</div></div>`,true));
+  res.send(html('Convidar',`${navBar('convidar', await temFuncaoComImpacto(req.membro.id))}<h2 style="font-size:28px;margin-bottom:8px;">Seu link de convite</h2><p style="color:var(--muted);margin-bottom:32px;">Compartilhe com quem acredita que pertence ao Círculo.</p><div class="card"><div style="font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);margin-bottom:12px;">Link pessoal</div><div style="background:#0d0d0d;border:1px solid var(--border);border-radius:3px;padding:14px;font-size:13px;word-break:break-all;margin-bottom:16px;">${link}</div><button onclick="navigator.clipboard.writeText('${link}');this.textContent='Copiado ✓'" class="btn btn-outline">Copiar link</button><div style="margin-top:20px;font-size:12px;color:var(--muted)">${c?c.usos:0} pessoa(s) entrou pela sua indicação</div></div>`,true));
 });
 
 // ════════════════════════════════════════════════════════════════
