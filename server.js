@@ -138,8 +138,7 @@ async function salvarContatoBling(dados, blingId) {
     });
     const result = await resp.json();
     if (!resp.ok || result.error) {
-      const detalhes = result.error?.fields?.map(f => `${f.element}: ${f.msg}`).join(' | ');
-      throw new Error(detalhes || result.error?.description || result.error?.message || JSON.stringify(result));
+      throw new Error(JSON.stringify(result));
     }
     return blingId;
   } else {
@@ -150,8 +149,7 @@ async function salvarContatoBling(dados, blingId) {
     });
     const result = await resp.json();
     if (!resp.ok || result.error) {
-      const detalhes = result.error?.fields?.map(f => `${f.element}: ${f.msg}`).join(' | ');
-      throw new Error(detalhes || result.error?.description || result.error?.message || JSON.stringify(result));
+      throw new Error(JSON.stringify(result));
     }
     return result?.data?.id || null;
   }
@@ -2201,7 +2199,7 @@ app.post('/admin/bling/sincronizar', authAdmin, async (req, res) => {
     } catch (e) {
       falhas.push(`${m.nome} (${e.message})`);
     }
-    await new Promise(r => setTimeout(r, 600)); // respeita o limite de requisicoes por segundo do Bling
+    await new Promise(r => setTimeout(r, 1500)); // bem abaixo do limite de 3 req/s do Bling
   }
   res.redirect(`/admin?bling_sync=${ok}&bling_falhas=${encodeURIComponent(falhas.join(', '))}`);
 });
