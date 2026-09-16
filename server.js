@@ -110,24 +110,34 @@ async function buscarContatoBling(documento) {
 
 async function salvarContatoBling(dados, blingId) {
   const token = await getBlingToken();
-  const isCNPJ = (dados.documento || '').replace(/\D/g, '').length > 11;
-  const body = {
-    nome: dados.nome, tipo: isCNPJ ? 'J' : 'F', email: dados.email,
-    telefone: dados.telefone || '', celular: dados.celular || '',
-    [isCNPJ ? 'cnpj' : 'cpf']: (dados.documento || '').replace(/\D/g, ''),
-    ie: dados.ie || '',
-    endereco: {
-      endereco: dados.endereco || '', numero: dados.numero || '',
-      complemento: dados.complemento || '', bairro: dados.bairro || '',
-      cep: (dados.cep || '').replace(/\D/g, ''), municipio: dados.cidade || '', uf: dados.estado || ''
-    }
-  };
+  const documentoLimpo = (dados.documento || '').replace(/\D/g, '');
+  const isCNPJ = documentoLimpo.length > 11;
+
+  const body = { nome: dados.nome, tipo: isCNPJ ? 'J' : 'F' };
+  if (dados.email) body.email = dados.email;
+  if (dados.telefone) body.telefone = dados.telefone;
+  if (dados.celular) body.celular = dados.celular;
+  if (documentoLimpo) body[isCNPJ ? 'cnpj' : 'cpf'] = documentoLimpo;
+  if (dados.ie) body.ie = dados.ie;
+
+  const enderecoLimpo = {};
+  if (dados.endereco) enderecoLimpo.endereco = dados.endereco;
+  if (dados.numero) enderecoLimpo.numero = dados.numero;
+  if (dados.complemento) enderecoLimpo.complemento = dados.complemento;
+  if (dados.bairro) enderecoLimpo.bairro = dados.bairro;
+  if (dados.cep) enderecoLimpo.cep = dados.cep.replace(/\D/g, '');
+  if (dados.cidade) enderecoLimpo.municipio = dados.cidade;
+  if (dados.estado) enderecoLimpo.uf = dados.estado;
+  if (Object.keys(enderecoLimpo).length) body.endereco = enderecoLimpo;
+
   if (blingId) {
-    await fetch(`https://api.bling.com.br/Api/v3/contatos/${blingId}`, {
+    const resp = await fetch(`https://api.bling.com.br/Api/v3/contatos/${blingId}`, {
       method: 'PUT',
       headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
     });
+    const result = await resp.json();
+    if (!resp.ok || result.error) throw new Error(result.error?.description || result.error?.message || JSON.stringify(result));
     return blingId;
   } else {
     const resp = await fetch('https://api.bling.com.br/Api/v3/contatos', {
@@ -136,6 +146,7 @@ async function salvarContatoBling(dados, blingId) {
       body: JSON.stringify(body)
     });
     const result = await resp.json();
+    if (!resp.ok || result.error) throw new Error(result.error?.description || result.error?.message || JSON.stringify(result));
     return result?.data?.id || null;
   }
 }
