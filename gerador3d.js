@@ -11,7 +11,7 @@ const sharp = require('sharp');
 const CM_PARA_POLEGADA = 1 / 2.54;
 function cm(valor) { return valor * CM_PARA_POLEGADA; }
 
-const PROFUNDIDADE_CM = 3.8; // profundidade real da moldura: 38mm
+const PROFUNDIDADE_CM = 4.5; // profundidade real da moldura: 45mm
 
 const CORES_MOLDURA = {
   preta: [26, 26, 26],
@@ -100,7 +100,7 @@ async function montarGeometria(builder, larguraCm, alturaCm, profundidadeCm, cor
     def.addFace([[xA0,P,zA0],[xA1,P,zA0],[xV1,P,zV0],[xV0,P,zV0]], { material: materialVao }); // baixo
     def.addFace([[xV0,P,zV1],[xV1,P,zV1],[xA1,P,zA1],[xA0,P,zA1]], { material: materialVao }); // cima
     def.addFace([[xV0,P,zV1],[xA0,P,zA1],[xA0,P,zA0],[xV0,P,zV0]], { material: materialVao }); // esquerda
-    def.addFace([[xA1,P,zA0],[xV1,P,zV0],[xV1,P,zV1],[xA1,P,zA1]], { material: materialVao }); // direita
+    def.addFace([[xA1,P,zA1],[xV1,P,zV1],[xV1,P,zV0],[xA1,P,zA0]], { material: materialVao }); // direita (ordem corrigida: estava invertida, aparecia azul no SketchUp)
 
     // Filete frontal — 4 tiras TRAPEZOIDAIS formando cantos com corte de 45 graus (moldura real).
     // Todas no plano Y=P, normal +Y (conferida).
