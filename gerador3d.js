@@ -30,23 +30,27 @@ function montarGeometria(builder, larguraCm, alturaCm, profundidadeCm, corMoldur
   const bx = Math.min(B, L/2 - 0.1), bz = Math.min(B, A/2 - 0.1); // nunca deixa a borda maior que a metade da peca
 
   const materialMoldura = builder.addMaterial('Moldura', corMoldura);
-  const materialObra = builder.addTextureMaterial('Obra', imagemBytes, 'obra.jpg', A - 2*bz, L - 2*bx);
+  // IMPORTANTE (achado lendo o codigo-fonte da lib): quando se usa frontUv (posicionamento
+  // explicito), o valor do UV e DIVIDIDO por appliedHeight/appliedWidth internamente.
+  // Por isso NAO se deve passar o tamanho real da peca aqui — isso encolhia o UV pra uma fracao
+  // minuscula (o "cantinho" que apareceu). Deixando no padrao (1,1), a divisao nao altera nada,
+  // e o UV normalizado (0 a 1) funciona como esperado.
+  const materialObra = builder.addTextureMaterial('Obra', imagemBytes, 'obra.jpg', 1, 1);
 
   return builder.addComponentDefinition(nomeComponente, (def) => {
     // Face da obra — encaixada, na frente (Y=P), com borda de moldura visivel ao redor. Normal +Y (conferida).
     // UV explicito (0,0 a 1,1) — sem isso a textura ladrilha (repete) em vez de cobrir a face uma unica vez.
     const pObra = [[bx,P,A-bz],[L-bx,P,A-bz],[L-bx,P,bz],[bx,P,bz]];
-    // O UV do SketchUp usa unidade REAL (polegada), nao 0-1 normalizado — por isso usa a
-    // propria largura/altura da face (ja em polegadas) como extensao do UV, nao 0/1.
-    const larguraObra = L - 2*bx, alturaObra = A - 2*bz;
-    const uvObra = [[pObra[0],[0,alturaObra]],[pObra[1],[larguraObra,alturaObra]],[pObra[3],[0,0]]];
+    // UV normalizado 0-1 (agora correto, ja que appliedHeight/Width=1 neutraliza a divisao interna)
+    const uvObra = [[pObra[0],[0,1]],[pObra[1],[1,1]],[pObra[3],[0,0]]];
     def.addFace(pObra, { material: materialObra, frontUv: uvObra });
 
-    // Moldura frontal — 4 tiras formando o quadro ao redor da obra, todas no plano Y=P, normal +Y (conferida)
-    def.addFace([[0,P,bz],[L,P,bz],[L,P,0],[0,P,0]], { material: materialMoldura }); // tira de baixo
-    def.addFace([[0,P,A],[L,P,A],[L,P,A-bz],[0,P,A-bz]], { material: materialMoldura }); // tira de cima
-    def.addFace([[0,P,A-bz],[bx,P,A-bz],[bx,P,bz],[0,P,bz]], { material: materialMoldura }); // tira esquerda
-    def.addFace([[L-bx,P,A-bz],[L,P,A-bz],[L,P,bz],[L-bx,P,bz]], { material: materialMoldura }); // tira direita
+    // Moldura frontal — 4 tiras TRAPEZOIDAIS formando cantos com corte de 45 graus (como moldura real),
+    // nao retangulos com junta reta. Todas no plano Y=P, normal +Y (conferida).
+    def.addFace([[bx,P,bz],[L-bx,P,bz],[L,P,0],[0,P,0]], { material: materialMoldura }); // tira de baixo
+    def.addFace([[0,P,A],[L,P,A],[L-bx,P,A-bz],[bx,P,A-bz]], { material: materialMoldura }); // tira de cima
+    def.addFace([[0,P,A],[bx,P,A-bz],[bx,P,bz],[0,P,0]], { material: materialMoldura }); // tira esquerda
+    def.addFace([[L-bx,P,bz],[L-bx,P,A-bz],[L,P,A],[L,P,0]], { material: materialMoldura }); // tira direita
 
     // Fundo da moldura (encostado na parede) — plano Y=0, normal -Y (conferida)
     def.addFace([[0,0,0],[L,0,0],[L,0,A],[0,0,A]], { material: materialMoldura });
