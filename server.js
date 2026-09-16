@@ -8,6 +8,7 @@ const cookieParser = require('cookie-parser');
 const crypto = require('crypto');
 const multer = require('multer');
 const sharp = require('sharp');
+const AdmZip = require('adm-zip');
 const uploadFoto = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
 const app = express();
@@ -231,6 +232,13 @@ function html(titulo, corpo, nav=false) {
   <body><div class="container"><header><div class="logo">ALMARE</div><div class="logo-sub">Círculo</div><div style="text-align:right">${sairHtml}</div></header>${corpo}</div></body></html>`;
 }
 
+async function ehEspecificador(membroId) {
+  const r = await pool.query(`
+    SELECT 1 FROM circulo_membro_funcoes mf JOIN circulo_funcoes f ON f.id=mf.funcao_id
+    WHERE mf.membro_id=$1 AND mf.ativo=true AND f.slug='especificador' LIMIT 1`, [membroId]);
+  return r.rows.length > 0;
+}
+
 async function temFuncaoComImpacto(membroId) {
   const r = await pool.query(`
     SELECT 1 FROM circulo_membro_funcoes mf JOIN circulo_funcoes f ON f.id=mf.funcao_id
@@ -238,7 +246,7 @@ async function temFuncaoComImpacto(membroId) {
   return r.rows.length > 0;
 }
 
-function navBar(ativo, temImpacto=false) {
+function navBar(ativo, temImpacto=false, ehEspec=false) {
   const base = [
     { key: 'passaporte', href: '/portal', label: 'Passaporte' },
     { key: 'obras', href: '/catalogo', label: 'Obras' },
@@ -246,6 +254,7 @@ function navBar(ativo, temImpacto=false) {
     { key: 'identificar', href: '/identificar', label: 'Identificar' },
     { key: 'carrinho', href: '/carrinho', label: 'Carrinho' },
   ];
+  const especLink = ehEspec ? [{ key: 'modelos3d', href: '/modelos-3d', label: 'Modelos 3D' }] : [];
   const impacto = temImpacto ? [{ key: 'impacto', href: '/meu-impacto', label: 'Impacto' }] : [];
   const indicacoes = [{ key: 'indicacoes', href: '/minhas-indicacoes', label: 'Indicações' }];
   const fim = [
@@ -254,7 +263,7 @@ function navBar(ativo, temImpacto=false) {
   ];
   const item = l => `<a href="${l.href}" class="nav-link${ativo===l.key?' ativo':''}">${l.label}</a>`;
   const funcoesDestaque = `<a href="/minhas-funcoes" class="nav-link nav-link-destaque${ativo==='funcoes'?' ativo':''}">Funções</a>`;
-  return `<div class="nav-bar">${base.map(item).join('')}${impacto.map(item).join('')}${indicacoes.map(item).join('')}${fim.map(item).join('')}${funcoesDestaque}</div>`;
+  return `<div class="nav-bar">${base.map(item).join('')}${especLink.map(item).join('')}${impacto.map(item).join('')}${indicacoes.map(item).join('')}${fim.map(item).join('')}${funcoesDestaque}</div>`;
 }
 
 // Funções que o membro pode pedir no cadastro
@@ -635,7 +644,7 @@ app.get('/portal',authMembro,async(req,res)=>{
     const temFuncaoExtra = funcoes.rows.some(f=>f.ativo && ['embaixador','especificador','artista','colaborador'].includes(f.slug));
 
     res.send(html('Portal',`
-      ${navBar('passaporte', temFuncaoExtra)}
+      ${navBar('passaporte', temFuncaoExtra, funcoes.rows.some(f=>f.ativo && f.slug==='especificador'))}
       <div class="card" style="margin-bottom:24px;">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:16px;">
           <div>
@@ -683,7 +692,7 @@ app.get('/minhas-funcoes',authMembro,async(req,res)=>{
     </div>`).join('');
 
   res.send(html('Minhas funções',`
-    ${navBar('funcoes', funcoes.rows.some(f=>f.ativo && ['embaixador','especificador','artista','colaborador'].includes(f.slug)))}
+    ${navBar('funcoes', funcoes.rows.some(f=>f.ativo && ['embaixador','especificador','artista','colaborador'].includes(f.slug)), funcoes.rows.some(f=>f.ativo && f.slug==='especificador'))}
     <a href="/portal" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);display:inline-block;margin-bottom:24px;">← Voltar ao portal</a>
     <h2 style="font-size:28px;margin-bottom:8px;">Suas funções</h2>
     <p style="color:var(--muted);margin-bottom:32px;">Funções ativas podem ser desativadas a qualquer momento. Funções aguardando estão pendentes de aprovação.</p>
@@ -1041,7 +1050,7 @@ app.get('/simulador', authMembro, async(req,res)=>{
   const navImpacto=slugs.some(s=>['embaixador','especificador','artista','colaborador'].includes(s))?'<a href="/meu-impacto" class="nav-link">Impacto</a>':'';
 
   res.send(html('Simulador',`
-    ${navBar('simulador', !!navImpacto)}
+    ${navBar('simulador', !!navImpacto, slugs.includes('especificador'))}
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;flex-wrap:wrap;gap:12px;">
       <a href="/portal" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);">← Voltar ao portal</a>
       <a href="/simulador/minhas" class="btn btn-outline" style="padding:8px 16px;font-size:10px;">Minhas simulações</a>
@@ -1730,7 +1739,7 @@ app.get('/simulador/minhas', authMembro, async(req,res)=>{
   const slugs=fRows.rows.map(r=>r.slug);
   const navImpacto=slugs.some(s=>['embaixador','especificador','artista','colaborador'].includes(s))?'<a href="/meu-impacto" class="nav-link">Impacto</a>':'';
   res.send(html('Minhas simulações',`
-    ${navBar('simulador', !!navImpacto)}
+    ${navBar('simulador', !!navImpacto, slugs.includes('especificador'))}
     <a href="/simulador" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);display:inline-block;margin-bottom:24px;">← Voltar ao simulador</a>
     <h2 style="font-size:28px;margin-bottom:8px;">Minhas simulações</h2>
     <p style="color:var(--muted);margin-bottom:32px;">Suas simulações salvas. Elas ficam disponíveis por 20 dias. Limite de 10 salvas.</p>
@@ -1844,7 +1853,7 @@ app.get('/minhas-indicacoes', authMembro, async(req,res)=>{
     </div>`).join('');
 
   res.send(html('Minhas indicações',`
-    ${navBar('indicacoes', await temFuncaoComImpacto(req.membro.id))}
+    ${navBar('indicacoes', await temFuncaoComImpacto(req.membro.id), await ehEspecificador(req.membro.id))}
     <h2 style="font-size:28px;margin-bottom:8px;">Minhas indicações</h2>
     <p style="color:var(--muted);margin-bottom:32px;">Cada obra do catálogo tem seu próprio link. Toque em "Indicar esta obra" no catálogo para gerar um.</p>
     <div class="card" style="margin-bottom:24px;"><h3 style="font-size:16px;margin-bottom:12px;color:var(--gold);">Seus links por obra</h3>${itens||'<p style="color:var(--muted);padding:12px 0;">Você ainda não indicou nenhuma obra. Vá ao catálogo e toque em "Indicar esta obra".</p>'}</div>
@@ -1971,7 +1980,7 @@ app.post('/comprar/:obraId/adicionar', authMembro, async(req,res)=>{
 // Ver o carrinho
 app.get('/carrinho', authMembro, async(req,res)=>{
   const pedidoRes = await pool.query(`SELECT * FROM circulo_pedidos WHERE membro_id=$1 AND status='CARRINHO'`,[req.membro.id]);
-  const navBarHtml = navBar('carrinho', await temFuncaoComImpacto(req.membro.id));
+  const navBarHtml = navBar('carrinho', await temFuncaoComImpacto(req.membro.id), await ehEspecificador(req.membro.id));
   if(!pedidoRes.rows.length){
     return res.send(html('Carrinho',`${navBarHtml}<h2 style="font-size:28px;margin-bottom:16px;">Seu carrinho</h2><p style="color:var(--muted);">Vazio. Volte ao <a href="/catalogo">catálogo</a> para escolher uma obra.</p>`,true));
   }
@@ -2063,10 +2072,180 @@ app.get('/obra/:obraId/comprar', authMembro, async(req,res)=>{
 
 // ─── CATÁLOGO ─────────────────────────────────────────────────────────────────
 // ─── IDENTIFICAR — membro tira foto de uma peça fisica e o sistema reconhece qual obra e ──────
+// ─── ESPECIFICADOR — download de modelos 3D (.skp/.dwg/.obj) por obra+tamanho+moldura ──
+app.get('/modelos-3d', authMembro, async(req,res)=>{
+  if(!(await ehEspecificador(req.membro.id))){
+    return res.send(html('Modelos 3D', `<div class="card"><p style="color:var(--muted)">Esta ferramenta é exclusiva de membros com a função <strong style="color:var(--gold)">Especificador</strong> ativa. <a href="/minhas-funcoes" style="color:var(--gold)">Ativar função →</a></p></div>`, true));
+  }
+  const temImpacto = await temFuncaoComImpacto(req.membro.id);
+  const obrasComModelo = await pool.query(`
+    SELECT o.id, o.codigo, o.nome, o.colecao, o.imagem_preview
+    FROM almare_obras o
+    WHERE o.status='aprovada' AND EXISTS (SELECT 1 FROM circulo_modelos_3d m WHERE m.obra_id=o.id)
+    ORDER BY o.nome`);
+
+  let corpo = navBar('modelos3d', temImpacto, true);
+  corpo += `<h2 style="font-size:28px;margin-bottom:8px;">Modelos 3D</h2>`;
+  corpo += `<p style="color:var(--muted);margin-bottom:24px;">Escolha a obra, o tamanho e a moldura, e monte sua lista de download. Formatos disponíveis: .skp, .dwg, .obj.</p>`;
+
+  corpo += `<div id="carrinho-3d-resumo" class="card" style="margin-bottom:24px;display:none;position:sticky;top:12px;z-index:10;border-color:var(--gold);">
+    <div style="display:flex;justify-content:space-between;align-items:center;">
+      <div><strong id="carrinho-3d-contagem">0</strong> arquivo(s) na lista</div>
+      <div style="display:flex;gap:8px;">
+        <button onclick="limparCarrinho3d()" class="btn btn-outline" style="padding:8px 14px;font-size:11px;">Limpar</button>
+        <button onclick="baixarCarrinho3d()" class="btn btn-primary" style="padding:8px 14px;font-size:11px;">Baixar tudo (.zip)</button>
+      </div>
+    </div>
+    <div id="carrinho-3d-itens" style="margin-top:10px;font-size:12px;color:var(--muted);"></div>
+  </div>`;
+
+  if(!obrasComModelo.rows.length){
+    corpo += `<div class="card"><p style="color:var(--muted)">Nenhum modelo 3D disponível ainda. Em breve.</p></div>`;
+  }
+
+  obrasComModelo.rows.forEach(o=>{
+    corpo += `<div class="card" style="margin-bottom:16px;" data-obra="${o.id}">
+      <div style="display:flex;gap:14px;align-items:center;margin-bottom:14px;">
+        ${o.imagem_preview?`<img src="${o.imagem_preview}" style="width:56px;height:56px;object-fit:cover;border-radius:4px;">`:''}
+        <div><div style="font-size:10px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);">${o.colecao||''}</div>
+        <div style="font-family:'Cormorant Garamond',serif;font-size:19px;">${o.nome}</div></div>
+      </div>
+      <div id="opcoes-${o.id}" style="color:var(--muted);font-size:12px;">Carregando opções...</div>
+    </div>`;
+  });
+
+  corpo += `<script>
+    let CARRINHO3D = [];
+    const NOMES_MOLDURA_3D = { preta:'Preta', carvalho:'Carvalho', aco_escovado:'Aço escovado' };
+
+    document.querySelectorAll('[data-obra]').forEach(async (cardEl) => {
+      const obraId = cardEl.dataset.obra;
+      const r = await fetch('/modelos-3d/opcoes/' + obraId);
+      const d = await r.json();
+      const box = document.getElementById('opcoes-' + obraId);
+      if(!d.opcoes || !d.opcoes.length){ box.innerHTML = 'Sem modelos disponíveis.'; return; }
+
+      // Agrupa por tamanho+moldura, juntando os formatos disponiveis
+      const grupos = {};
+      d.opcoes.forEach(op => {
+        const chave = op.largura+'x'+op.altura+'_'+op.moldura;
+        if(!grupos[chave]) grupos[chave] = { largura:op.largura, altura:op.altura, moldura:op.moldura, formatos:[] };
+        grupos[chave].formatos.push(op.formato);
+      });
+
+      let html2 = '<div style="display:flex;flex-direction:column;gap:8px;">';
+      Object.values(grupos).forEach(g => {
+        const id = obraId+'_'+g.largura+'x'+g.altura+'_'+g.moldura;
+        html2 += '<div style="display:flex;justify-content:space-between;align-items:center;border-top:1px solid var(--border);padding-top:8px;">';
+        html2 += '<span style="color:var(--text);font-size:13px;">'+g.largura+'×'+g.altura+'cm · '+(NOMES_MOLDURA_3D[g.moldura]||g.moldura)+'</span>';
+        html2 += '<span style="display:flex;gap:6px;">';
+        g.formatos.forEach(f => {
+          html2 += '<button type="button" id="btn-'+id+'-'+f+'" onclick="toggleItem3d(\\''+obraId+'\\',\\''+d.nome.replace(/'/g,"")+'\\','+g.largura+','+g.altura+',\\''+g.moldura+'\\',\\''+f+'\\')" class="btn btn-outline" style="padding:5px 10px;font-size:10px;">.'+f+'</button>';
+        });
+        html2 += '</span></div>';
+      });
+      html2 += '</div>';
+      box.innerHTML = html2;
+    });
+
+    function toggleItem3d(obraId, obraNome, largura, altura, moldura, formato){
+      const idx = CARRINHO3D.findIndex(i => i.obraId===obraId && i.largura===largura && i.altura===altura && i.moldura===moldura && i.formato===formato);
+      const btn = document.getElementById('btn-'+obraId+'_'+largura+'x'+altura+'_'+moldura+'-'+formato);
+      if(idx >= 0){
+        CARRINHO3D.splice(idx,1);
+        if(btn){ btn.classList.remove('btn-primary'); btn.classList.add('btn-outline'); }
+      } else {
+        CARRINHO3D.push({ obraId, obraNome, largura, altura, moldura, formato });
+        if(btn){ btn.classList.remove('btn-outline'); btn.classList.add('btn-primary'); }
+      }
+      atualizarResumoCarrinho3d();
+    }
+
+    function atualizarResumoCarrinho3d(){
+      const resumo = document.getElementById('carrinho-3d-resumo');
+      const contagem = document.getElementById('carrinho-3d-contagem');
+      const itens = document.getElementById('carrinho-3d-itens');
+      if(CARRINHO3D.length === 0){ resumo.style.display = 'none'; return; }
+      resumo.style.display = 'block';
+      contagem.textContent = CARRINHO3D.length;
+      itens.innerHTML = CARRINHO3D.map(i => i.obraNome+' · '+i.largura+'×'+i.altura+'cm · '+(NOMES_MOLDURA_3D[i.moldura]||i.moldura)+' · .'+i.formato).join('<br>');
+    }
+
+    function limparCarrinho3d(){
+      CARRINHO3D = [];
+      document.querySelectorAll('[id^="btn-"]').forEach(b=>{ b.classList.remove('btn-primary'); b.classList.add('btn-outline'); });
+      atualizarResumoCarrinho3d();
+    }
+
+    async function baixarCarrinho3d(){
+      if(!CARRINHO3D.length) return;
+      const btn = event.target;
+      const textoOriginal = btn.textContent;
+      btn.disabled = true; btn.textContent = 'Preparando...';
+      try{
+        const r = await fetch('/modelos-3d/baixar', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ itens: CARRINHO3D }) });
+        if(!r.ok){ const t = await r.text(); alert('Erro: '+t); btn.disabled=false; btn.textContent=textoOriginal; return; }
+        const blob = await r.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = 'ALMARE_modelos-3d.zip';
+        document.body.appendChild(a); a.click(); a.remove();
+        window.URL.revokeObjectURL(url);
+      }catch(e){ alert('Erro ao baixar: '+e.message); }
+      btn.disabled = false; btn.textContent = textoOriginal;
+    }
+  </script>`;
+
+  res.send(html('Modelos 3D', corpo, true));
+});
+
+app.get('/modelos-3d/opcoes/:obraId', authMembro, async(req,res)=>{
+  try{
+    const obra = await pool.query('SELECT nome FROM almare_obras WHERE id=$1', [req.params.obraId]);
+    const opcoes = await pool.query('SELECT largura, altura, moldura, formato FROM circulo_modelos_3d WHERE obra_id=$1 ORDER BY largura, moldura, formato', [req.params.obraId]);
+    res.json({ nome: obra.rows[0]?.nome || '', opcoes: opcoes.rows });
+  }catch(e){ res.status(500).json({ erro: e.message }); }
+});
+
+app.post('/modelos-3d/baixar', authMembro, async(req,res)=>{
+  try{
+    if(!(await ehEspecificador(req.membro.id))) return res.status(403).send('Acesso restrito a especificadores.');
+    const { itens } = req.body;
+    if(!itens || !itens.length) return res.status(400).send('Nenhum item selecionado.');
+    if(itens.length > 50) return res.status(400).send('Máximo de 50 arquivos por download.');
+
+    const nomesMoldura = { preta:'Preta', carvalho:'Carvalho', aco_escovado:'Aco-Escovado' };
+    const zip = new AdmZip();
+
+    for(const item of itens){
+      const r = await pool.query(
+        'SELECT arquivo_nome, arquivo_data, formato FROM circulo_modelos_3d WHERE obra_id=$1 AND largura=$2 AND altura=$3 AND moldura=$4 AND formato=$5',
+        [item.obraId, item.largura, item.altura, item.moldura, item.formato]);
+      if(!r.rows.length) continue;
+      const m = r.rows[0];
+      const nomeObraLimpo = (item.obraNome||'obra').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^\w\s-]/g,'').trim().replace(/\s+/g,'-');
+      const nomeArquivo = `${nomeObraLimpo}_${item.largura}x${item.altura}cm_${nomesMoldura[item.moldura]||item.moldura}.${m.formato}`;
+      zip.addFile(nomeArquivo, m.arquivo_data);
+
+      await pool.query(
+        `INSERT INTO circulo_downloads_3d (membro_id, obra_id, obra_nome, largura, altura, moldura, formato) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+        [req.membro.id, item.obraId, item.obraNome, item.largura, item.altura, item.moldura, item.formato]);
+    }
+
+    const buf = zip.toBuffer();
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', 'attachment; filename="ALMARE_modelos-3d.zip"');
+    res.send(buf);
+  }catch(e){
+    console.error('ERRO DOWNLOAD 3D:', e.message);
+    res.status(500).send('Erro ao preparar download: ' + e.message);
+  }
+});
+
 app.get('/identificar', authMembro, async(req,res)=>{
   const temImpacto = await temFuncaoComImpacto(req.membro.id);
   res.send(html('Identificar obra',`
-    ${navBar('identificar', temImpacto)}
+    ${navBar('identificar', temImpacto, await ehEspecificador(req.membro.id))}
     <h2 style="font-size:28px;margin-bottom:8px;">Identificar obra</h2>
     <p style="color:var(--muted);margin-bottom:32px;">Tire uma foto de uma peça física e o sistema reconhece qual obra do acervo ALMARE ela é.</p>
     <div class="card">
@@ -2225,7 +2404,7 @@ app.get('/catalogo',authMembro,async(req,res)=>{
     const opcoesPaleta=paletas.map(p=>`<option value="${p.toLowerCase().replace(/\s+/g,'-')}">${p}</option>`).join('');
 
     res.send(html('Catálogo',`
-      ${navBar('obras', !!navImpacto)}
+      ${navBar('obras', !!navImpacto, slugs.includes('especificador'))}
 
       <!-- BARRA DE FILTROS -->
       <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:32px;align-items:center;">
@@ -2331,7 +2510,7 @@ app.get('/meu-impacto',authMembro,async(req,res)=>{
     const saldo=await pool.query('SELECT * FROM circulo_saldo_credito WHERE membro_id=$1',[req.membro.id]);
     const s=saldo.rows[0]||{saldo_disponivel:0,saldo_total:0};
     const linhas=trans.rows.map(t=>`<tr><td>Obra #${t.obra_id}</td><td>R$ ${parseFloat(t.valor_obra).toFixed(2).replace('.',',')}</td><td><span class="badge ${t.modalidade==='credito'?'badge-gold':'badge-muted'}">${t.modalidade==='credito'?'Crédito':'Cashback'}</span></td><td style="color:var(--gold)">R$ ${parseFloat(t.valor_beneficio).toFixed(2).replace('.',',')}</td><td><span class="badge ${t.status==='pago'?'badge-success':'badge-pending'}">${t.status}</span></td></tr>`).join('');
-    res.send(html('Impacto',`${navBar('impacto', true)}<div class="grid-2" style="margin-bottom:32px;"><div class="stat-box"><div class="num">R$ ${parseFloat(s.saldo_disponivel).toFixed(2).replace('.',',')}</div><div class="lbl">Crédito disponível</div></div><div class="stat-box"><div class="num">R$ ${parseFloat(s.saldo_total).toFixed(2).replace('.',',')}</div><div class="lbl">Total histórico</div></div></div><div class="card"><h3 style="font-size:18px;margin-bottom:20px;">Histórico</h3>${trans.rows.length?`<table><thead><tr><th>Obra</th><th>Valor</th><th>Modalidade</th><th>Benefício</th><th>Status</th></tr></thead><tbody>${linhas}</tbody></table>`:'<p style="color:var(--muted)">Nenhuma venda ainda.</p>'}</div>`,true));
+    res.send(html('Impacto',`${navBar('impacto', true, await ehEspecificador(req.membro.id))}<div class="grid-2" style="margin-bottom:32px;"><div class="stat-box"><div class="num">R$ ${parseFloat(s.saldo_disponivel).toFixed(2).replace('.',',')}</div><div class="lbl">Crédito disponível</div></div><div class="stat-box"><div class="num">R$ ${parseFloat(s.saldo_total).toFixed(2).replace('.',',')}</div><div class="lbl">Total histórico</div></div></div><div class="card"><h3 style="font-size:18px;margin-bottom:20px;">Histórico</h3>${trans.rows.length?`<table><thead><tr><th>Obra</th><th>Valor</th><th>Modalidade</th><th>Benefício</th><th>Status</th></tr></thead><tbody>${linhas}</tbody></table>`:'<p style="color:var(--muted)">Nenhuma venda ainda.</p>'}</div>`,true));
   }catch(e){res.send(html('Impacto',`<div class="msg-erro">${e.message}</div>`,true));}
 });
 
@@ -2339,7 +2518,7 @@ app.get('/meu-impacto',authMembro,async(req,res)=>{
 app.get('/sugestoes',authMembro,async(req,res)=>{
   const lista=await pool.query('SELECT * FROM circulo_sugestoes WHERE membro_id=$1 ORDER BY criado_em DESC',[req.membro.id]);
   const itens=lista.rows.map(s=>`<div style="padding:16px 0;border-bottom:1px solid var(--border);"><div style="display:flex;justify-content:space-between;margin-bottom:6px;"><span class="badge ${s.status==='incorporada'?'badge-success':s.status==='em_analise'?'badge-pending':'badge-muted'}">${s.status}</span><span style="font-size:11px;color:var(--muted)">${new Date(s.criado_em).toLocaleDateString('pt-BR')}</span></div><p style="font-size:13px;line-height:1.6;">${s.texto}</p>${s.resposta?`<p style="font-size:12px;color:var(--gold);margin-top:8px;font-style:italic;">↳ ${s.resposta}</p>`:''}</div>`).join('');
-  res.send(html('Voz',`${navBar('voz', await temFuncaoComImpacto(req.membro.id))}<h2 style="font-size:28px;margin-bottom:8px;">Sua voz no Círculo</h2><p style="color:var(--muted);margin-bottom:32px;">Sugira temas, formatos, ambientes. Anderson lê tudo.</p><div class="card" style="margin-bottom:24px;"><form method="POST" action="/sugestoes"><div class="field"><label>Sua sugestão</label><textarea name="texto" required placeholder="Uma ideia..."></textarea></div><button type="submit" class="btn btn-primary">Enviar</button></form></div>${lista.rows.length?`<div class="card"><h3 style="font-size:16px;margin-bottom:16px;">Anteriores</h3>${itens}</div>`:''}`,true));
+  res.send(html('Voz',`${navBar('voz', await temFuncaoComImpacto(req.membro.id), await ehEspecificador(req.membro.id))}<h2 style="font-size:28px;margin-bottom:8px;">Sua voz no Círculo</h2><p style="color:var(--muted);margin-bottom:32px;">Sugira temas, formatos, ambientes. Anderson lê tudo.</p><div class="card" style="margin-bottom:24px;"><form method="POST" action="/sugestoes"><div class="field"><label>Sua sugestão</label><textarea name="texto" required placeholder="Uma ideia..."></textarea></div><button type="submit" class="btn btn-primary">Enviar</button></form></div>${lista.rows.length?`<div class="card"><h3 style="font-size:16px;margin-bottom:16px;">Anteriores</h3>${itens}</div>`:''}`,true));
 });
 app.post('/sugestoes',authMembro,async(req,res)=>{
   await pool.query('INSERT INTO circulo_sugestoes (membro_id,texto) VALUES ($1,$2)',[req.membro.id,req.body.texto]);
@@ -2351,7 +2530,7 @@ app.get('/meu-convite',authMembro,async(req,res)=>{
   const conv=await pool.query('SELECT * FROM circulo_convites WHERE membro_id=$1 LIMIT 1',[req.membro.id]);
   const c=conv.rows[0];
   const link=c?`${BASE_URL}/convite/${c.codigo}`:'';
-  res.send(html('Convidar',`${navBar('convidar', await temFuncaoComImpacto(req.membro.id))}<h2 style="font-size:28px;margin-bottom:8px;">Seu link de convite</h2><p style="color:var(--muted);margin-bottom:32px;">Compartilhe com quem acredita que pertence ao Círculo.</p><div class="card"><div style="font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);margin-bottom:12px;">Link pessoal</div><div style="background:#0d0d0d;border:1px solid var(--border);border-radius:3px;padding:14px;font-size:13px;word-break:break-all;margin-bottom:16px;">${link}</div><button onclick="navigator.clipboard.writeText('${link}');this.textContent='Copiado ✓'" class="btn btn-outline">Copiar link</button><div style="margin-top:20px;font-size:12px;color:var(--muted)">${c?c.usos:0} pessoa(s) entrou pela sua indicação</div></div>`,true));
+  res.send(html('Convidar',`${navBar('convidar', await temFuncaoComImpacto(req.membro.id), await ehEspecificador(req.membro.id))}<h2 style="font-size:28px;margin-bottom:8px;">Seu link de convite</h2><p style="color:var(--muted);margin-bottom:32px;">Compartilhe com quem acredita que pertence ao Círculo.</p><div class="card"><div style="font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);margin-bottom:12px;">Link pessoal</div><div style="background:#0d0d0d;border:1px solid var(--border);border-radius:3px;padding:14px;font-size:13px;word-break:break-all;margin-bottom:16px;">${link}</div><button onclick="navigator.clipboard.writeText('${link}');this.textContent='Copiado ✓'" class="btn btn-outline">Copiar link</button><div style="margin-top:20px;font-size:12px;color:var(--muted)">${c?c.usos:0} pessoa(s) entrou pela sua indicação</div></div>`,true));
 });
 
 // ════════════════════════════════════════════════════════════════
@@ -2384,6 +2563,105 @@ app.post('/admin/bling/sincronizar', authAdmin, async (req, res) => {
     await new Promise(r => setTimeout(r, 1500)); // bem abaixo do limite de 3 req/s do Bling
   }
   res.redirect(`/admin?bling_sync=${ok}&bling_falhas=${encodeURIComponent(falhas.join(', '))}`);
+});
+
+// ─── ADMIN — MODELOS 3D (upload dos arquivos .skp/.dwg/.obj por obra+tamanho+moldura) ──
+const upload3d = multer({ storage: multer.memoryStorage(), limits: { fileSize: 60 * 1024 * 1024 } });
+
+app.get('/admin/modelos-3d', authAdmin, async(req,res)=>{
+  const obras = await pool.query(`SELECT id, codigo, nome, formato_recomendado, tamanhos_recomendados, imagem_preview FROM almare_obras WHERE status='aprovada' AND codigo <> 'ALM-001' ORDER BY nome`);
+  const modelos = await pool.query(`SELECT * FROM circulo_modelos_3d ORDER BY obra_id, largura, moldura, formato`);
+  const stats = await pool.query(`SELECT COUNT(*) total, COUNT(DISTINCT membro_id) especificadores FROM circulo_downloads_3d`);
+  const topObras = await pool.query(`
+    SELECT obra_nome, COUNT(*) qtd FROM circulo_downloads_3d GROUP BY obra_nome ORDER BY qtd DESC LIMIT 5`);
+
+  const modelosPorObra = {};
+  modelos.rows.forEach(m => { (modelosPorObra[m.obra_id] = modelosPorObra[m.obra_id] || []).push(m); });
+
+  const nomesMoldura = {preta:'Preta', carvalho:'Carvalho', aco_escovado:'Aço escovado'};
+
+  let corpo = `<a href="/admin" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);">← Voltar ao admin</a>`;
+  corpo += `<h2 style="font-size:28px;margin:12px 0 24px;">Modelos 3D para especificadores</h2>`;
+
+  corpo += `<div class="grid-3" style="margin-bottom:24px;">
+    <div class="stat-box"><div class="num">${stats.rows[0].total}</div><div class="lbl">Downloads totais</div></div>
+    <div class="stat-box"><div class="num">${stats.rows[0].especificadores}</div><div class="lbl">Especificadores ativos</div></div>
+    <div class="stat-box"><div class="num">${modelos.rows.length}</div><div class="lbl">Modelos cadastrados</div></div>
+  </div>`;
+
+  if(topObras.rows.length){
+    corpo += `<div class="card" style="margin-bottom:24px;"><div style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);margin-bottom:10px;">Mais baixadas</div>`;
+    topObras.rows.forEach(t => { corpo += `<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;"><span>${t.obra_nome}</span><span style="color:var(--gold);">${t.qtd}</span></div>`; });
+    corpo += `</div>`;
+  }
+
+  obras.rows.forEach(o => {
+    const tams = tamanhosOficiais(o.formato_recomendado, o.tamanhos_recomendados);
+    const meus = modelosPorObra[o.id] || [];
+    corpo += `<div class="card" style="margin-bottom:16px;">`;
+    corpo += `<div style="display:flex;gap:12px;align-items:center;margin-bottom:14px;">`;
+    corpo += o.imagem_preview ? `<img src="${o.imagem_preview}" style="width:48px;height:48px;object-fit:cover;border-radius:4px;">` : '';
+    corpo += `<div><strong>${o.nome}</strong> <span style="color:var(--muted);font-size:12px;">${o.codigo}</span></div></div>`;
+
+    if(meus.length){
+      corpo += `<div style="margin-bottom:14px;">`;
+      meus.forEach(m => {
+        corpo += `<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border);font-size:12px;">
+          <span>${m.largura}×${m.altura}cm · ${nomesMoldura[m.moldura]||m.moldura} · <strong>.${m.formato}</strong> · ${m.arquivo_nome}</span>
+          <form method="POST" action="/admin/modelos-3d/${m.id}/apagar" onsubmit="return confirm('Apagar este modelo?')"><button class="btn btn-outline" style="padding:3px 10px;font-size:10px;color:var(--danger);border-color:var(--danger);">Apagar</button></form>
+        </div>`;
+      });
+      corpo += `</div>`;
+    }
+
+    corpo += `<form method="POST" action="/admin/modelos-3d/upload" enctype="multipart/form-data" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">`;
+    corpo += `<input type="hidden" name="obra_id" value="${o.id}">`;
+    corpo += `<div class="field" style="flex:1;min-width:140px;"><label style="font-size:10px;">Tamanho</label><select name="tamanho_idx" required style="width:100%;padding:8px;background:#0d0d0d;border:1px solid var(--border);color:#fff;border-radius:3px;">`;
+    tams.forEach((t,idx)=>{ corpo += `<option value="${idx}" data-larg="${t.largura}" data-alt="${t.altura}">${t.label}</option>`; });
+    corpo += `</select></div>`;
+    corpo += `<div class="field" style="min-width:120px;"><label style="font-size:10px;">Moldura</label><select name="moldura" required style="width:100%;padding:8px;background:#0d0d0d;border:1px solid var(--border);color:#fff;border-radius:3px;">
+      <option value="preta">Preta</option><option value="carvalho">Carvalho</option><option value="aco_escovado">Aço escovado</option>
+    </select></div>`;
+    corpo += `<div class="field" style="min-width:100px;"><label style="font-size:10px;">Formato</label><select name="formato" required style="width:100%;padding:8px;background:#0d0d0d;border:1px solid var(--border);color:#fff;border-radius:3px;">
+      <option value="skp">.skp</option><option value="dwg">.dwg</option><option value="obj">.obj</option>
+    </select></div>`;
+    corpo += `<input type="hidden" name="largura" class="in-larg-${o.id}"><input type="hidden" name="altura" class="in-alt-${o.id}">`;
+    corpo += `<div class="field" style="flex:2;min-width:180px;"><label style="font-size:10px;">Arquivo</label><input type="file" name="arquivo" required style="width:100%;padding:6px;background:#0d0d0d;border:1px solid var(--border);color:#fff;border-radius:3px;font-size:11px;"></div>`;
+    corpo += `<button class="btn btn-primary" style="padding:9px 18px;font-size:11px;">Enviar</button>`;
+    corpo += `</form></div>`;
+  });
+
+  corpo += `<script>
+    document.querySelectorAll('select[name="tamanho_idx"]').forEach(sel=>{
+      const form = sel.closest('form');
+      function atualizar(){
+        const opt = sel.options[sel.selectedIndex];
+        form.querySelector('input[name="largura"]').value = opt.dataset.larg;
+        form.querySelector('input[name="altura"]').value = opt.dataset.alt;
+      }
+      sel.addEventListener('change', atualizar); atualizar();
+    });
+  </script>`;
+
+  res.send(html('Modelos 3D', corpo));
+});
+
+app.post('/admin/modelos-3d/upload', authAdmin, upload3d.single('arquivo'), async(req,res)=>{
+  try{
+    const { obra_id, largura, altura, moldura, formato } = req.body;
+    if(!req.file) return res.redirect('/admin/modelos-3d');
+    await pool.query(`
+      INSERT INTO circulo_modelos_3d (obra_id, largura, altura, moldura, formato, arquivo_nome, arquivo_data)
+      VALUES ($1,$2,$3,$4,$5,$6,$7)
+      ON CONFLICT (obra_id, largura, altura, moldura, formato) DO UPDATE SET arquivo_nome=$6, arquivo_data=$7, criado_em=NOW()`,
+      [obra_id, largura, altura, moldura, formato, req.file.originalname, req.file.buffer]);
+    res.redirect('/admin/modelos-3d');
+  }catch(e){ console.error('Upload modelo 3D:', e.message); res.redirect('/admin/modelos-3d'); }
+});
+
+app.post('/admin/modelos-3d/:id/apagar', authAdmin, async(req,res)=>{
+  await pool.query('DELETE FROM circulo_modelos_3d WHERE id=$1', [req.params.id]).catch(()=>{});
+  res.redirect('/admin/modelos-3d');
 });
 
 app.get('/admin',authAdmin,async(req,res)=>{
@@ -2433,6 +2711,10 @@ app.get('/admin',authAdmin,async(req,res)=>{
       <div class="stat-box"><div class="num">${pendentes.rows.length}</div><div class="lbl">Funções pendentes</div></div>
       <div class="stat-box"><div class="num">${membros.rows.length}</div><div class="lbl">Membros ativos</div></div>
       <div class="stat-box"><div class="num">${membros.rows.reduce((a,m)=>a+parseInt(m.obras_que_encontraram_lar||0),0)}</div><div class="lbl">Obras que encontraram lar</div></div>
+    </div>
+    <div class="card" style="margin-bottom:24px;display:flex;justify-content:space-between;align-items:center;">
+      <div><strong>Modelos 3D para especificadores</strong><br><span style="font-size:12px;color:var(--muted)">Arquivos .skp/.dwg/.obj por obra, tamanho e moldura</span></div>
+      <a href="/admin/modelos-3d" class="btn btn-outline" style="padding:8px 16px;font-size:11px;">Gerenciar</a>
     </div>
     <div class="card" style="margin-bottom:24px;display:flex;justify-content:space-between;align-items:center;">
       <div>
@@ -2510,6 +2792,30 @@ async function garantirTabelas(){
         expira_em TIMESTAMPTZ,
         autorizado BOOLEAN DEFAULT FALSE,
         CONSTRAINT circulo_bling_config_singleton CHECK (id = 1)
+      );`);
+    // Modelos 3D por obra+tamanho+moldura+formato, para download pelos especificadores
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS circulo_modelos_3d (
+        id SERIAL PRIMARY KEY,
+        obra_id INTEGER REFERENCES almare_obras(id) ON DELETE CASCADE,
+        largura INTEGER NOT NULL,
+        altura INTEGER NOT NULL,
+        moldura VARCHAR(20) NOT NULL,
+        formato VARCHAR(10) NOT NULL,
+        arquivo_nome VARCHAR(255) NOT NULL,
+        arquivo_data BYTEA NOT NULL,
+        criado_em TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(obra_id, largura, altura, moldura, formato)
+      );`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS circulo_downloads_3d (
+        id SERIAL PRIMARY KEY,
+        membro_id INTEGER REFERENCES circulo_membros(id) ON DELETE SET NULL,
+        obra_id INTEGER,
+        obra_nome VARCHAR(255),
+        largura INTEGER, altura INTEGER,
+        moldura VARCHAR(20), formato VARCHAR(10),
+        baixado_em TIMESTAMPTZ DEFAULT NOW()
       );`);
     await pool.query(`
       CREATE TABLE IF NOT EXISTS circulo_obra_links (
