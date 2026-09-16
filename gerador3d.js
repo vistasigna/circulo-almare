@@ -34,7 +34,10 @@ function montarGeometria(builder, larguraCm, alturaCm, profundidadeCm, corMoldur
 
   return builder.addComponentDefinition(nomeComponente, (def) => {
     // Face da obra — encaixada, na frente (Y=P), com borda de moldura visivel ao redor. Normal +Y (conferida).
-    def.addFace([[bx,P,A-bz],[L-bx,P,A-bz],[L-bx,P,bz],[bx,P,bz]], { material: materialObra });
+    // UV explicito (0,0 a 1,1) — sem isso a textura ladrilha (repete) em vez de cobrir a face uma unica vez.
+    const pObra = [[bx,P,A-bz],[L-bx,P,A-bz],[L-bx,P,bz],[bx,P,bz]];
+    const uvObra = [[pObra[0],[0,1]],[pObra[1],[1,1]],[pObra[3],[0,0]]]; // 3 pontos bastam — o 4o e resolvido pela geometria
+    def.addFace(pObra, { material: materialObra, frontUv: uvObra });
 
     // Moldura frontal — 4 tiras formando o quadro ao redor da obra, todas no plano Y=P, normal +Y (conferida)
     def.addFace([[0,P,bz],[L,P,bz],[L,P,0],[0,P,0]], { material: materialMoldura }); // tira de baixo
