@@ -113,7 +113,7 @@ async function salvarContatoBling(dados, blingId) {
   const documentoLimpo = (dados.documento || '').replace(/\D/g, '');
   const isCNPJ = documentoLimpo.length > 11;
 
-  const body = { nome: dados.nome, tipo: isCNPJ ? 'J' : 'F' };
+  const body = { nome: dados.nome, tipo: isCNPJ ? 'J' : 'F', situacao: 'A' };
   if (dados.email) body.email = dados.email;
   if (dados.telefone) body.telefone = dados.telefone;
   if (dados.celular) body.celular = dados.celular;
