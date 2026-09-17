@@ -2347,6 +2347,14 @@ app.post('/pedido/:token/pagar', async(req,res)=>{
 
 
 // Página de compra de uma obra (escolher tamanho, moldura, quantidade)
+// Tamanhos oficiais da obra (com preço), pra exibir no catálogo assim que a pessoa abre a obra
+app.get('/obra/:obraId/tamanhos-json', authMembro, async(req,res)=>{
+  try{
+    const tamanhos = await tamanhosDaObra(parseInt(req.params.obraId));
+    res.json({ tamanhos: tamanhos.map(t=>({ id:t.id, label:t.label, preco:t.preco, precoLabel: 'R$ '+t.preco.toLocaleString('pt-BR') })) });
+  }catch(e){ res.status(500).json({ erro: e.message }); }
+});
+
 app.get('/obra/:obraId/comprar', authMembro, async(req,res)=>{
   const obraId = parseInt(req.params.obraId);
   const obra = await pool.query('SELECT id,nome,colecao,imagem_preview FROM almare_obras WHERE id=$1 AND status=\'aprovada\'',[obraId]);
@@ -2357,6 +2365,8 @@ app.get('/obra/:obraId/comprar', authMembro, async(req,res)=>{
 
   const opcoesTam = tamanhos.map(t=>`<option value="${t.id}">${esc(t.label)} · R$ ${t.preco.toLocaleString('pt-BR')}</option>`).join('');
   const codigoInd = req.query.ref || '';
+  const tamanhoPreSel = req.query.tamanho_id !== undefined ? parseInt(req.query.tamanho_id) : null;
+  const moldPreSel = req.query.moldura || '';
 
   res.send(html('Comprar',`
     <a href="/catalogo" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);display:inline-block;margin-bottom:24px;">← Voltar às obras</a>
@@ -2366,12 +2376,12 @@ app.get('/obra/:obraId/comprar', authMembro, async(req,res)=>{
     <div class="card">
       <form method="POST" action="/comprar/${obraId}/adicionar">
         <input type="hidden" name="codigo_indicacao" value="${esc(codigoInd)}">
-        <div class="field"><label>Tamanho</label><select name="tamanho_id" required>${opcoesTam}</select></div>
+        <div class="field"><label>Tamanho</label><select name="tamanho_id" required>${tamanhos.map(t=>`<option value="${t.id}" ${tamanhoPreSel===t.id?'selected':''}>${esc(t.label)} · R$ ${t.preco.toLocaleString('pt-BR')}</option>`).join('')}</select></div>
         <div class="field"><label>Moldura</label>
           <select name="moldura" required>
-            <option value="preta">Preta</option>
-            <option value="carvalho">Carvalho</option>
-            <option value="aco_escovado">Aço escovado</option>
+            <option value="preta" ${moldPreSel==='preta'?'selected':''}>Preta</option>
+            <option value="carvalho" ${moldPreSel==='carvalho'?'selected':''}>Carvalho</option>
+            <option value="aco_escovado" ${moldPreSel==='aco_escovado'?'selected':''}>Aço escovado</option>
           </select>
         </div>
         <div class="field"><label>Quantidade</label><input type="number" name="quantidade" value="1" min="1" max="20"></div>
@@ -2413,7 +2423,7 @@ app.get('/catalogo',authMembro,async(req,res)=>{
     const cardsHtml=obras.rows.map(o=>{
       let detalhe=campo('Conceito',o.conceito)+campo('Essência',o.essencia)+campo('Sensação',o.sensacao_provocada)+campo('O que permanece',o.o_que_permanece)+campo('Ambientes',o.ambientes_compativeis)+campo('Texto curatorial',o.texto_curatorial)+campo('Paleta',o.paleta)+campo('Cores',o.paleta_detalhe);
       if(isEmbaixador||isEspecificador||isCurador) detalhe+=campo('Perfil de cliente',o.perfil_de_cliente);
-      if(isEspecificador||isCurador) detalhe+=campo('Nível de destaque',o.nivel_de_destaque)+campo('Personalidade',o.personalidade_da_obra)+campo('Perfil arquitetônico',o.perfil_arquitetonico)+campo('Composição múltipla',o.possibilidade_composicao)+campo('Tamanhos recomendados',o.tamanhos_recomendados)+campo('Formato recomendado',o.formato_recomendado);
+      if(isEspecificador||isCurador) detalhe+=campo('Nível de destaque',o.nivel_de_destaque)+campo('Personalidade',o.personalidade_da_obra)+campo('Perfil arquitetônico',o.perfil_arquitetonico)+campo('Composição múltipla',o.possibilidade_composicao);
       if(isCurador) detalhe+=campo('Nota do curador',o.nota_curador)+campo('Potencial',o.potencial_nota?o.potencial_nota+'/100':'')+campo('Justificativa',o.potencial_justificativa)+campo('Obs. produção',o.observacoes_producao)+campo('Descrição comercial',o.descricao_comercial);
 
       const palataAttr=o.paleta?o.paleta.toLowerCase().replace(/\s+/g,'-'):'';
@@ -2502,18 +2512,20 @@ app.get('/catalogo',authMembro,async(req,res)=>{
                 <img src="\${img.src}" style="max-width:100%;max-height:480px;width:auto;height:auto;object-fit:contain;display:block;">
               </div>
             </div>\`;
-            html+=\`<div style="display:flex;gap:8px;align-items:center;justify-content:center;margin-bottom:24px;">
+            html+=\`<div style="display:flex;gap:8px;align-items:center;justify-content:center;margin-bottom:16px;">
               <span style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-right:8px;">Moldura:</span>
               <button type="button" onclick="trocarMolduraModal('#1a1a1a',this)" data-cor="preta" style="width:32px;height:32px;background:#1a1a1a;border:2px solid var(--gold);border-radius:3px;cursor:pointer;" title="Preta"></button>
               <button type="button" onclick="trocarMolduraModal('#8a6d3b',this)" data-cor="carvalho" style="width:32px;height:32px;background:#8a6d3b;border:2px solid var(--border);border-radius:3px;cursor:pointer;" title="Carvalho"></button>
               <button type="button" onclick="trocarMolduraModal('#9a9a9a',this)" data-cor="aco_escovado" style="width:32px;height:32px;background:linear-gradient(135deg,#aaa,#777);border:2px solid var(--border);border-radius:3px;cursor:pointer;" title="Aço escovado"></button>
             </div>\`;
+            html+=\`<div id="tamanhos-obra-\${id}" style="text-align:center;margin-bottom:24px;font-size:12px;color:var(--muted);">Carregando tamanhos disponíveis...</div>\`;
+            carregarTamanhosModal(id);
           }
           html+=\`<div style="font-size:10px;letter-spacing:.25em;text-transform:uppercase;color:var(--muted);margin-bottom:6px;">\${colecao}</div>\`;
           html+=\`<h2 style="font-family:'Cormorant Garamond',serif;font-size:28px;font-weight:400;margin-bottom:24px;">\${nome}</h2>\`;
           html+=\`<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 32px;">\${src.innerHTML}</div>\`;
           html+=\`<a href="/obra/\${id}/link" class="btn btn-outline btn-full" style="margin-top:24px;">Indicar esta obra</a>\`;
-          html+=\`<a href="/obra/\${id}/comprar" class="btn btn-primary btn-full" style="margin-top:10px;">Adicionar ao carrinho</a>\`;
+          html+=\`<a href="/obra/\${id}/comprar" id="link-comprar-\${id}" class="btn btn-primary btn-full" style="margin-top:10px;">Adicionar ao carrinho</a>\`;
           document.getElementById('modal-body').innerHTML=html;
           document.getElementById('modal').style.display='block';
           document.body.style.overflow='hidden';
@@ -2525,6 +2537,45 @@ app.get('/catalogo',authMembro,async(req,res)=>{
           const grupo = btn.parentElement;
           grupo.querySelectorAll('button').forEach(b=>{ b.style.borderColor = 'var(--border)'; });
           btn.style.borderColor = 'var(--gold)';
+          MODAL_SELECAO.moldura = btn.dataset.cor;
+          atualizarLinkComprar(MODAL_SELECAO.obraId);
+        }
+
+        let MODAL_SELECAO = { obraId: null, moldura: 'preta', tamanhoIdx: null };
+
+        async function carregarTamanhosModal(obraId){
+          MODAL_SELECAO = { obraId, moldura: 'preta', tamanhoIdx: null };
+          const box = document.getElementById('tamanhos-obra-'+obraId);
+          try{
+            const r = await fetch('/obra/'+obraId+'/tamanhos-json');
+            const d = await r.json();
+            const tams = d.tamanhos || [];
+            if(!tams.length){ box.innerHTML = 'Sem tamanhos cadastrados para esta obra.'; return; }
+            let html2 = '<div style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:8px;">Tamanhos disponíveis:</div>';
+            html2 += '<div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center;">';
+            tams.forEach((t)=>{
+              html2 += '<button type="button" onclick="escolherTamanhoModal('+t.id+',this)" class="btn btn-outline" style="padding:8px 14px;font-size:11px;">'+t.label+' &middot; '+t.precoLabel+'</button>';
+            });
+            html2 += '</div>';
+            box.innerHTML = html2;
+          }catch(e){ box.innerHTML = 'Não consegui carregar os tamanhos.'; }
+        }
+
+        function escolherTamanhoModal(idx, btn){
+          const grupo = btn.parentElement;
+          grupo.querySelectorAll('button').forEach(b=>{ b.classList.remove('btn-primary'); b.classList.add('btn-outline'); });
+          btn.classList.remove('btn-outline'); btn.classList.add('btn-primary');
+          MODAL_SELECAO.tamanhoIdx = idx;
+          atualizarLinkComprar(MODAL_SELECAO.obraId);
+        }
+
+        function atualizarLinkComprar(obraId){
+          const link = document.getElementById('link-comprar-'+obraId);
+          if(!link) return;
+          const params = new URLSearchParams();
+          if(MODAL_SELECAO.tamanhoIdx !== null) params.set('tamanho_id', MODAL_SELECAO.tamanhoIdx);
+          if(MODAL_SELECAO.moldura) params.set('moldura', MODAL_SELECAO.moldura);
+          link.href = '/obra/'+obraId+'/comprar' + (params.toString() ? '?'+params.toString() : '');
         }
 
         function fecharModal(e){
