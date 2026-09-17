@@ -2132,18 +2132,29 @@ async function garantirClienteAsaas(clienteMembroId){
   if(!r.rows.length) throw new Error('Cliente não encontrado.');
   const c = r.rows[0];
   if(!c.documento) throw new Error('O cliente precisa ter CPF/CNPJ cadastrado em "Meus dados" antes de gerar o pagamento.');
+  if(!c.cep || !c.numero) throw new Error('O cliente precisa completar CEP e número do endereço em "Meus dados" antes de gerar o pagamento — assim ele não precisa preencher tudo de novo na hora de pagar.');
+  if(!c.celular && !c.telefone) throw new Error('O cliente precisa cadastrar um telefone/celular em "Meus dados" antes de gerar o pagamento.');
+
+  // Manda o endereço completo — o Asaas resolve rua/bairro/cidade sozinho a partir do CEP + número,
+  // então a fatura já chega pronta e o cliente não precisa preencher nada de novo.
+  const dadosAsaas = {
+    name: c.nome, cpfCnpj: c.documento.replace(/\D/g,''), email: c.email,
+    phone: c.telefone || c.celular, mobilePhone: c.celular || c.telefone,
+    postalCode: c.cep.replace(/\D/g,''), addressNumber: c.numero,
+    complement: c.complemento || undefined,
+    externalReference: 'circulo-membro-'+c.id
+  };
 
   if(c.asaas_cliente_id){
+    // Sempre re-sincroniza — se o cliente completou/corrigiu os dados depois da primeira vez,
+    // a ficha no Asaas não pode ficar desatualizada e voltar a pedir tudo de novo na fatura.
+    try{
+      await asaasRequest('PUT', '/customers/'+c.asaas_cliente_id, dadosAsaas);
+    }catch(e){ console.error('Sync cliente Asaas:', e.message); }
     return c.asaas_cliente_id;
   }
-  const novo = await asaasRequest('POST', '/customers', {
-    name: c.nome, cpfCnpj: c.documento.replace(/\D/g,''), email: c.email,
-    phone: c.telefone || c.celular || undefined, mobilePhone: c.celular || undefined,
-    postalCode: c.cep ? c.cep.replace(/\D/g,'') : undefined,
-    address: c.endereco || undefined, addressNumber: c.numero || undefined,
-    complement: c.complemento || undefined, province: c.bairro || undefined,
-    externalReference: 'circulo-membro-'+c.id
-  });
+
+  const novo = await asaasRequest('POST', '/customers', dadosAsaas);
   await pool.query('UPDATE circulo_membros SET asaas_cliente_id=$1 WHERE id=$2',[novo.id, c.id]);
   return novo.id;
 }
