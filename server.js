@@ -1956,30 +1956,22 @@ app.get('/carrinho', authMembro, async(req,res)=>{
       <form method="POST" action="/carrinho/${it.id}/remover"><button class="btn btn-outline" style="padding:6px 12px;font-size:10px;">Remover</button></form>
     </div>`).join('');
 
-  // Cliente já vinculado a este pedido?
-  let clienteHtml = '';
-  if(p.cliente_membro_id){
-    const cliente = await pool.query('SELECT nome,email,codigo_membro FROM circulo_membros WHERE id=$1',[p.cliente_membro_id]);
-    const c = cliente.rows[0];
-    clienteHtml = `
-      <div style="display:flex;justify-content:space-between;align-items:center;padding:14px;background:rgba(46,204,113,.06);border:1px solid rgba(46,204,113,.25);border-radius:4px;margin-bottom:16px;">
-        <div><div style="font-size:10px;letter-spacing:.15em;text-transform:uppercase;color:var(--success);margin-bottom:4px;">Cliente deste pedido</div>
-        <div style="font-size:15px;">${esc(c.nome)} <span style="color:var(--muted);font-size:12px;">· ${esc(c.email)}</span></div></div>
-        <button onclick="document.getElementById('trocar-cliente').style.display='block';this.parentElement.style.display='none';" class="btn btn-outline" style="padding:6px 12px;font-size:10px;">Trocar</button>
-      </div>
-      <div id="trocar-cliente" style="display:none;"></div>`;
-  }
-
-  const buscaHtml = `
-    <div id="busca-cliente-area" ${p.cliente_membro_id?'style="display:none;"':''}>
-      <div class="field"><label>E-mail do cliente (quem vai receber a obra)</label>
-        <div style="display:flex;gap:8px;">
-          <input type="email" id="email-cliente" placeholder="cliente@email.com" style="flex:1;">
-          <button type="button" onclick="buscarCliente()" class="btn btn-outline" style="white-space:nowrap;">Buscar</button>
-        </div>
-      </div>
-      <div id="resultado-busca-cliente" style="margin-top:12px;"></div>
+  // Cliente já vinculado a este pedido? Mostra os dados que confirmam a identidade dele.
+  let clienteBox = `
+    <div id="cliente-confirmado" style="display:none;padding:16px;background:rgba(46,204,113,.06);border:1px solid rgba(46,204,113,.25);border-radius:4px;margin-bottom:16px;">
+      <div style="font-size:10px;letter-spacing:.15em;text-transform:uppercase;color:var(--success);margin-bottom:8px;">✓ Cliente deste pedido — a obra será faturada e registrada no nome dele</div>
+      <div id="cliente-confirmado-dados" style="font-size:15px;margin-bottom:12px;"></div>
+      <button type="button" onclick="trocarCliente()" class="btn btn-outline" style="padding:6px 12px;font-size:10px;">Trocar cliente</button>
     </div>`;
+
+  let clienteInicialScript = '';
+  if(p.cliente_membro_id){
+    const cliente = await pool.query('SELECT id,nome,documento,cidade,estado FROM circulo_membros WHERE id=$1',[p.cliente_membro_id]);
+    if(cliente.rows.length){
+      const c = cliente.rows[0];
+      clienteInicialScript = `mostrarClienteConfirmado(${JSON.stringify({id:c.id,nome:c.nome,documento:c.documento,cidade:c.cidade,estado:c.estado})});`;
+    }
+  }
 
   res.send(html('Carrinho',`
     ${navBar}
@@ -1991,50 +1983,99 @@ app.get('/carrinho', authMembro, async(req,res)=>{
         <span style="font-family:'Cormorant Garamond',serif;font-size:28px;color:var(--gold);">R$ ${parseFloat(p.total).toFixed(2).replace('.',',')}</span>
       </div>
     </div>
+
     <div class="card" style="margin-bottom:20px;">
-      <h3 style="font-size:18px;margin-bottom:16px;">Cliente do pedido</h3>
-      <p style="color:var(--muted);font-size:13px;margin-bottom:16px;">A obra é registrada e faturada em nome do cliente final. Mesmo que você mesmo seja o comprador, é preciso vincular um cliente — ele precisa ser membro do Círculo.</p>
-      ${clienteHtml}
-      ${buscaHtml}
+      <h3 style="font-size:18px;margin-bottom:6px;">Cliente do pedido</h3>
+      <p style="color:var(--muted);font-size:13px;margin-bottom:16px;">Quem vai ficar com a obra. Mesmo que seja você mesmo comprando, informe seus dados aqui. O cliente precisa ser membro do Círculo.</p>
+      ${clienteBox}
+      <div id="busca-cliente-area">
+        <div class="field">
+          <label>Nome ou CPF/CNPJ do cliente</label>
+          <div style="display:flex;gap:8px;">
+            <input type="text" id="termo-cliente" placeholder="Digite o nome ou CPF/CNPJ" style="flex:1;">
+            <button type="button" onclick="buscarCliente()" class="btn btn-outline" style="white-space:nowrap;">Buscar</button>
+          </div>
+        </div>
+        <div id="resultado-busca-cliente" style="margin-top:12px;"></div>
+      </div>
     </div>
+
     <div class="card">
       <h3 style="font-size:18px;margin-bottom:16px;">Finalizar compra</h3>
       <p style="color:var(--muted);font-size:13px;margin-bottom:16px;">O pagamento online estará disponível em breve. Por enquanto, entre em contato para concluir o pedido.</p>
       <button class="btn btn-primary btn-full" disabled style="opacity:.5;cursor:not-allowed;">Finalizar e pagar (em breve)</button>
     </div>
+
     <script>
-      async function buscarCliente(){
-        const email = document.getElementById('email-cliente').value.trim();
-        const res = document.getElementById('resultado-busca-cliente');
-        if(!email){ res.innerHTML='<div class="msg-erro">Digite um e-mail.</div>'; return; }
-        res.innerHTML = '<p style="color:var(--muted);font-size:13px;">Buscando...</p>';
-        try{
-          const r = await fetch('/carrinho/buscar-cliente?email='+encodeURIComponent(email));
-          const d = await r.json();
-          if(d.encontrado){
-            res.innerHTML = '<div class="card" style="padding:16px;"><div style="margin-bottom:12px;">'+d.nome+' · '+d.email+'</div><button onclick="vincularCliente('+d.id+')" class="btn btn-primary">Vincular este cliente ao pedido</button></div>';
-          } else {
-            res.innerHTML = '<div class="msg-info">Este e-mail ainda não é membro do Círculo. Para registrar a obra em nome dele, é preciso que ele se torne membro primeiro. <a href="/convite">Enviar convite</a></div>';
-          }
-        }catch(e){ res.innerHTML = '<div class="msg-erro">Erro ao buscar.</div>'; }
+      function mostrarClienteConfirmado(c){
+        const linhaDoc = c.documento ? ' · '+c.documento : '';
+        const linhaCidade = (c.cidade ? ' · '+c.cidade+(c.estado?'/'+c.estado:'') : '');
+        document.getElementById('cliente-confirmado-dados').innerHTML = '<strong>'+c.nome+'</strong>'+linhaDoc+linhaCidade;
+        document.getElementById('cliente-confirmado').style.display = 'block';
+        document.getElementById('busca-cliente-area').style.display = 'none';
       }
-      async function vincularCliente(id){
+      function trocarCliente(){
+        document.getElementById('cliente-confirmado').style.display = 'none';
+        document.getElementById('busca-cliente-area').style.display = 'block';
+        document.getElementById('resultado-busca-cliente').innerHTML = '';
+        document.getElementById('termo-cliente').value = '';
+      }
+      async function buscarCliente(){
+        const termo = document.getElementById('termo-cliente').value.trim();
+        const areaResultado = document.getElementById('resultado-busca-cliente');
+        if(!termo){ areaResultado.innerHTML='<div class="msg-erro">Digite o nome ou CPF/CNPJ.</div>'; return; }
+        areaResultado.innerHTML = '<p style="color:var(--muted);font-size:13px;">Buscando...</p>';
         try{
-          await fetch('/carrinho/definir-cliente', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ cliente_membro_id: id }) });
-          location.reload();
+          const r = await fetch('/carrinho/buscar-cliente?termo='+encodeURIComponent(termo));
+          const d = await r.json();
+          if(!d.resultados || !d.resultados.length){
+            areaResultado.innerHTML = '<div class="msg-info">Nenhum membro encontrado com esse nome/CPF. O cliente precisa se cadastrar no Círculo primeiro. <a href="/convite">Enviar convite</a></div>';
+            return;
+          }
+          let htmlLista = '';
+          d.resultados.forEach(c=>{
+            const linhaDoc = c.documento ? c.documento : 'sem CPF/CNPJ cadastrado';
+            const linhaCidade = c.cidade ? (c.cidade+(c.estado?'/'+c.estado:'')) : '';
+            htmlLista += '<div style="display:flex;justify-content:space-between;align-items:center;padding:14px;border:1px solid var(--border);border-radius:4px;margin-bottom:8px;">';
+            htmlLista += '<div><div style="font-size:15px;margin-bottom:2px;">'+c.nome+'</div><div style="font-size:12px;color:var(--muted);">'+linhaDoc+(linhaCidade?' · '+linhaCidade:'')+'</div></div>';
+            htmlLista += '<button onclick=\\'selecionarCliente('+JSON.stringify(c)+')\\' class="btn btn-primary" style="padding:8px 16px;font-size:11px;">Selecionar</button>';
+            htmlLista += '</div>';
+          });
+          areaResultado.innerHTML = htmlLista;
+        }catch(e){ areaResultado.innerHTML = '<div class="msg-erro">Erro ao buscar.</div>'; }
+      }
+      async function selecionarCliente(c){
+        try{
+          await fetch('/carrinho/definir-cliente', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ cliente_membro_id: c.id }) });
+          mostrarClienteConfirmado(c);
         }catch(e){ alert('Erro ao vincular cliente.'); }
       }
+      ${clienteInicialScript}
     </script>
   `,true));
 });
 
-// Busca um membro por e-mail (para vincular como cliente do pedido)
+// Busca membros por nome OU CPF/CNPJ (para identificar e vincular como cliente do pedido)
 app.get('/carrinho/buscar-cliente', authMembro, async(req,res)=>{
-  const email = String(req.query.email||'').trim();
-  if(!email) return res.json({ encontrado:false });
-  const r = await pool.query('SELECT id,nome,email FROM circulo_membros WHERE email=$1',[email]);
-  if(!r.rows.length) return res.json({ encontrado:false });
-  res.json({ encontrado:true, id:r.rows[0].id, nome:esc(r.rows[0].nome), email:esc(r.rows[0].email) });
+  const termo = String(req.query.termo||'').trim();
+  if(!termo) return res.json({ resultados:[] });
+  const soDigitos = termo.replace(/\D/g,'');
+  let r;
+  if(soDigitos.length >= 5){
+    // parece CPF/CNPJ — busca por documento (ignorando pontuação) OU nome, o que vier
+    r = await pool.query(
+      `SELECT id,nome,documento,cidade,estado FROM circulo_membros
+       WHERE regexp_replace(COALESCE(documento,''),'\\D','','g') LIKE $1 OR nome ILIKE $2
+       LIMIT 8`,
+      ['%'+soDigitos+'%', '%'+termo+'%']
+    );
+  } else {
+    r = await pool.query(
+      `SELECT id,nome,documento,cidade,estado FROM circulo_membros WHERE nome ILIKE $1 LIMIT 8`,
+      ['%'+termo+'%']
+    );
+  }
+  res.json({ resultados: r.rows.map(c=>({ id:c.id, nome:esc(c.nome), documento:c.documento||'', cidade:c.cidade||'', estado:c.estado||'' })) });
 });
 
 // Vincula o cliente (membro) ao pedido/carrinho atual
