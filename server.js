@@ -1983,6 +1983,7 @@ app.get('/carrinho', authMembro, async(req,res)=>{
         <span style="font-family:'Cormorant Garamond',serif;font-size:28px;color:var(--gold);">R$ ${parseFloat(p.total).toFixed(2).replace('.',',')}</span>
       </div>
     </div>
+    <a href="/catalogo" class="btn btn-outline btn-full" style="margin-bottom:20px;">+ Adicionar outra obra</a>
 
     <div class="card" style="margin-bottom:20px;">
       <h3 style="font-size:18px;margin-bottom:6px;">Cliente do pedido</h3>
