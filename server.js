@@ -1956,6 +1956,31 @@ app.get('/carrinho', authMembro, async(req,res)=>{
       <form method="POST" action="/carrinho/${it.id}/remover"><button class="btn btn-outline" style="padding:6px 12px;font-size:10px;">Remover</button></form>
     </div>`).join('');
 
+  // Cliente já vinculado a este pedido?
+  let clienteHtml = '';
+  if(p.cliente_membro_id){
+    const cliente = await pool.query('SELECT nome,email,codigo_membro FROM circulo_membros WHERE id=$1',[p.cliente_membro_id]);
+    const c = cliente.rows[0];
+    clienteHtml = `
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:14px;background:rgba(46,204,113,.06);border:1px solid rgba(46,204,113,.25);border-radius:4px;margin-bottom:16px;">
+        <div><div style="font-size:10px;letter-spacing:.15em;text-transform:uppercase;color:var(--success);margin-bottom:4px;">Cliente deste pedido</div>
+        <div style="font-size:15px;">${esc(c.nome)} <span style="color:var(--muted);font-size:12px;">· ${esc(c.email)}</span></div></div>
+        <button onclick="document.getElementById('trocar-cliente').style.display='block';this.parentElement.style.display='none';" class="btn btn-outline" style="padding:6px 12px;font-size:10px;">Trocar</button>
+      </div>
+      <div id="trocar-cliente" style="display:none;"></div>`;
+  }
+
+  const buscaHtml = `
+    <div id="busca-cliente-area" ${p.cliente_membro_id?'style="display:none;"':''}>
+      <div class="field"><label>E-mail do cliente (quem vai receber a obra)</label>
+        <div style="display:flex;gap:8px;">
+          <input type="email" id="email-cliente" placeholder="cliente@email.com" style="flex:1;">
+          <button type="button" onclick="buscarCliente()" class="btn btn-outline" style="white-space:nowrap;">Buscar</button>
+        </div>
+      </div>
+      <div id="resultado-busca-cliente" style="margin-top:12px;"></div>
+    </div>`;
+
   res.send(html('Carrinho',`
     ${navBar}
     <h2 style="font-size:28px;margin-bottom:24px;">Seu carrinho</h2>
@@ -1966,13 +1991,63 @@ app.get('/carrinho', authMembro, async(req,res)=>{
         <span style="font-family:'Cormorant Garamond',serif;font-size:28px;color:var(--gold);">R$ ${parseFloat(p.total).toFixed(2).replace('.',',')}</span>
       </div>
     </div>
+    <div class="card" style="margin-bottom:20px;">
+      <h3 style="font-size:18px;margin-bottom:16px;">Cliente do pedido</h3>
+      <p style="color:var(--muted);font-size:13px;margin-bottom:16px;">A obra é registrada e faturada em nome do cliente final. Mesmo que você mesmo seja o comprador, é preciso vincular um cliente — ele precisa ser membro do Círculo.</p>
+      ${clienteHtml}
+      ${buscaHtml}
+    </div>
     <div class="card">
       <h3 style="font-size:18px;margin-bottom:16px;">Finalizar compra</h3>
       <p style="color:var(--muted);font-size:13px;margin-bottom:16px;">O pagamento online estará disponível em breve. Por enquanto, entre em contato para concluir o pedido.</p>
       <button class="btn btn-primary btn-full" disabled style="opacity:.5;cursor:not-allowed;">Finalizar e pagar (em breve)</button>
     </div>
+    <script>
+      async function buscarCliente(){
+        const email = document.getElementById('email-cliente').value.trim();
+        const res = document.getElementById('resultado-busca-cliente');
+        if(!email){ res.innerHTML='<div class="msg-erro">Digite um e-mail.</div>'; return; }
+        res.innerHTML = '<p style="color:var(--muted);font-size:13px;">Buscando...</p>';
+        try{
+          const r = await fetch('/carrinho/buscar-cliente?email='+encodeURIComponent(email));
+          const d = await r.json();
+          if(d.encontrado){
+            res.innerHTML = '<div class="card" style="padding:16px;"><div style="margin-bottom:12px;">'+d.nome+' · '+d.email+'</div><button onclick="vincularCliente('+d.id+')" class="btn btn-primary">Vincular este cliente ao pedido</button></div>';
+          } else {
+            res.innerHTML = '<div class="msg-info">Este e-mail ainda não é membro do Círculo. Para registrar a obra em nome dele, é preciso que ele se torne membro primeiro. <a href="/convite">Enviar convite</a></div>';
+          }
+        }catch(e){ res.innerHTML = '<div class="msg-erro">Erro ao buscar.</div>'; }
+      }
+      async function vincularCliente(id){
+        try{
+          await fetch('/carrinho/definir-cliente', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ cliente_membro_id: id }) });
+          location.reload();
+        }catch(e){ alert('Erro ao vincular cliente.'); }
+      }
+    </script>
   `,true));
 });
+
+// Busca um membro por e-mail (para vincular como cliente do pedido)
+app.get('/carrinho/buscar-cliente', authMembro, async(req,res)=>{
+  const email = String(req.query.email||'').trim();
+  if(!email) return res.json({ encontrado:false });
+  const r = await pool.query('SELECT id,nome,email FROM circulo_membros WHERE email=$1',[email]);
+  if(!r.rows.length) return res.json({ encontrado:false });
+  res.json({ encontrado:true, id:r.rows[0].id, nome:esc(r.rows[0].nome), email:esc(r.rows[0].email) });
+});
+
+// Vincula o cliente (membro) ao pedido/carrinho atual
+app.post('/carrinho/definir-cliente', authMembro, async(req,res)=>{
+  try{
+    const { cliente_membro_id } = req.body;
+    const pedido = await pool.query(`SELECT id FROM circulo_pedidos WHERE membro_id=$1 AND status='CARRINHO'`,[req.membro.id]);
+    if(!pedido.rows.length) return res.json({ erro:'Carrinho não encontrado.' });
+    await pool.query('UPDATE circulo_pedidos SET cliente_membro_id=$1 WHERE id=$2',[cliente_membro_id, pedido.rows[0].id]);
+    res.json({ ok:true });
+  }catch(e){ res.json({ erro:e.message }); }
+});
+
 
 // Remover item do carrinho
 app.post('/carrinho/:itemId/remover', authMembro, async(req,res)=>{
@@ -2382,6 +2457,7 @@ async function garantirTabelas(){
     await pool.query(`ALTER TABLE circulo_membros ADD COLUMN IF NOT EXISTS bairro VARCHAR(100);`).catch(()=>{});
     await pool.query(`ALTER TABLE circulo_membros ADD COLUMN IF NOT EXISTS cidade VARCHAR(100);`).catch(()=>{});
     await pool.query(`ALTER TABLE circulo_membros ADD COLUMN IF NOT EXISTS estado VARCHAR(2);`).catch(()=>{});
+    await pool.query(`ALTER TABLE circulo_pedidos ADD COLUMN IF NOT EXISTS cliente_membro_id INTEGER REFERENCES circulo_membros(id);`).catch(()=>{});
     // Carrinho e checkout de obras
     await pool.query(`
       CREATE TABLE IF NOT EXISTS circulo_pedidos (
