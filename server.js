@@ -2050,7 +2050,7 @@ app.get('/carrinho', authMembro, async(req,res)=>{
       async function selecionarCliente(c){
         try{
           await fetch('/carrinho/definir-cliente', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ cliente_membro_id: c.id }) });
-          mostrarClienteConfirmado(c);
+          location.reload();
         }catch(e){ alert('Erro ao vincular cliente.'); }
       }
       ${clienteInicialScript}
