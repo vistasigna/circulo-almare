@@ -1279,10 +1279,14 @@ app.get('/simulador', authMembro, async(req,res)=>{
         html += '</div>';
 
         html += '<h3 style="font-size:22px;margin-bottom:8px;">Obras sugeridas</h3>';
-        html += '<p style="font-size:12px;color:var(--muted);margin-bottom:20px;">Nossa curadoria escolheu estas três. Você pode ajustar o tamanho ou trocar a obra em cada uma.</p>';
+        html += '<p style="font-size:12px;color:var(--muted);margin-bottom:20px;">Nossa curadoria escolheu estas três. Você pode ajustar o tamanho, trocar a obra, ou incluir mais obras para montar uma composição.</p>';
 
-        // Containers dos 3 cards (preenchidos por montarCard)
+        // Containers dos cards (preenchidos por montarCard) — este container é fixo e
+        // recebe novos slots quando o cliente inclui obras extras pra composição.
+        html += '<div id="cards-container">';
         SIM.cards.forEach((c,i)=>{ html += '<div id="card-slot-'+i+'"></div>'; });
+        html += '</div>';
+        html += '<button type="button" onclick="abrirGaleriaAdicionar()" class="btn btn-outline btn-full" style="margin-bottom:16px;border-style:dashed;">+ Incluir outra obra nesta composição</button>';
         html += '<div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap;">';
         html += '<button onclick="abrirSalvar()" class="btn btn-primary" style="flex:1;min-width:180px;">Salvar esta simulação</button>';
         html += '<button onclick="location.reload()" class="btn btn-outline" style="flex:1;min-width:180px;">Simular outro ambiente</button>';
@@ -1318,7 +1322,7 @@ app.get('/simulador', authMembro, async(req,res)=>{
         const molduraCor = coresMoldura[c.moldura] || '#1a1a1a';
 
         let html = '<div class="card" style="margin-bottom:24px;">';
-        html += '<div style="display:flex;gap:8px;align-items:center;margin-bottom:16px;"><span class="badge badge-gold">'+(i+1)+'ª sugestão</span>'+(o._score?'<span style="font-size:11px;color:var(--muted);">'+Math.round(o._score)+' pontos de compatibilidade</span>':'')+'</div>';
+        html += '<div style="display:flex;gap:8px;align-items:center;margin-bottom:16px;"><span class="badge badge-gold">'+(c.extra?'Obra incluída':(i+1)+'ª sugestão')+'</span>'+(o._score?'<span style="font-size:11px;color:var(--muted);">'+Math.round(o._score)+' pontos de compatibilidade</span>':'')+'</div>';
 
         // Simulação — usa posição ajustada manualmente se existir, senão a calculada
         const posX = (typeof c.posX === 'number') ? c.posX : centroX;
@@ -1374,6 +1378,9 @@ app.get('/simulador', authMembro, async(req,res)=>{
 
         // Trocar obra
         html += '<button type="button" onclick="abrirGaleria('+i+')" class="btn btn-outline" style="width:100%;margin-bottom:16px;">Trocar por outra obra</button>';
+        if(c.extra){
+          html += '<button type="button" onclick="removerDaComposicao('+i+')" class="btn btn-outline" style="width:100%;margin-bottom:16px;color:#e77;border-color:#e77;">Remover desta composição</button>';
+        }
 
         // Por que combina
         if(o._motivos && o._motivos.length){
@@ -1498,10 +1505,30 @@ app.get('/simulador', authMembro, async(req,res)=>{
       }
 
       // ── Galeria de troca de obra ──
-      let GALERIA = { obras:null, slot:null };
+      let GALERIA = { obras:null, slot:null, modo:'trocar' };
 
       async function abrirGaleria(i){
         GALERIA.slot = i;
+        GALERIA.modo = 'trocar';
+        const modal = document.getElementById('galeria-modal');
+        modal.style.display = 'block';
+        document.body.style.overflow = 'hidden';
+        document.getElementById('galeria-grid').innerHTML = '<p style="color:var(--muted);text-align:center;padding:40px;">Carregando obras...</p>';
+        if(!GALERIA.obras){
+          try{
+            const r = await fetch('/simulador/obras');
+            const d = await r.json();
+            GALERIA.obras = d.obras || [];
+          }catch(e){ GALERIA.obras = []; }
+        }
+        renderGaleria('');
+      }
+
+      // Abre a galeria em modo "adicionar" — escolher uma obra aqui cria um card NOVO
+      // na composição, em vez de substituir uma sugestão existente.
+      async function abrirGaleriaAdicionar(){
+        GALERIA.slot = null;
+        GALERIA.modo = 'adicionar';
         const modal = document.getElementById('galeria-modal');
         modal.style.display = 'block';
         document.body.style.overflow = 'hidden';
@@ -1544,17 +1571,36 @@ app.get('/simulador', authMembro, async(req,res)=>{
       function escolherObra(id){
         const nova = GALERIA.obras.find(o=>o.id===id);
         if(!nova) return;
-        const i = GALERIA.slot;
-        // Monta o objeto obra no formato que montarCard espera
-        SIM.cards[i].obra = {
+        const objObra = {
           id: nova.id, codigo: nova.codigo, nome: nova.nome, colecao: nova.colecao,
           imagem_preview: nova.imagem_preview,
           _tamanhosDisponiveis: nova.tamanhos,
           _motivos: ['escolha do cliente']
         };
-        SIM.cards[i].tamanho = nova.tamanhos && nova.tamanhos.length ? nova.tamanhos[0] : null;
-        fecharGaleria();
-        montarCard(i);
+        const tamanhoInicial = nova.tamanhos && nova.tamanhos.length ? nova.tamanhos[0] : null;
+
+        if(GALERIA.modo === 'adicionar'){
+          // Cria um card NOVO no final, para composição — nunca mexe nos que já existem
+          const novoIndex = SIM.cards.length;
+          SIM.cards.push({ obra: objObra, tamanho: tamanhoInicial, moldura: SIM.data.analise.moldura_recomendada || 'preta', extra:true });
+          document.getElementById('cards-container').insertAdjacentHTML('beforeend', '<div id="card-slot-'+novoIndex+'"></div>');
+          fecharGaleria();
+          montarCard(novoIndex);
+        } else {
+          const i = GALERIA.slot;
+          SIM.cards[i].obra = objObra;
+          SIM.cards[i].tamanho = tamanhoInicial;
+          fecharGaleria();
+          montarCard(i);
+        }
+      }
+
+      // Remove um card extra adicionado à composição (nunca remove as 3 sugestões originais)
+      function removerDaComposicao(i){
+        if(!confirm('Remover esta obra da composição?')) return;
+        const slot = document.getElementById('card-slot-'+i);
+        if(slot) slot.remove();
+        SIM.cards[i] = null;
       }
     </script>
   `,true));
