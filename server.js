@@ -1296,6 +1296,16 @@ app.get('/simulador', authMembro, async(req,res)=>{
 
       // Estado global — guarda os dados da simulação atual para permitir edições (trocar tamanho/obra)
       let SIM = { data:null, cards:[] };
+
+      // Escurece uma cor hex (usado no "vao" entre o filete e a tela — e um recuo sem luz direta,
+      // mesma logica usada no arquivo 3D: cor da moldura, porem mais escura, nunca uma cor clara).
+      function escurecerCorHex(hex, fator){
+        const n = parseInt(hex.replace('#',''), 16);
+        const r = Math.round(((n>>16)&255)*fator);
+        const g = Math.round(((n>>8)&255)*fator);
+        const b = Math.round((n&255)*fator);
+        return '#'+[r,g,b].map(v=>v.toString(16).padStart(2,'0')).join('');
+      }
       const GAP_CM_PADRAO = 10; // meio termo da faixa 8-12cm pedida como padrao
 
       // Se veio ?abrir=ID na URL, carrega uma simulação salva direto
@@ -1441,14 +1451,20 @@ app.get('/simulador', authMembro, async(req,res)=>{
           const pos = posicoes[j];
           const molduraCor = coresMoldura[p.moldura] || '#1a1a1a';
           const larguraCmObra = p.tamanho ? p.tamanho.largura : 100;
-          const gapMolduraPct = Math.min(Math.max((0.6/larguraCmObra)*100, 0.4), 3.5);
+          // Medidas reais fixas (mesmas do arquivo 3D): 6mm de filete + 7mm de vão escuro entre
+          // o filete e a tela. NUNCA proporcional/travado por min-max — numa peca maior o percentual
+          // fica menor, numa peca menor fica maior, sempre respeitando a medida real em mm.
+          const filetePct = (0.6/larguraCmObra)*100;
+          const vaoPct = (0.7/larguraCmObra)*100;
+          const corVaoEscura = escurecerCorHex(molduraCor, 0.35);
           const ajustandoEssa = c.ajustando === j;
           html += '<div id="quadro-wrap-'+i+'-'+j+'" style="position:absolute;top:'+pos.posY+'%;left:'+pos.posX+'%;transform:translate(-50%,-50%);width:'+pos.larguraFinal+'%;aspect-ratio:'+(p.tamanho?p.tamanho.largura:1)+'/'+(p.tamanho?p.tamanho.altura:1)+';'+(ajustandoEssa?'cursor:move;box-shadow:0 0 0 2px var(--gold);z-index:5;':'')+'" onclick="'+(c.ajustando===null||c.ajustando===undefined?'':'')+'">';
-          html += '<div style="border:2px solid '+molduraCor+';padding:'+gapMolduraPct.toFixed(2)+'%;background:#0a0a0a;box-sizing:border-box;width:100%;height:100%;">';
+          html += '<div style="background:'+molduraCor+';padding:'+filetePct.toFixed(3)+'%;box-sizing:border-box;width:100%;height:100%;">';
+          html += '<div style="background:'+corVaoEscura+';padding:'+vaoPct.toFixed(3)+'%;box-sizing:border-box;width:100%;height:100%;">';
           html += '<div style="position:relative;width:100%;height:100%;">';
           html += '<img src="'+p.obra.imagem_preview+'" style="width:100%;height:100%;object-fit:fill;background:#f4f2ee;display:block;" draggable="false">';
           html += '<div style="position:absolute;inset:0;background-image:url('+data.watermark+');background-repeat:repeat;mix-blend-mode:overlay;pointer-events:none;"></div>';
-          html += '</div></div></div>';
+          html += '</div></div></div></div>';
         });
         html += '</div>';
 
