@@ -1286,7 +1286,6 @@ app.get('/simulador', authMembro, async(req,res)=>{
         html += '<div id="cards-container">';
         SIM.cards.forEach((c,i)=>{ html += '<div id="card-slot-'+i+'"></div>'; });
         html += '</div>';
-        html += '<button type="button" onclick="abrirGaleriaAdicionar()" class="btn btn-outline btn-full" style="margin-bottom:16px;border-style:dashed;">+ Incluir outra obra nesta composição</button>';
         html += '<div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap;">';
         html += '<button onclick="abrirSalvar()" class="btn btn-primary" style="flex:1;min-width:180px;">Salvar esta simulação</button>';
         html += '<button onclick="location.reload()" class="btn btn-outline" style="flex:1;min-width:180px;">Simular outro ambiente</button>';
@@ -1318,7 +1317,9 @@ app.get('/simulador', authMembro, async(req,res)=>{
         // o quadro cabe. A largura na foto = fração real do tamanho vs largura da parede.
         const larguraFracao = t ? (t.largura / larguraRealParede) : 0.4;
         const larguraNaFoto = larguraFracao * bx.width_pct;
-        const larguraFinal = Math.min(Math.max(larguraNaFoto, 6), bx.width_pct*0.98);
+        // Sem piso artificial — um quadro pequeno de verdade (ex: 25x25cm) precisa
+        // aparecer pequeno na parede, do tamanho real dele, não inflado.
+        const larguraFinal = Math.min(Math.max(larguraNaFoto, 1.5), bx.width_pct*0.98);
         const molduraCor = coresMoldura[c.moldura] || '#1a1a1a';
 
         let html = '<div class="card" style="margin-bottom:24px;">';
@@ -1337,26 +1338,29 @@ app.get('/simulador', authMembro, async(req,res)=>{
         html += '</div></div></div>';
         html += '</div>';
 
-        // Botão de ajuste manual de posição
-        if(c.ajustando){
-          html += '<div style="display:flex;gap:8px;margin-bottom:20px;">';
-          html += '<button type="button" onclick="finalizarAjuste('+i+')" class="btn btn-primary" style="flex:1;">✓ Concluir ajuste</button>';
-          html += '<button type="button" onclick="resetarPosicao('+i+')" class="btn btn-outline">Centralizar</button>';
-          html += '</div>';
-          html += '<div style="font-size:11px;color:var(--gold);text-align:center;margin-bottom:20px;">Arraste o quadro para a posição desejada</div>';
-        } else {
-          html += '<button type="button" onclick="iniciarAjuste('+i+')" class="btn btn-outline" style="width:100%;margin-bottom:20px;">✥ Ajustar posição do quadro</button>';
-        }
-
         // Info da obra
         html += '<div style="font-size:10px;letter-spacing:.25em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;">'+(o.colecao||'')+'</div>';
         html += '<h4 style="font-family:\\'Cormorant Garamond\\',serif;font-size:22px;margin-bottom:4px;">'+o.nome+'</h4>';
-        html += '<div style="font-size:11px;color:var(--muted);margin-bottom:16px;">Código: '+(o.codigo||o.id)+'</div>';
+        html += '<div style="font-size:11px;color:var(--muted);margin-bottom:18px;">Código: '+(o.codigo||o.id)+'</div>';
+
+        // ── TODOS OS CONTROLES DESTA SUGESTÃO, AGRUPADOS NUM BLOCO SÓ ──
+        html += '<div style="display:flex;flex-direction:column;gap:12px;padding:16px;background:rgba(255,255,255,.02);border:1px solid var(--border);border-radius:4px;">';
+
+        // Posição
+        if(c.ajustando){
+          html += '<div style="display:flex;gap:8px;">';
+          html += '<button type="button" onclick="finalizarAjuste('+i+')" class="btn btn-primary" style="flex:1;">✓ Concluir ajuste</button>';
+          html += '<button type="button" onclick="resetarPosicao('+i+')" class="btn btn-outline">Centralizar</button>';
+          html += '</div>';
+          html += '<div style="font-size:11px;color:var(--gold);text-align:center;">Arraste o quadro para a posição desejada</div>';
+        } else {
+          html += '<button type="button" onclick="iniciarAjuste('+i+')" class="btn btn-outline" style="width:100%;">✥ Ajustar posição do quadro</button>';
+        }
 
         // Dropdown de tamanho
         const tamanhos = o._tamanhosDisponiveis || (t?[t]:[]);
         if(tamanhos.length){
-          html += '<div style="margin-bottom:16px;">';
+          html += '<div>';
           html += '<div style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:8px;">Tamanho</div>';
           html += '<select onchange="mudarTamanho('+i+',this.value)" style="width:100%;background:#0d0d0d;border:1px solid var(--border);color:var(--text);padding:11px 14px;border-radius:3px;font-size:14px;font-family:\\'Inter\\',sans-serif;outline:none;cursor:pointer;">';
           tamanhos.forEach((tm,idx)=>{
@@ -1367,7 +1371,7 @@ app.get('/simulador', authMembro, async(req,res)=>{
         }
 
         // Moldura
-        html += '<div style="margin-bottom:16px;">';
+        html += '<div>';
         html += '<div style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:8px;">Moldura'+(c.moldura===a.moldura_recomendada?' <span style="color:var(--gold);">(recomendada)</span>':'')+'</div>';
         html += '<div style="display:flex;gap:8px;" id="molduras-'+i+'">';
         [['preta','#1a1a1a'],['carvalho','#5c4a2e'],['aco_escovado','linear-gradient(135deg,#aaa,#777)']].forEach(([slug,bg])=>{
@@ -1376,15 +1380,18 @@ app.get('/simulador', authMembro, async(req,res)=>{
         });
         html += '</div></div>';
 
-        // Trocar obra
-        html += '<button type="button" onclick="abrirGaleria('+i+')" class="btn btn-outline" style="width:100%;margin-bottom:16px;">Trocar por outra obra</button>';
+        // Trocar obra / Incluir obra / Remover — cada sugestão tem seu conjunto completo e independente
+        html += '<button type="button" onclick="abrirGaleria('+i+')" class="btn btn-outline" style="width:100%;">Trocar por outra obra</button>';
+        html += '<button type="button" onclick="abrirGaleriaAdicionar()" class="btn btn-outline" style="width:100%;border-style:dashed;">+ Incluir outra obra na composição</button>';
         if(c.extra){
-          html += '<button type="button" onclick="removerDaComposicao('+i+')" class="btn btn-outline" style="width:100%;margin-bottom:16px;color:#e77;border-color:#e77;">Remover desta composição</button>';
+          html += '<button type="button" onclick="removerDaComposicao('+i+')" class="btn btn-outline" style="width:100%;color:#e77;border-color:#e77;">Remover desta composição</button>';
         }
+
+        html += '</div>'; // fecha o bloco de controles agrupados
 
         // Por que combina
         if(o._motivos && o._motivos.length){
-          html += '<div style="font-size:12px;color:#aaa;line-height:1.7;"><strong style="color:var(--gold);">Por que combina:</strong> '+o._motivos.join('; ')+'.</div>';
+          html += '<div style="font-size:12px;color:#aaa;line-height:1.7;margin-top:14px;"><strong style="color:var(--gold);">Por que combina:</strong> '+o._motivos.join('; ')+'.</div>';
         }
         html += '</div>';
 
