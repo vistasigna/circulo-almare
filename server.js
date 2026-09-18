@@ -1378,11 +1378,7 @@ app.get('/simulador', authMembro, async(req,res)=>{
         SIM.cards.forEach((c,i)=>{ html += '<div id="card-slot-'+i+'"></div>'; });
         html += '</div>';
 
-        // Orçamento fica escondido por padrão — a experiência de simular não deve empurrar
-        // preço o tempo todo. A pessoa vê o valor só quando pede, de propósito.
-        html += '<div id="orcamento-area" style="margin-top:20px;"></div>';
         html += '<div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap;">';
-        html += '<button onclick="verOrcamento()" class="btn btn-primary" style="flex:1;min-width:180px;">Ver orçamento</button>';
         html += '<button onclick="abrirSalvar()" class="btn btn-outline" style="flex:1;min-width:180px;">Salvar esta simulação</button>';
         html += '<button onclick="location.reload()" class="btn btn-outline" style="flex:1;min-width:180px;">Simular outro ambiente</button>';
         html += '</div>';
@@ -1391,30 +1387,30 @@ app.get('/simulador', authMembro, async(req,res)=>{
         SIM.cards.forEach((c,i)=> montarCard(i));
       }
 
-      // Mostra o preço total só quando a pessoa pede — nunca fica exposto durante a simulação.
-      function verOrcamento(){
+      // Mostra o preço só quando a pessoa pede — e só da sugestão que ela está olhando.
+      // Cada sugestão é uma simulação independente; nunca soma entre sugestões diferentes.
+      function verOrcamento(i){
+        const c = SIM.cards[i];
         let total = 0;
         let linhas = '';
-        SIM.cards.forEach(c=>{
-          c.pecas.forEach(p=>{
-            if(p.tamanho && p.tamanho.preco){
-              total += p.tamanho.preco;
-              linhas += '<div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);font-size:13px;">';
-              linhas += '<span>'+p.obra.nome+' <span style="color:var(--muted);">· '+p.tamanho.label+'</span></span>';
-              linhas += '<span style="color:var(--gold);">R$ '+p.tamanho.preco.toLocaleString('pt-BR')+'</span>';
-              linhas += '</div>';
-            }
-          });
+        c.pecas.forEach(p=>{
+          if(p.tamanho && p.tamanho.preco){
+            total += p.tamanho.preco;
+            linhas += '<div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);font-size:13px;">';
+            linhas += '<span>'+p.obra.nome+' <span style="color:var(--muted);">· '+p.tamanho.label+'</span></span>';
+            linhas += '<span style="color:var(--gold);">R$ '+p.tamanho.preco.toLocaleString('pt-BR')+'</span>';
+            linhas += '</div>';
+          }
         });
         const html =
-          '<div class="card" style="border-color:var(--gold);">' +
-          '<h3 style="font-size:18px;margin-bottom:16px;">Orçamento</h3>' +
+          '<div class="card" style="border-color:var(--gold);margin-top:10px;">' +
+          '<h3 style="font-size:16px;margin-bottom:14px;">Orçamento desta sugestão</h3>' +
           linhas +
-          '<div style="display:flex;justify-content:space-between;align-items:center;padding-top:16px;margin-top:8px;">' +
-          '<span style="font-size:13px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);">Total</span>' +
-          '<span style="font-family:\\'Cormorant Garamond\\',serif;font-size:26px;color:var(--gold);">R$ '+total.toLocaleString('pt-BR')+'</span>' +
+          '<div style="display:flex;justify-content:space-between;align-items:center;padding-top:14px;margin-top:6px;">' +
+          '<span style="font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);">Total</span>' +
+          '<span style="font-family:\\'Cormorant Garamond\\',serif;font-size:24px;color:var(--gold);">R$ '+total.toLocaleString('pt-BR')+'</span>' +
           '</div></div>';
-        document.getElementById('orcamento-area').innerHTML = html;
+        document.getElementById('orcamento-area-'+i).innerHTML = html;
       }
 
       // Desenha (ou redesenha) o card i — uma sugestão pode ter várias peças (composição)
@@ -1513,6 +1509,10 @@ app.get('/simulador', authMembro, async(req,res)=>{
 
         // Incluir obra — botão claro, centralizado, com destaque real
         html += '<button type="button" onclick="abrirGaleriaAdicionar('+i+')" style="display:block;margin:0 auto;background:rgba(201,169,110,.08);border:1.5px dashed var(--gold);color:var(--gold);border-radius:4px;padding:10px 22px;font-size:13px;cursor:pointer;font-weight:500;">+ Incluir outra obra</button>';
+
+        // Orçamento desta sugestão — só aparece quando pedido, nunca somado com outra sugestão
+        html += '<button type="button" onclick="verOrcamento('+i+')" class="btn btn-outline" style="width:100%;margin-top:12px;">Ver orçamento desta sugestão</button>';
+        html += '<div id="orcamento-area-'+i+'"></div>';
 
         html += '</div>'; // fecha .card
 
