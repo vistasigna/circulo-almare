@@ -1330,7 +1330,7 @@ app.get('/simulador', authMembro, async(req,res)=>{
           else if(numPecas>1){ posX = bx.left_pct + bx.width_pct*(j+1)/(numPecas+1); posY = centroYpadrao; }
           else { posX = centroXpadrao; posY = centroYpadrao; }
 
-          html += '<div id="quadro-wrap-'+i+'-'+j+'" style="position:absolute;top:'+posY+'%;left:'+posX+'%;transform:translate(-50%,-50%);width:'+larguraFinal+'%;aspect-ratio:'+(t?t.largura:1)+'/'+(t?t.altura:1)+';'+(p.ajustando?'cursor:move;box-shadow:0 0 0 2px var(--gold);z-index:5;':'z-index:2;')+'">';
+          html += '<div id="quadro-wrap-'+i+'-'+j+'" style="position:absolute;top:'+posY+'%;left:'+posX+'%;transform:translate(-50%,-50%);width:'+larguraFinal+'%;aspect-ratio:'+(t?t.largura:1)+'/'+(t?t.altura:1)+';'+(p.ajustando?'cursor:move;box-shadow:0 0 0 2px var(--gold);z-index:50;':'z-index:2;')+'">';
           html += '<div id="moldura-real-'+i+'-'+j+'" style="border:1px solid '+molduraCor+';padding:1px;background:#000;box-sizing:border-box;width:100%;height:100%;">';
           html += '<div style="position:relative;width:100%;height:100%;">';
           html += '<img src="'+p.obra.imagem_preview+'" style="width:100%;height:100%;object-fit:fill;background:#f4f2ee;display:block;" draggable="false">';
@@ -1478,35 +1478,52 @@ app.get('/simulador', authMembro, async(req,res)=>{
         montarCard(i);
         if(SIM.cards[i].pecas[j].ajustando) ativarArrastar(i,j);
       }
+      // Controle de arrastar CENTRALIZADO e único — evita qualquer sobra de "escutadores"
+      // de uma peça interferindo na próxima. Só existe UM arrasto ativo por vez, sempre.
+      let ARRASTAR_ATIVO = null; // { i, j, container, wrap }
+
       function ativarArrastar(i,j){
         const wrap = document.getElementById('quadro-wrap-'+i+'-'+j);
         const container = document.getElementById('sim-container-'+i);
         if(!wrap || !container) return;
-        let arrastando = false;
-        function mover(e){
-          if(!arrastando) return;
-          e.preventDefault();
-          const rect = container.getBoundingClientRect();
-          const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-          const clientY = e.touches ? e.touches[0].clientY : e.clientY;
-          let px = ((clientX - rect.left) / rect.width) * 100;
-          let py = ((clientY - rect.top) / rect.height) * 100;
-          px = Math.max(0, Math.min(100, px));
-          py = Math.max(0, Math.min(100, py));
-          SIM.cards[i].pecas[j].posX = px;
-          SIM.cards[i].pecas[j].posY = py;
-          wrap.style.left = px + '%';
-          wrap.style.top = py + '%';
-        }
-        function soltar(){
-          arrastando = false;
-          document.removeEventListener('mousemove', mover);
-          document.removeEventListener('mouseup', soltar);
-          document.removeEventListener('touchmove', mover);
-          document.removeEventListener('touchend', soltar);
-        }
-        wrap.onmousedown = function(e){ arrastando = true; e.preventDefault(); document.addEventListener('mousemove', mover); document.addEventListener('mouseup', soltar); };
-        wrap.ontouchstart = function(e){ arrastando = true; document.addEventListener('touchmove', mover, {passive:false}); document.addEventListener('touchend', soltar); };
+        wrap.onmousedown = function(e){ iniciarArrasto(e,i,j,container,wrap); };
+        wrap.ontouchstart = function(e){ iniciarArrasto(e,i,j,container,wrap); };
+      }
+
+      function iniciarArrasto(e,i,j,container,wrap){
+        e.preventDefault();
+        // Limpa qualquer arrasto anterior que por algum motivo não tenha sido finalizado
+        soltarArrasto();
+        ARRASTAR_ATIVO = { i:i, j:j, container:container, wrap:wrap };
+        document.addEventListener('mousemove', moverArrasto);
+        document.addEventListener('mouseup', soltarArrasto);
+        document.addEventListener('touchmove', moverArrasto, {passive:false});
+        document.addEventListener('touchend', soltarArrasto);
+      }
+
+      function moverArrasto(e){
+        if(!ARRASTAR_ATIVO) return;
+        e.preventDefault();
+        const { i, j, container, wrap } = ARRASTAR_ATIVO;
+        const rect = container.getBoundingClientRect();
+        const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+        const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+        let px = ((clientX - rect.left) / rect.width) * 100;
+        let py = ((clientY - rect.top) / rect.height) * 100;
+        px = Math.max(0, Math.min(100, px));
+        py = Math.max(0, Math.min(100, py));
+        SIM.cards[i].pecas[j].posX = px;
+        SIM.cards[i].pecas[j].posY = py;
+        wrap.style.left = px + '%';
+        wrap.style.top = py + '%';
+      }
+
+      function soltarArrasto(){
+        ARRASTAR_ATIVO = null;
+        document.removeEventListener('mousemove', moverArrasto);
+        document.removeEventListener('mouseup', soltarArrasto);
+        document.removeEventListener('touchmove', moverArrasto);
+        document.removeEventListener('touchend', soltarArrasto);
       }
 
       // ── Galeria de obras — "trocar" (substitui uma peça) ou "adicionar" (nova peça na composição) ──
