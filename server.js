@@ -6,10 +6,6 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const cookieParser = require('cookie-parser');
 const crypto = require('crypto');
-const multer = require('multer');
-const sharp = require('sharp');
-const AdmZip = require('adm-zip');
-const uploadFoto = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
 const app = express();
 app.use(express.json({ limit: '25mb' }));
@@ -20,9 +16,8 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejec
 const JWT_SECRET = process.env.JWT_SECRET || 'circulo-almare-secret-2026';
 const ADMIN_SENHA = process.env.ADMIN_SENHA || 'admin123';
 const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
-const BLING_CLIENT_ID = process.env.CIRCULO_BLING_CLIENT_ID;
-const BLING_CLIENT_SECRET = process.env.CIRCULO_BLING_CLIENT_SECRET;
-const BLING_REDIRECT_URI = process.env.CIRCULO_BLING_REDIRECT_URI || `${process.env.BASE_URL || ''}/auth/bling/callback`;
+const BLING_CLIENT_ID = process.env.BLING_CLIENT_ID;
+const BLING_CLIENT_SECRET = process.env.BLING_CLIENT_SECRET;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 
 function gerarToken(payload, opts) { return jwt.sign(payload, JWT_SECRET, opts || { expiresIn: '7d' }); }
@@ -41,45 +36,10 @@ function authAdmin(req, res, next) {
   catch { res.clearCookie('circulo_admin'); return res.redirect('/admin/login'); }
 }
 
-// ─── BLING (conexao propria e isolada do Circulo — nunca compartilhada com outro sistema) ──────
-let _blingStateTemp = null;
-
-app.get('/auth/bling/conectar', authAdmin, (req, res) => {
-  _blingStateTemp = crypto.randomBytes(16).toString('hex');
-  const url = `https://www.bling.com.br/Api/v3/oauth/authorize?response_type=code&client_id=${BLING_CLIENT_ID}&state=${_blingStateTemp}&redirect_uri=${encodeURIComponent(BLING_REDIRECT_URI)}`;
-  res.redirect(url);
-});
-
-app.get('/auth/bling/callback', async (req, res) => {
-  try {
-    const { code, state } = req.query;
-    if (!code) return res.status(400).send('Código de autorização não recebido.');
-    if (state !== _blingStateTemp) return res.status(400).send('Estado inválido — tenta conectar de novo pelo painel admin.');
-
-    const creds = Buffer.from(`${BLING_CLIENT_ID}:${BLING_CLIENT_SECRET}`).toString('base64');
-    const resp = await fetch('https://www.bling.com.br/Api/v3/oauth/token', {
-      method: 'POST',
-      headers: { 'Authorization': `Basic ${creds}`, 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ grant_type: 'authorization_code', code, redirect_uri: BLING_REDIRECT_URI })
-    });
-    const data = await resp.json();
-    if (!data.access_token) return res.status(400).send('Erro ao obter token do Bling: ' + (data.error_description || data.error || 'desconhecido'));
-
-    await pool.query(`
-      INSERT INTO circulo_bling_config (id, access_token, refresh_token, expira_em, autorizado)
-      VALUES (1, $1, $2, $3, TRUE)
-      ON CONFLICT (id) DO UPDATE SET access_token=$1, refresh_token=$2, expira_em=$3, autorizado=TRUE
-    `, [data.access_token, data.refresh_token, new Date(Date.now() + data.expires_in * 1000)]);
-
-    res.redirect('/admin');
-  } catch (e) {
-    res.status(500).send('Erro ao conectar com o Bling: ' + e.message);
-  }
-});
-
+// ─── BLING ────────────────────────────────────────────────────────────────────
 async function getBlingToken() {
-  const r = await pool.query('SELECT * FROM circulo_bling_config WHERE id=1');
-  if (!r.rows.length || !r.rows[0].autorizado) throw new Error('Bling do Círculo não conectado. Vá em /admin e clique em Conectar Bling.');
+  const r = await pool.query('SELECT * FROM almare_bling_config LIMIT 1');
+  if (!r.rows.length) throw new Error('Token Bling não configurado');
   const config = r.rows[0];
   if (new Date(config.expira_em) <= new Date()) {
     const creds = Buffer.from(`${BLING_CLIENT_ID}:${BLING_CLIENT_SECRET}`).toString('base64');
@@ -90,13 +50,12 @@ async function getBlingToken() {
     });
     const data = await resp.json();
     if (!data.access_token) throw new Error('Erro ao renovar token Bling');
-    await pool.query('UPDATE circulo_bling_config SET access_token=$1, refresh_token=$2, expira_em=$3 WHERE id=1',
+    await pool.query('UPDATE almare_bling_config SET access_token=$1, refresh_token=$2, expira_em=$3 WHERE id=1',
       [data.access_token, data.refresh_token, new Date(Date.now() + data.expires_in * 1000)]);
     return data.access_token;
   }
   return config.access_token;
 }
-
 
 async function buscarContatoBling(documento) {
   const token = await getBlingToken();
@@ -115,36 +74,24 @@ async function buscarContatoBling(documento) {
 
 async function salvarContatoBling(dados, blingId) {
   const token = await getBlingToken();
-  const documentoLimpo = (dados.documento || '').replace(/\D/g, '');
-  const isCNPJ = documentoLimpo.length > 11;
-
-  const body = { nome: dados.nome, tipo: isCNPJ ? 'J' : 'F', situacao: 'A' };
-  if (dados.email) body.email = dados.email;
-  if (dados.telefone) body.telefone = dados.telefone;
-  if (dados.celular) body.celular = dados.celular;
-  if (documentoLimpo) body[isCNPJ ? 'cnpj' : 'cpf'] = documentoLimpo;
-  if (dados.ie) body.ie = dados.ie;
-
-  const enderecoLimpo = {};
-  if (dados.endereco) enderecoLimpo.endereco = dados.endereco;
-  if (dados.numero) enderecoLimpo.numero = dados.numero;
-  if (dados.complemento) enderecoLimpo.complemento = dados.complemento;
-  if (dados.bairro) enderecoLimpo.bairro = dados.bairro;
-  if (dados.cep) enderecoLimpo.cep = dados.cep.replace(/\D/g, '');
-  if (dados.cidade) enderecoLimpo.municipio = dados.cidade;
-  if (dados.estado) enderecoLimpo.uf = dados.estado;
-  if (Object.keys(enderecoLimpo).length) body.endereco = enderecoLimpo;
-
+  const isCNPJ = (dados.documento || '').replace(/\D/g, '').length > 11;
+  const body = {
+    nome: dados.nome, tipo: isCNPJ ? 'J' : 'F', email: dados.email,
+    telefone: dados.telefone || '', celular: dados.celular || '',
+    [isCNPJ ? 'cnpj' : 'cpf']: (dados.documento || '').replace(/\D/g, ''),
+    ie: dados.ie || '',
+    endereco: {
+      endereco: dados.endereco || '', numero: dados.numero || '',
+      complemento: dados.complemento || '', bairro: dados.bairro || '',
+      cep: (dados.cep || '').replace(/\D/g, ''), municipio: dados.cidade || '', uf: dados.estado || ''
+    }
+  };
   if (blingId) {
-    const resp = await fetch(`https://api.bling.com.br/Api/v3/contatos/${blingId}`, {
+    await fetch(`https://api.bling.com.br/Api/v3/contatos/${blingId}`, {
       method: 'PUT',
       headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
     });
-    const result = await resp.json();
-    if (!resp.ok || result.error) {
-      throw new Error(JSON.stringify(result));
-    }
     return blingId;
   } else {
     const resp = await fetch('https://api.bling.com.br/Api/v3/contatos', {
@@ -153,13 +100,9 @@ async function salvarContatoBling(dados, blingId) {
       body: JSON.stringify(body)
     });
     const result = await resp.json();
-    if (!resp.ok || result.error) {
-      throw new Error(JSON.stringify(result));
-    }
     return result?.data?.id || null;
   }
 }
-
 
 // ─── CSS ──────────────────────────────────────────────────────────────────────
 const CSS = `
@@ -226,45 +169,17 @@ const CSS = `
 `;
 
 function html(titulo, corpo, nav=false) {
-  const sairHtml = nav ? `<a href="/logout" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--danger);margin-top:12px;display:inline-block">Sair</a>` : '';
+  const navHtml = nav ? `<div style="display:flex;gap:12px;align-items:center;justify-content:flex-end;margin-top:12px;flex-wrap:wrap;">
+    <a href="/portal" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted)">Portal</a>
+    <a href="/catalogo" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted)">Obras</a>
+    <a href="/meu-impacto" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted)">Impacto</a>
+    <a href="/sugestoes" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted)">Voz</a>
+    <a href="/minhas-funcoes" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted)">Funções</a>
+    <a href="/logout" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--danger)">Sair</a>
+  </div>` : '';
   return `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <title>${titulo} — Círculo ALMARE</title><style>${CSS}</style></head>
-  <body><div class="container"><header><div class="logo">ALMARE</div><div class="logo-sub">Círculo</div><div style="text-align:right">${sairHtml}</div></header>${corpo}</div></body></html>`;
-}
-
-async function ehEspecificador(membroId) {
-  const r = await pool.query(`
-    SELECT 1 FROM circulo_membro_funcoes mf JOIN circulo_funcoes f ON f.id=mf.funcao_id
-    WHERE mf.membro_id=$1 AND mf.ativo=true AND f.slug='especificador' LIMIT 1`, [membroId]);
-  return r.rows.length > 0;
-}
-
-async function temFuncaoComImpacto(membroId) {
-  const r = await pool.query(`
-    SELECT 1 FROM circulo_membro_funcoes mf JOIN circulo_funcoes f ON f.id=mf.funcao_id
-    WHERE mf.membro_id=$1 AND mf.ativo=true AND f.slug IN ('embaixador','especificador','artista','colaborador') LIMIT 1`, [membroId]);
-  return r.rows.length > 0;
-}
-
-function navBar(ativo, temImpacto=false, ehEspec=false) {
-  const base = [
-    { key: 'passaporte', href: '/portal', label: 'Passaporte' },
-    { key: 'obras', href: '/catalogo', label: 'Obras' },
-    { key: 'simulador', href: '/simulador', label: 'Simulador' },
-    { key: 'identificar', href: '/identificar', label: 'Identificar' },
-    { key: 'carrinho', href: '/carrinho', label: 'Carrinho' },
-    { key: 'meusdados', href: '/meus-dados', label: 'Meus dados' },
-  ];
-  const especLink = ehEspec ? [{ key: 'modelos3d', href: '/modelos-3d', label: 'Modelos 3D' }] : [];
-  const impacto = temImpacto ? [{ key: 'impacto', href: '/meu-impacto', label: 'Impacto' }] : [];
-  const indicacoes = [{ key: 'indicacoes', href: '/minhas-indicacoes', label: 'Indicações' }];
-  const fim = [
-    { key: 'voz', href: '/sugestoes', label: 'Voz' },
-    { key: 'convidar', href: '/meu-convite', label: 'Convidar' },
-  ];
-  const item = l => `<a href="${l.href}" class="nav-link${ativo===l.key?' ativo':''}">${l.label}</a>`;
-  const funcoesDestaque = `<a href="/minhas-funcoes" class="nav-link nav-link-destaque${ativo==='funcoes'?' ativo':''}">Funções</a>`;
-  return `<div class="nav-bar">${base.map(item).join('')}${especLink.map(item).join('')}${impacto.map(item).join('')}${indicacoes.map(item).join('')}${fim.map(item).join('')}${funcoesDestaque}</div>`;
+  <body><div class="container"><header><div class="logo">ALMARE</div><div class="logo-sub">Círculo</div>${navHtml}</header>${corpo}</div></body></html>`;
 }
 
 // Funções que o membro pode pedir no cadastro
@@ -626,7 +541,7 @@ app.get('/portal',authMembro,async(req,res)=>{
     const resumo=await pool.query('SELECT * FROM circulo_resumo_membro WHERE id=$1',[req.membro.id]);
     const m=resumo.rows[0]||{};
     const funcoes=await pool.query(`
-      SELECT f.nome, f.slug, f.descricao, mf.ativo FROM circulo_membro_funcoes mf
+      SELECT f.nome, f.slug, mf.ativo FROM circulo_membro_funcoes mf
       JOIN circulo_funcoes f ON f.id=mf.funcao_id
       WHERE mf.membro_id=$1`,[req.membro.id]);
     const convite=await pool.query('SELECT codigo FROM circulo_convites WHERE membro_id=$1 LIMIT 1',[req.membro.id]);
@@ -634,34 +549,27 @@ app.get('/portal',authMembro,async(req,res)=>{
     const link=convite.rows.length?`${BASE_URL}/convite/${convite.rows[0].codigo}`:'';
     const data=m.membro_desde?new Date(m.membro_desde).toLocaleDateString('pt-BR',{month:'long',year:'numeric'}):'';
 
-    const funcoesAtivas = funcoes.rows.filter(f=>f.ativo);
-    const funcoesCards = funcoesAtivas.map(f=>`
-      <div style="background:linear-gradient(135deg,rgba(212,175,55,.12),rgba(212,175,55,.03));border:1px solid var(--gold);border-radius:6px;padding:14px 18px;">
-        <div style="font-family:'Cormorant Garamond',serif;font-size:18px;color:var(--gold);margin-bottom:3px;">${f.nome}</div>
-        ${f.descricao ? `<div style="font-size:12px;color:var(--muted);">${f.descricao}</div>` : ''}
-      </div>`).join('');
+    const fnomes = funcoes.rows.filter(f=>f.ativo).map(f=>
+      `<span class="badge badge-gold">${f.nome}</span>`
+    ).join(' ');
     // Membro sempre aparece
 
     const evHtml=eventos.rows.map(e=>`<div style="padding:12px 0;border-bottom:1px solid var(--border);font-size:13px;"><span>${e.descricao}</span><span style="float:right;font-size:11px;color:var(--muted)">${new Date(e.data_evento).toLocaleDateString('pt-BR')}</span></div>`).join('');
     const temFuncaoExtra = funcoes.rows.some(f=>f.ativo && ['embaixador','especificador','artista','colaborador'].includes(f.slug));
 
     res.send(html('Portal',`
-      ${navBar('passaporte', temFuncaoExtra, funcoes.rows.some(f=>f.ativo && f.slug==='especificador'))}
+      <div class="nav-bar"><a href="/portal" class="nav-link ativo">Passaporte</a><a href="/catalogo" class="nav-link">Obras</a><a href="/simulador" class="nav-link">Simulador</a><a href="/carrinho" class="nav-link">Carrinho</a>${temFuncaoExtra ? '<a href="/meu-impacto" class="nav-link">Impacto</a>' : ''}<a href="/sugestoes" class="nav-link">Voz</a><a href="/minhas-funcoes" class="nav-link">Funções</a><a href="/meus-dados" class="nav-link">Meus dados</a><a href="/meu-convite" class="nav-link">Convidar</a></div>
       <div class="card" style="margin-bottom:24px;">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:16px;">
           <div>
             <h2 style="font-size:26px;margin-bottom:4px;">${m.nome||req.membro.nome}</h2>
             <div style="font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);margin-bottom:12px;">Membro desde ${data} · ${m.codigo_membro||''}</div>
+            <div><span class="badge badge-gold">Membro</span>${fnomes ? " " + fnomes : ""}</div>
+          </div>
+
+
           </div>
         </div>
-      </div>
-      <div style="margin-bottom:24px;">
-        <div style="font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);margin-bottom:12px;">Suas funções no Círculo</div>
-        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;">
-          ${funcoesCards || '<div style="padding:14px 18px;border:1px solid var(--border);border-radius:6px;color:var(--muted);font-size:13px;">Nenhuma função ativa ainda.</div>'}
-        </div>
-        <a href="/minhas-funcoes" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--gold);display:inline-block;margin-top:12px;">+ Gerenciar funções</a>
-      </div>
       </div>
       <div class="grid-3" style="margin-bottom:24px;">
         <div class="stat-box"><div class="num">${m.obras_que_encontraram_lar||0}</div><div class="lbl">Obras que encontraram lar</div></div>
@@ -680,7 +588,7 @@ app.get('/meus-dados', authMembro, async(req,res)=>{
   const r = await pool.query('SELECT * FROM circulo_membros WHERE id=$1',[req.membro.id]);
   const m = r.rows[0];
   res.send(html('Meus dados',`
-    ${navBar('meusdados', await temFuncaoComImpacto(req.membro.id), await ehEspecificador(req.membro.id))}
+    <div class="nav-bar"><a href="/portal" class="nav-link">Passaporte</a><a href="/catalogo" class="nav-link">Obras</a><a href="/simulador" class="nav-link">Simulador</a><a href="/carrinho" class="nav-link">Carrinho</a><a href="/sugestoes" class="nav-link">Voz</a><a href="/minhas-funcoes" class="nav-link">Funções</a><a href="/meus-dados" class="nav-link ativo">Meus dados</a><a href="/meu-convite" class="nav-link">Convidar</a></div>
     <h2 style="font-size:28px;margin-bottom:8px;">Meus dados</h2>
     <p style="color:var(--muted);margin-bottom:28px;">Você pode atualizar seu contato e endereço a qualquer momento. Nome e CPF/CNPJ não podem ser alterados por aqui — se precisar corrigi-los, fale com a ALMARE.</p>
     ${req.query.ok?'<div class="msg-ok">Dados atualizados com sucesso.</div>':''}
@@ -783,7 +691,7 @@ app.get('/minhas-funcoes',authMembro,async(req,res)=>{
     </div>`).join('');
 
   res.send(html('Minhas funções',`
-    ${navBar('funcoes', funcoes.rows.some(f=>f.ativo && ['embaixador','especificador','artista','colaborador'].includes(f.slug)), funcoes.rows.some(f=>f.ativo && f.slug==='especificador'))}
+    <div class="nav-bar"><a href="/portal" class="nav-link">Passaporte</a><a href="/catalogo" class="nav-link">Obras</a><a href="/simulador" class="nav-link">Simulador</a><a href="/carrinho" class="nav-link">Carrinho</a><a href="/meu-impacto" class="nav-link">Impacto</a><a href="/sugestoes" class="nav-link">Voz</a><a href="/minhas-funcoes" class="nav-link ativo">Funções</a><a href="/meu-convite" class="nav-link">Convidar</a></div>
     <a href="/portal" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);display:inline-block;margin-bottom:24px;">← Voltar ao portal</a>
     <h2 style="font-size:28px;margin-bottom:8px;">Suas funções</h2>
     <p style="color:var(--muted);margin-bottom:32px;">Funções ativas podem ser desativadas a qualquer momento. Funções aguardando estão pendentes de aprovação.</p>
@@ -1141,7 +1049,7 @@ app.get('/simulador', authMembro, async(req,res)=>{
   const navImpacto=slugs.some(s=>['embaixador','especificador','artista','colaborador'].includes(s))?'<a href="/meu-impacto" class="nav-link">Impacto</a>':'';
 
   res.send(html('Simulador',`
-    ${navBar('simulador', !!navImpacto, slugs.includes('especificador'))}
+    <div class="nav-bar"><a href="/portal" class="nav-link">Passaporte</a><a href="/catalogo" class="nav-link">Obras</a><a href="/simulador" class="nav-link ativo">Simulador</a><a href="/carrinho" class="nav-link">Carrinho</a>${navImpacto}<a href="/sugestoes" class="nav-link">Voz</a><a href="/minhas-funcoes" class="nav-link">Funções</a><a href="/meu-convite" class="nav-link">Convidar</a></div>
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;flex-wrap:wrap;gap:12px;">
       <a href="/portal" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);">← Voltar ao portal</a>
       <a href="/simulador/minhas" class="btn btn-outline" style="padding:8px 16px;font-size:10px;">Minhas simulações</a>
@@ -1297,17 +1205,6 @@ app.get('/simulador', authMembro, async(req,res)=>{
       // Estado global — guarda os dados da simulação atual para permitir edições (trocar tamanho/obra)
       let SIM = { data:null, cards:[] };
 
-      // Escurece uma cor hex (usado no "vao" entre o filete e a tela — e um recuo sem luz direta,
-      // mesma logica usada no arquivo 3D: cor da moldura, porem mais escura, nunca uma cor clara).
-      function escurecerCorHex(hex, fator){
-        const n = parseInt(hex.replace('#',''), 16);
-        const r = Math.round(((n>>16)&255)*fator);
-        const g = Math.round(((n>>8)&255)*fator);
-        const b = Math.round((n&255)*fator);
-        return '#'+[r,g,b].map(v=>v.toString(16).padStart(2,'0')).join('');
-      }
-      const GAP_CM_PADRAO = 10; // meio termo da faixa 8-12cm pedida como padrao
-
       // Se veio ?abrir=ID na URL, carrega uma simulação salva direto
       (function(){
         const params = new URLSearchParams(window.location.search);
@@ -1326,7 +1223,7 @@ app.get('/simulador', authMembro, async(req,res)=>{
               // reconstrói SIM.data no formato que renderResultado espera
               renderResultado({
                 analise: d.analise || { parede_bbox:{left_pct:5,top_pct:5,width_pct:90,height_pct:90}, moldura_recomendada:'preta', paleta_dominante:'', temperatura:'', estilo:'', carga_visual:'', justificativa_ambiente:'' },
-                sugestoes: d.cards.map(c=>({ ...(c.pecas ? c.pecas[0].obra : c.obra), _melhorTamanho:c.pecas ? c.pecas[0].tamanho : c.tamanho, _tamanhosDisponiveis:(c.pecas ? c.pecas[0].obra._tamanhosDisponiveis : c.obra._tamanhosDisponiveis) })),
+                sugestoes: d.cards.map(c=>({ ...c.obra, _melhorTamanho:c.tamanho, _tamanhosDisponiveis:c.obra._tamanhosDisponiveis })),
                 watermark: d.watermark || '',
                 foto_local: d.foto_local,
                 parede_largura: d.parede_largura,
@@ -1344,19 +1241,16 @@ app.get('/simulador', authMembro, async(req,res)=>{
         const a = data.analise;
         const sugestoes = (data.sugestoes || []).slice(0, 3);
 
-        // Cada card agora e uma COMPOSICAO — comeca com 1 peca, mas o membro pode adicionar mais
-        // (ex: 3 quadros menores formando um conjunto) e ajustar a posicao de cada uma independente.
+        // Estado editável de cada card (tamanho e obra podem mudar; moldura começa na recomendada)
         SIM.cards = sugestoes.map((o,idx) => {
           const restore = (data._cardsRestore && data._cardsRestore[idx]) ? data._cardsRestore[idx] : null;
-          if(restore && restore.pecas){
-            // Formato novo (composicao) ja salvo
-            return { pecas: restore.pecas.map(p=>({ obra:p.obra, tamanho:p.tamanho, moldura:p.moldura, posX:p.posX, posY:p.posY })), ajustando:false };
-          }
-          if(restore){
-            // Formato antigo salvo (1 peca so) — converte pro novo formato
-            return { pecas: [{ obra:restore.obra||o, tamanho:restore.tamanho, moldura:restore.moldura, posX:restore.posX, posY:restore.posY }], ajustando:false };
-          }
-          return { pecas: [{ obra:o, tamanho:o._melhorTamanho, moldura:(a.moldura_recomendada || 'preta'), posX:undefined, posY:undefined }], ajustando:false };
+          return {
+            obra: o,
+            tamanho: restore ? restore.tamanho : o._melhorTamanho,
+            moldura: restore ? restore.moldura : (a.moldura_recomendada || 'preta'),
+            posX: restore ? restore.posX : undefined,
+            posY: restore ? restore.posY : undefined
+          };
         });
 
         const nomesMoldura = {preta:'Preta', carvalho:'Carvalho', aco_escovado:'Aço escovado'};
@@ -1372,6 +1266,7 @@ app.get('/simulador', authMembro, async(req,res)=>{
         html += '</div>';
         html += '<p style="font-size:13px;color:#ccc;font-style:italic;line-height:1.7;">'+a.justificativa_ambiente+'</p>';
 
+        // Bloco de curadoria destacado (moldura recomendada + justificativa)
         if(a.moldura_recomendada){
           html += '<div style="margin-top:20px;padding:16px;background:rgba(201,169,110,.06);border:1px solid rgba(201,169,110,.25);border-radius:4px;">';
           html += '<div style="font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--gold);margin-bottom:6px;">Recomendação de curadoria</div>';
@@ -1384,8 +1279,9 @@ app.get('/simulador', authMembro, async(req,res)=>{
         html += '</div>';
 
         html += '<h3 style="font-size:22px;margin-bottom:8px;">Obras sugeridas</h3>';
-        html += '<p style="font-size:12px;color:var(--muted);margin-bottom:20px;">Nossa curadoria escolheu estas três. Ajuste o tamanho, troque a obra, ou monte uma composição com mais de uma peça em cada.</p>';
+        html += '<p style="font-size:12px;color:var(--muted);margin-bottom:20px;">Nossa curadoria escolheu estas três. Você pode ajustar o tamanho ou trocar a obra em cada uma.</p>';
 
+        // Containers dos 3 cards (preenchidos por montarCard)
         SIM.cards.forEach((c,i)=>{ html += '<div id="card-slot-'+i+'"></div>'; });
         html += '<div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap;">';
         html += '<button onclick="abrirSalvar()" class="btn btn-primary" style="flex:1;min-width:180px;">Salvar esta simulação</button>';
@@ -1396,41 +1292,15 @@ app.get('/simulador', authMembro, async(req,res)=>{
         SIM.cards.forEach((c,i)=> montarCard(i));
       }
 
-      // Calcula a largura (em % da parede) que uma peca ocupa, dado seu tamanho real
-      function larguraPctPeca(tamanho, larguraRealParede, bx){
-        const fracao = tamanho ? (tamanho.largura / larguraRealParede) : 0.4;
-        const naFoto = fracao * bx.width_pct;
-        return Math.min(Math.max(naFoto, 6), bx.width_pct*0.9);
-      }
-
-      // Posicao padrao de cada peca dentro de uma composicao: em fileira horizontal,
-      // centralizada no ponto focal da parede, com GAP_CM_PADRAO entre uma peca e outra.
-      // Pecas que ja tem posX/posY definidos (o membro arrastou) mantem a posicao dele.
-      function posicoesPadrao(pecas, bx, larguraRealParede, centroX, centroY){
-        const larguras = pecas.map(p => larguraPctPeca(p.tamanho, larguraRealParede, bx));
-        const gapPct = (GAP_CM_PADRAO / larguraRealParede) * bx.width_pct;
-        const larguraTotal = larguras.reduce((s,l)=>s+l,0) + gapPct*(pecas.length-1);
-        let cursorX = centroX - larguraTotal/2;
-        return pecas.map((p,idx)=>{
-          const larg = larguras[idx];
-          const centroDaPeca = cursorX + larg/2;
-          cursorX += larg + gapPct;
-          return {
-            posX: (typeof p.posX === 'number') ? p.posX : centroDaPeca,
-            posY: (typeof p.posY === 'number') ? p.posY : centroY,
-            larguraFinal: larg
-          };
-        });
-      }
-
-      // Desenha (ou redesenha) o card do slot i com todas as pecas da composicao atual
+      // Desenha (ou redesenha) o card do slot i com o estado atual (obra + tamanho + moldura)
       function montarCard(i){
         const data = SIM.data;
         const a = data.analise;
         const c = SIM.cards[i];
-        const pecas = c.pecas;
+        const o = c.obra;
+        const t = c.tamanho;
         const nomesMoldura = {preta:'Preta', carvalho:'Carvalho', aco_escovado:'Aço escovado'};
-        const coresMoldura = { preta:'#1a1a1a', carvalho:'#8a6d3b', aco_escovado:'#9a9a9a' };
+        const coresMoldura = { preta:'#1a1a1a', carvalho:'#5c4a2e', aco_escovado:'#9a9a9a' };
 
         const bbox = a.parede_bbox;
         const bx = (bbox && typeof bbox.left_pct==='number') ? bbox : {left_pct:15, top_pct:10, width_pct:70, height_pct:75};
@@ -1439,127 +1309,147 @@ app.get('/simulador', authMembro, async(req,res)=>{
         const centroX = bx.left_pct + bx.width_pct/2;
         const centroY = Math.max(12, Math.min(88, ((alturaParedeCm - 160) / alturaParedeCm) * 100));
 
-        const posicoes = posicoesPadrao(pecas, bx, larguraRealParede, centroX, centroY);
+        // Escala HONESTA e proporcional: o tamanho já foi filtrado no backend para caber de verdade
+        // (altura e largura). Aqui só desenhamos na escala REAL, sem forçar redução — se chegou aqui,
+        // o quadro cabe. A largura na foto = fração real do tamanho vs largura da parede.
+        const larguraFracao = t ? (t.largura / larguraRealParede) : 0.4;
+        const larguraNaFoto = larguraFracao * bx.width_pct;
+        const larguraFinal = Math.min(Math.max(larguraNaFoto, 6), bx.width_pct*0.98);
+        const molduraCor = coresMoldura[c.moldura] || '#1a1a1a';
+        const larguraCmObra = t ? t.largura : 100;
+        const gapPct = Math.min(Math.max((0.6/larguraCmObra)*100, 0.4), 3.5);
 
         let html = '<div class="card" style="margin-bottom:24px;">';
-        html += '<div style="display:flex;gap:8px;align-items:center;margin-bottom:16px;"><span class="badge badge-gold">'+(i+1)+'ª sugestão</span>'+(pecas[0].obra._score?'<span style="font-size:11px;color:var(--muted);">'+Math.round(pecas[0].obra._score)+' pontos de compatibilidade</span>':'')+(pecas.length>1?'<span style="font-size:11px;color:var(--gold);">· composição de '+pecas.length+' peças</span>':'')+'</div>';
+        html += '<div style="display:flex;gap:8px;align-items:center;margin-bottom:16px;"><span class="badge badge-gold">'+(i+1)+'ª sugestão</span>'+(o._score?'<span style="font-size:11px;color:var(--muted);">'+Math.round(o._score)+' pontos de compatibilidade</span>':'')+'</div>';
 
+        // Simulação — usa posição ajustada manualmente se existir, senão a calculada
+        const posX = (typeof c.posX === 'number') ? c.posX : centroX;
+        const posY = (typeof c.posY === 'number') ? c.posY : centroY;
         html += '<div id="sim-container-'+i+'" style="position:relative;background:#0d0d0d;border-radius:4px;overflow:hidden;margin-bottom:12px;line-height:0;">';
         html += '<img src="'+data.foto_local+'" style="width:100%;display:block;" draggable="false">';
-
-        pecas.forEach((p,j)=>{
-          const pos = posicoes[j];
-          const molduraCor = coresMoldura[p.moldura] || '#1a1a1a';
-          const larguraCmObra = p.tamanho ? p.tamanho.largura : 100;
-          // Medidas reais fixas (mesmas do arquivo 3D): 6mm de filete + 7mm de vão escuro entre
-          // o filete e a tela. NUNCA proporcional/travado por min-max — numa peca maior o percentual
-          // fica menor, numa peca menor fica maior, sempre respeitando a medida real em mm.
-          const filetePct = (0.6/larguraCmObra)*100;
-          const vaoPct = (0.7/larguraCmObra)*100;
-          const corVaoEscura = escurecerCorHex(molduraCor, 0.35);
-          const ajustandoEssa = c.ajustando === j;
-          html += '<div id="quadro-wrap-'+i+'-'+j+'" style="position:absolute;top:'+pos.posY+'%;left:'+pos.posX+'%;transform:translate(-50%,-50%);width:'+pos.larguraFinal+'%;aspect-ratio:'+(p.tamanho?p.tamanho.largura:1)+'/'+(p.tamanho?p.tamanho.altura:1)+';'+(ajustandoEssa?'cursor:move;box-shadow:0 0 0 2px var(--gold);z-index:5;':'')+'" onclick="'+(c.ajustando===null||c.ajustando===undefined?'':'')+'">';
-          html += '<div style="background:'+molduraCor+';padding:'+filetePct.toFixed(3)+'%;box-sizing:border-box;width:100%;height:100%;">';
-          html += '<div style="background:'+corVaoEscura+';padding:'+vaoPct.toFixed(3)+'%;box-sizing:border-box;width:100%;height:100%;">';
-          html += '<div style="position:relative;width:100%;height:100%;">';
-          html += '<img src="'+p.obra.imagem_preview+'" style="width:100%;height:100%;object-fit:fill;background:#f4f2ee;display:block;" draggable="false">';
-          html += '<div style="position:absolute;inset:0;background-image:url('+data.watermark+');background-repeat:repeat;mix-blend-mode:overlay;pointer-events:none;"></div>';
-          html += '</div></div></div></div>';
-        });
+        html += '<div id="quadro-wrap-'+i+'" class="quadro-wrap-'+i+'" style="position:absolute;top:'+posY+'%;left:'+posX+'%;transform:translate(-50%,-50%);width:'+larguraFinal+'%;aspect-ratio:'+(t?t.largura:1)+'/'+(t?t.altura:1)+';'+(c.ajustando?'cursor:move;box-shadow:0 0 0 2px var(--gold);':'')+'">';
+        html += '<div class="moldura-'+i+'" style="border:2px solid '+molduraCor+';padding:'+gapPct.toFixed(2)+'%;background:#0a0a0a;box-sizing:border-box;width:100%;height:100%;">';
+        html += '<div style="position:relative;width:100%;height:100%;">';
+        html += '<img src="'+o.imagem_preview+'" style="width:100%;height:100%;object-fit:fill;background:#f4f2ee;display:block;" draggable="false">';
+        html += '<div style="position:absolute;inset:0;background-image:url('+data.watermark+');background-repeat:repeat;mix-blend-mode:overlay;pointer-events:none;"></div>';
+        html += '</div></div></div>';
         html += '</div>';
 
-        // Controles de ajuste — se estiver ajustando alguma peca especifica dessa composicao
-        if(typeof c.ajustando === 'number'){
-          html += '<div style="display:flex;gap:8px;margin-bottom:8px;">';
+        // Botão de ajuste manual de posição
+        if(c.ajustando){
+          html += '<div style="display:flex;gap:8px;margin-bottom:20px;">';
           html += '<button type="button" onclick="finalizarAjuste('+i+')" class="btn btn-primary" style="flex:1;">✓ Concluir ajuste</button>';
-          html += '<button type="button" onclick="resetarPosicao('+i+','+c.ajustando+')" class="btn btn-outline">Centralizar esta peça</button>';
+          html += '<button type="button" onclick="resetarPosicao('+i+')" class="btn btn-outline">Centralizar</button>';
           html += '</div>';
-          html += '<div style="font-size:11px;color:var(--gold);text-align:center;margin-bottom:16px;">Arraste a peça em destaque para a posição desejada · peça '+(c.ajustando+1)+' de '+pecas.length+'</div>';
+          html += '<div style="font-size:11px;color:var(--gold);text-align:center;margin-bottom:20px;">Arraste o quadro para a posição desejada</div>';
         } else {
-          html += '<button type="button" onclick="iniciarAjuste('+i+',0)" class="btn btn-outline" style="width:100%;margin-bottom:12px;">✥ Ajustar posição'+(pecas.length>1?' das peças':'')+'</button>';
+          html += '<button type="button" onclick="iniciarAjuste('+i+')" class="btn btn-outline" style="width:100%;margin-bottom:20px;">✥ Ajustar posição do quadro</button>';
         }
 
-        // Lista de pecas da composicao (cada uma com seu tamanho/moldura/trocar/remover)
-        pecas.forEach((p,j)=>{
-          const o = p.obra, t = p.tamanho;
-          html += '<div style="border-top:1px solid var(--border);padding-top:14px;margin-top:14px;">';
-          html += '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:8px;">';
-          html += '<div><div style="font-size:10px;letter-spacing:.25em;text-transform:uppercase;color:var(--muted);margin-bottom:2px;">'+(o.colecao||'')+(pecas.length>1?' · peça '+(j+1):'')+'</div>';
-          html += '<h4 style="font-family:\\'Cormorant Garamond\\',serif;font-size:19px;margin-bottom:2px;">'+o.nome+'</h4>';
-          html += '<div style="font-size:11px;color:var(--muted);">Código: '+(o.codigo||o.id)+'</div></div>';
-          if(pecas.length>1){ html += '<button type="button" onclick="removerPeca('+i+','+j+')" class="btn btn-outline" style="padding:4px 10px;font-size:10px;color:var(--danger);border-color:var(--danger);flex-shrink:0;">Remover</button>'; }
-          html += '</div>';
+        // Info da obra
+        html += '<div style="font-size:10px;letter-spacing:.25em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;">'+(o.colecao||'')+'</div>';
+        html += '<h4 style="font-family:\\'Cormorant Garamond\\',serif;font-size:22px;margin-bottom:4px;">'+o.nome+'</h4>';
+        html += '<div style="font-size:11px;color:var(--muted);margin-bottom:16px;">Código: '+(o.codigo||o.id)+'</div>';
 
-          const tamanhos = o._tamanhosDisponiveis || (t?[t]:[]);
-          if(tamanhos.length){
-            html += '<div style="margin-bottom:12px;">';
-            html += '<div style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:6px;">Tamanho</div>';
-            html += '<select onchange="mudarTamanho('+i+','+j+',this.value)" style="width:100%;background:#0d0d0d;border:1px solid var(--border);color:var(--text);padding:10px 12px;border-radius:3px;font-size:13px;font-family:\\'Inter\\',sans-serif;outline:none;cursor:pointer;">';
-            tamanhos.forEach((tm,idx)=>{
-              const sel = (t && tm.largura===t.largura && tm.altura===t.altura) ? 'selected' : '';
-              html += '<option value="'+idx+'" '+sel+'>'+tm.label+(tm.precoLabel?' · '+tm.precoLabel:'')+'</option>';
-            });
-            html += '</select></div>';
-          }
-
-          html += '<div style="margin-bottom:12px;">';
-          html += '<div style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:6px;">Moldura'+(p.moldura===a.moldura_recomendada?' <span style="color:var(--gold);">(recomendada)</span>':'')+'</div>';
-          html += '<div style="display:flex;gap:8px;">';
-          [['preta','#1a1a1a'],['carvalho','#8a6d3b'],['aco_escovado','linear-gradient(135deg,#aaa,#777)']].forEach(([slug,bg])=>{
-            const borda = p.moldura===slug ? 'var(--gold)' : 'var(--border)';
-            html += '<button type="button" onclick="mudarMoldura('+i+','+j+',\\''+slug+'\\')" style="width:32px;height:32px;background:'+bg+';border:2px solid '+borda+';border-radius:3px;cursor:pointer;" title="'+(nomesMoldura[slug])+'"></button>';
+        // Dropdown de tamanho
+        const tamanhos = o._tamanhosDisponiveis || (t?[t]:[]);
+        if(tamanhos.length){
+          html += '<div style="margin-bottom:16px;">';
+          html += '<div style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:8px;">Tamanho</div>';
+          html += '<select onchange="mudarTamanho('+i+',this.value)" style="width:100%;background:#0d0d0d;border:1px solid var(--border);color:var(--text);padding:11px 14px;border-radius:3px;font-size:14px;font-family:\\'Inter\\',sans-serif;outline:none;cursor:pointer;">';
+          tamanhos.forEach((tm,idx)=>{
+            const sel = (t && tm.largura===t.largura && tm.altura===t.altura) ? 'selected' : '';
+            html += '<option value="'+idx+'" '+sel+'>'+tm.label+(tm.precoLabel?' · '+tm.precoLabel:'')+'</option>';
           });
-          html += '</div></div>';
+          html += '</select></div>';
+        }
 
-          html += '<button type="button" onclick="abrirGaleria('+i+','+j+',\\'trocar\\')" class="btn btn-outline" style="width:100%;">Trocar por outra obra</button>';
-
-          if(o._motivos && o._motivos.length){
-            html += '<div style="font-size:12px;color:#aaa;line-height:1.7;margin-top:10px;"><strong style="color:var(--gold);">Por que combina:</strong> '+o._motivos.join('; ')+'.</div>';
-          }
-          html += '</div>';
+        // Moldura
+        html += '<div style="margin-bottom:16px;">';
+        html += '<div style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:8px;">Moldura'+(c.moldura===a.moldura_recomendada?' <span style="color:var(--gold);">(recomendada)</span>':'')+'</div>';
+        html += '<div style="display:flex;gap:8px;" id="molduras-'+i+'">';
+        [['preta','#1a1a1a'],['carvalho','#5c4a2e'],['aco_escovado','linear-gradient(135deg,#aaa,#777)']].forEach(([slug,bg])=>{
+          const borda = c.moldura===slug ? 'var(--gold)' : 'var(--border)';
+          html += '<button type="button" onclick="mudarMoldura('+i+',\\''+slug+'\\')" data-cor="'+slug+'" style="width:36px;height:36px;background:'+bg+';border:2px solid '+borda+';border-radius:3px;cursor:pointer;" title="'+(nomesMoldura[slug])+'"></button>';
         });
+        html += '</div></div>';
 
-        html += '<button type="button" onclick="abrirGaleria('+i+',null,\\'adicionar\\')" class="btn btn-outline" style="width:100%;margin-top:16px;border-color:var(--gold);color:var(--gold);">+ Adicionar peça a esta composição</button>';
+        // Trocar obra
+        html += '<button type="button" onclick="abrirGaleria('+i+')" class="btn btn-outline" style="width:100%;margin-bottom:16px;">Trocar por outra obra</button>';
+
+        // Por que combina
+        if(o._motivos && o._motivos.length){
+          html += '<div style="font-size:12px;color:#aaa;line-height:1.7;"><strong style="color:var(--gold);">Por que combina:</strong> '+o._motivos.join('; ')+'.</div>';
+        }
         html += '</div>';
 
         document.getElementById('card-slot-'+i).innerHTML = html;
-        if(typeof c.ajustando === 'number'){ setTimeout(()=>ativarArrastar(i, c.ajustando), 0); }
+        // Se está em modo de ajuste, reativa o arrastar (o innerHTML recriou o elemento)
+        if(SIM.cards[i].ajustando){ setTimeout(()=>ativarArrastar(i), 0); }
       }
 
-      function mudarTamanho(i, j, idx){
-        const tamanhos = SIM.cards[i].pecas[j].obra._tamanhosDisponiveis || [];
-        if(tamanhos[idx]){ SIM.cards[i].pecas[j].tamanho = tamanhos[idx]; montarCard(i); }
+      function mudarTamanho(i, idx){
+        const tamanhos = SIM.cards[i].obra._tamanhosDisponiveis || [];
+        if(tamanhos[idx]){ SIM.cards[i].tamanho = tamanhos[idx]; montarCard(i); }
       }
 
-      function mudarMoldura(i, j, slug){
-        SIM.cards[i].pecas[j].moldura = slug;
+      function mudarMoldura(i, slug){
+        SIM.cards[i].moldura = slug;
         montarCard(i);
       }
 
-      function removerPeca(i, j){
-        if(SIM.cards[i].pecas.length <= 1) return;
-        SIM.cards[i].pecas.splice(j, 1);
-        if(SIM.cards[i].ajustando === j) SIM.cards[i].ajustando = undefined;
-        montarCard(i);
+      // ── Ajuste manual de posição (arrastar) ──
+      // ── Salvar simulação ──
+      function abrirSalvar(){
+        const nome = prompt('Dê um nome para esta simulação (ex: Sala do cliente João):');
+        if(nome === null) return; // cancelou
+        if(!nome.trim()){ alert('Digite um nome.'); return; }
+        salvarSimulacao(nome.trim());
+      }
+      async function salvarSimulacao(nome){
+        // Monta os cards com só o essencial pra reabrir
+        const cardsSalvar = SIM.cards.map(c => ({
+          obra: {
+            id: c.obra.id, codigo: c.obra.codigo, nome: c.obra.nome, colecao: c.obra.colecao,
+            imagem_preview: c.obra.imagem_preview, _tamanhosDisponiveis: c.obra._tamanhosDisponiveis || [],
+            _motivos: c.obra._motivos || []
+          },
+          tamanho: c.tamanho, moldura: c.moldura,
+          posX: c.posX, posY: c.posY
+        }));
+        try{
+          const r = await fetch('/simulador/salvar', {
+            method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({
+              nome, foto_local: SIM.data.foto_local,
+              parede_largura: SIM.data.parede_largura, parede_altura: SIM.data.parede_altura,
+              analise: SIM.data.analise, watermark: SIM.data.watermark,
+              cards: cardsSalvar
+            })
+          });
+          const d = await r.json();
+          if(d.erro){ alert(d.erro); return; }
+          alert('Simulação salva! Você pode consultá-la em "Minhas simulações".');
+        }catch(e){ alert('Erro ao salvar: '+e.message); }
       }
 
-      // ── Ajuste manual de posição (arrastar) — agora por peça dentro da composição ──
-      function iniciarAjuste(i, j){
-        SIM.cards[i].ajustando = j;
+      function iniciarAjuste(i){
+        SIM.cards[i].ajustando = true;
         montarCard(i);
+        ativarArrastar(i);
       }
       function finalizarAjuste(i){
-        SIM.cards[i].ajustando = undefined;
+        SIM.cards[i].ajustando = false;
         montarCard(i);
       }
-      function resetarPosicao(i, j){
-        delete SIM.cards[i].pecas[j].posX;
-        delete SIM.cards[i].pecas[j].posY;
+      function resetarPosicao(i){
+        delete SIM.cards[i].posX;
+        delete SIM.cards[i].posY;
         montarCard(i);
-        if(typeof SIM.cards[i].ajustando === 'number') ativarArrastar(i, SIM.cards[i].ajustando);
+        if(SIM.cards[i].ajustando) ativarArrastar(i);
       }
-      function ativarArrastar(i, j){
-        const wrap = document.getElementById('quadro-wrap-'+i+'-'+j);
+      function ativarArrastar(i){
+        const wrap = document.getElementById('quadro-wrap-'+i);
         const container = document.getElementById('sim-container-'+i);
         if(!wrap || !container) return;
         let arrastando = false;
@@ -1574,8 +1464,8 @@ app.get('/simulador', authMembro, async(req,res)=>{
           let py = ((clientY - rect.top) / rect.height) * 100;
           px = Math.max(0, Math.min(100, px));
           py = Math.max(0, Math.min(100, py));
-          SIM.cards[i].pecas[j].posX = px;
-          SIM.cards[i].pecas[j].posY = py;
+          SIM.cards[i].posX = px;
+          SIM.cards[i].posY = py;
           wrap.style.left = px + '%';
           wrap.style.top = py + '%';
         }
@@ -1590,47 +1480,11 @@ app.get('/simulador', authMembro, async(req,res)=>{
         wrap.ontouchstart = function(e){ arrastando = true; document.addEventListener('touchmove', mover, {passive:false}); document.addEventListener('touchend', soltar); };
       }
 
-      // ── Salvar simulação ──
-      function abrirSalvar(){
-        const nome = prompt('Dê um nome para esta simulação (ex: Sala do cliente João):');
-        if(nome === null) return;
-        if(!nome.trim()){ alert('Digite um nome.'); return; }
-        salvarSimulacao(nome.trim());
-      }
-      async function salvarSimulacao(nome){
-        const cardsSalvar = SIM.cards.map(c => ({
-          pecas: c.pecas.map(p => ({
-            obra: {
-              id: p.obra.id, codigo: p.obra.codigo, nome: p.obra.nome, colecao: p.obra.colecao,
-              imagem_preview: p.obra.imagem_preview, _tamanhosDisponiveis: p.obra._tamanhosDisponiveis || [],
-              _motivos: p.obra._motivos || []
-            },
-            tamanho: p.tamanho, moldura: p.moldura, posX: p.posX, posY: p.posY
-          }))
-        }));
-        try{
-          const r = await fetch('/simulador/salvar', {
-            method:'POST', headers:{'Content-Type':'application/json'},
-            body: JSON.stringify({
-              nome, foto_local: SIM.data.foto_local,
-              parede_largura: SIM.data.parede_largura, parede_altura: SIM.data.parede_altura,
-              analise: SIM.data.analise, watermark: SIM.data.watermark,
-              cards: cardsSalvar
-            })
-          });
-          const d = await r.json();
-          if(d.erro){ alert('Erro ao salvar: '+d.erro); return; }
-          alert('Simulação salva! Você pode encontrá-la em "Minhas simulações".');
-        }catch(e){ alert('Erro ao salvar: '+e.message); }
-      }
+      // ── Galeria de troca de obra ──
+      let GALERIA = { obras:null, slot:null };
 
-      // ── Galeria de troca/adição de obra ──
-      let GALERIA = { obras:null, slot:null, sub:null, modo:'trocar' };
-
-      async function abrirGaleria(i, j, modo){
+      async function abrirGaleria(i){
         GALERIA.slot = i;
-        GALERIA.sub = j;
-        GALERIA.modo = modo || 'trocar';
         const modal = document.getElementById('galeria-modal');
         modal.style.display = 'block';
         document.body.style.overflow = 'hidden';
@@ -1674,28 +1528,22 @@ app.get('/simulador', authMembro, async(req,res)=>{
         const nova = GALERIA.obras.find(o=>o.id===id);
         if(!nova) return;
         const i = GALERIA.slot;
-        const novaObra = {
+        // Monta o objeto obra no formato que montarCard espera
+        SIM.cards[i].obra = {
           id: nova.id, codigo: nova.codigo, nome: nova.nome, colecao: nova.colecao,
           imagem_preview: nova.imagem_preview,
           _tamanhosDisponiveis: nova.tamanhos,
           _motivos: ['escolha do cliente']
         };
-        const novoTamanho = nova.tamanhos && nova.tamanhos.length ? nova.tamanhos[0] : null;
-
-        if(GALERIA.modo === 'adicionar'){
-          const molduraBase = SIM.cards[i].pecas[0] ? SIM.cards[i].pecas[0].moldura : 'preta';
-          SIM.cards[i].pecas.push({ obra: novaObra, tamanho: novoTamanho, moldura: molduraBase, posX:undefined, posY:undefined });
-        } else {
-          const j = GALERIA.sub;
-          SIM.cards[i].pecas[j].obra = novaObra;
-          SIM.cards[i].pecas[j].tamanho = novoTamanho;
-        }
+        SIM.cards[i].tamanho = nova.tamanhos && nova.tamanhos.length ? nova.tamanhos[0] : null;
         fecharGaleria();
         montarCard(i);
       }
     </script>
   `,true));
 });
+
+// POST — processa a análise
 app.post('/simulador/analisar', authMembro, async(req,res)=>{
   try{
     const { foto_local, fotos_ambiente, parede_largura, parede_altura, finalidade, destaque, pref_paleta } = req.body;
@@ -1844,7 +1692,7 @@ app.get('/simulador/minhas', authMembro, async(req,res)=>{
   const slugs=fRows.rows.map(r=>r.slug);
   const navImpacto=slugs.some(s=>['embaixador','especificador','artista','colaborador'].includes(s))?'<a href="/meu-impacto" class="nav-link">Impacto</a>':'';
   res.send(html('Minhas simulações',`
-    ${navBar('simulador', !!navImpacto, slugs.includes('especificador'))}
+    <div class="nav-bar"><a href="/portal" class="nav-link">Passaporte</a><a href="/catalogo" class="nav-link">Obras</a><a href="/simulador" class="nav-link ativo">Simulador</a><a href="/carrinho" class="nav-link">Carrinho</a>${navImpacto}<a href="/sugestoes" class="nav-link">Voz</a><a href="/minhas-funcoes" class="nav-link">Funções</a><a href="/meu-convite" class="nav-link">Convidar</a></div>
     <a href="/simulador" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);display:inline-block;margin-bottom:24px;">← Voltar ao simulador</a>
     <h2 style="font-size:28px;margin-bottom:8px;">Minhas simulações</h2>
     <p style="color:var(--muted);margin-bottom:32px;">Suas simulações salvas. Elas ficam disponíveis por 20 dias. Limite de 10 salvas.</p>
@@ -1958,7 +1806,7 @@ app.get('/minhas-indicacoes', authMembro, async(req,res)=>{
     </div>`).join('');
 
   res.send(html('Minhas indicações',`
-    ${navBar('indicacoes', await temFuncaoComImpacto(req.membro.id), await ehEspecificador(req.membro.id))}
+    <div class="nav-bar"><a href="/portal" class="nav-link">Passaporte</a><a href="/catalogo" class="nav-link">Obras</a><a href="/simulador" class="nav-link">Simulador</a><a href="/carrinho" class="nav-link">Carrinho</a><a href="/minhas-indicacoes" class="nav-link ativo">Indicações</a><a href="/sugestoes" class="nav-link">Voz</a><a href="/minhas-funcoes" class="nav-link">Funções</a><a href="/meu-convite" class="nav-link">Convidar</a></div>
     <h2 style="font-size:28px;margin-bottom:8px;">Minhas indicações</h2>
     <p style="color:var(--muted);margin-bottom:32px;">Cada obra do catálogo tem seu próprio link. Toque em "Indicar esta obra" no catálogo para gerar um.</p>
     <div class="card" style="margin-bottom:24px;"><h3 style="font-size:16px;margin-bottom:12px;color:var(--gold);">Seus links por obra</h3>${itens||'<p style="color:var(--muted);padding:12px 0;">Você ainda não indicou nenhuma obra. Vá ao catálogo e toque em "Indicar esta obra".</p>'}</div>
@@ -2085,9 +1933,9 @@ app.post('/comprar/:obraId/adicionar', authMembro, async(req,res)=>{
 // Ver o carrinho
 app.get('/carrinho', authMembro, async(req,res)=>{
   const pedidoRes = await pool.query(`SELECT * FROM circulo_pedidos WHERE membro_id=$1 AND status='CARRINHO'`,[req.membro.id]);
-  const navBarHtml = navBar('carrinho', await temFuncaoComImpacto(req.membro.id), await ehEspecificador(req.membro.id));
+  const navBar = '<div class="nav-bar"><a href="/portal" class="nav-link">Passaporte</a><a href="/catalogo" class="nav-link">Obras</a><a href="/simulador" class="nav-link">Simulador</a><a href="/carrinho" class="nav-link ativo">Carrinho</a><a href="/sugestoes" class="nav-link">Voz</a><a href="/minhas-funcoes" class="nav-link">Funções</a></div>';
   if(!pedidoRes.rows.length){
-    return res.send(html('Carrinho',`${navBarHtml}<h2 style="font-size:28px;margin-bottom:16px;">Seu carrinho</h2><div class="card" style="text-align:center;padding:48px 24px;"><p style="color:var(--muted);margin-bottom:20px;">Seu carrinho está vazio.</p><a href="/catalogo" class="btn btn-primary">Ver obras no catálogo</a></div>`,true));
+    return res.send(html('Carrinho',`${navBar}<h2 style="font-size:28px;margin-bottom:16px;">Seu carrinho</h2><div class="card" style="text-align:center;padding:48px 24px;"><p style="color:var(--muted);margin-bottom:20px;">Seu carrinho está vazio.</p><a href="/catalogo" class="btn btn-primary">Ver obras no catálogo</a></div>`,true));
   }
   const p = pedidoRes.rows[0];
   const itens = await pool.query(`
@@ -2126,7 +1974,7 @@ app.get('/carrinho', authMembro, async(req,res)=>{
   }
 
   res.send(html('Carrinho',`
-    ${navBarHtml}
+    ${navBar}
     <h2 style="font-size:28px;margin-bottom:24px;">Seu carrinho</h2>
     <div class="card" style="margin-bottom:20px;">
       ${linhas}
@@ -2499,14 +2347,6 @@ app.post('/pedido/:token/pagar', async(req,res)=>{
 
 
 // Página de compra de uma obra (escolher tamanho, moldura, quantidade)
-// Tamanhos oficiais da obra (com preço), pra exibir no catálogo assim que a pessoa abre a obra
-app.get('/obra/:obraId/tamanhos-json', authMembro, async(req,res)=>{
-  try{
-    const tamanhos = await tamanhosDaObra(parseInt(req.params.obraId));
-    res.json({ tamanhos: tamanhos.map(t=>({ id:t.id, label:t.label, preco:t.preco, precoLabel: 'R$ '+t.preco.toLocaleString('pt-BR') })) });
-  }catch(e){ res.status(500).json({ erro: e.message }); }
-});
-
 app.get('/obra/:obraId/comprar', authMembro, async(req,res)=>{
   const obraId = parseInt(req.params.obraId);
   const obra = await pool.query('SELECT id,nome,colecao,imagem_preview FROM almare_obras WHERE id=$1 AND status=\'aprovada\'',[obraId]);
@@ -2517,8 +2357,6 @@ app.get('/obra/:obraId/comprar', authMembro, async(req,res)=>{
 
   const opcoesTam = tamanhos.map(t=>`<option value="${t.id}">${esc(t.label)} · R$ ${t.preco.toLocaleString('pt-BR')}</option>`).join('');
   const codigoInd = req.query.ref || '';
-  const tamanhoPreSel = req.query.tamanho_id !== undefined ? parseInt(req.query.tamanho_id) : null;
-  const moldPreSel = req.query.moldura || '';
 
   res.send(html('Comprar',`
     <a href="/catalogo" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);display:inline-block;margin-bottom:24px;">← Voltar às obras</a>
@@ -2528,12 +2366,12 @@ app.get('/obra/:obraId/comprar', authMembro, async(req,res)=>{
     <div class="card">
       <form method="POST" action="/comprar/${obraId}/adicionar">
         <input type="hidden" name="codigo_indicacao" value="${esc(codigoInd)}">
-        <div class="field"><label>Tamanho</label><select name="tamanho_id" required>${tamanhos.map(t=>`<option value="${t.id}" ${tamanhoPreSel===t.id?'selected':''}>${esc(t.label)} · R$ ${t.preco.toLocaleString('pt-BR')}</option>`).join('')}</select></div>
+        <div class="field"><label>Tamanho</label><select name="tamanho_id" required>${opcoesTam}</select></div>
         <div class="field"><label>Moldura</label>
           <select name="moldura" required>
-            <option value="preta" ${moldPreSel==='preta'?'selected':''}>Preta</option>
-            <option value="carvalho" ${moldPreSel==='carvalho'?'selected':''}>Carvalho</option>
-            <option value="aco_escovado" ${moldPreSel==='aco_escovado'?'selected':''}>Aço escovado</option>
+            <option value="preta">Preta</option>
+            <option value="carvalho">Carvalho</option>
+            <option value="aco_escovado">Aço escovado</option>
           </select>
         </div>
         <div class="field"><label>Quantidade</label><input type="number" name="quantidade" value="1" min="1" max="20"></div>
@@ -2544,271 +2382,6 @@ app.get('/obra/:obraId/comprar', authMembro, async(req,res)=>{
 });
 
 // ─── CATÁLOGO ─────────────────────────────────────────────────────────────────
-// ─── ESPECIFICADOR — modelos 3D gerados SOB DEMANDA (.skp/.obj/.dxf) ──
-// Nao ha arquivo pre-fabricado: cada download e gerado na hora do pedido,
-// a partir da imagem real da obra + tamanho + moldura escolhidos.
-const { gerarModelo3D, NOMES_MOLDURA } = require('./gerador3d');
-
-app.get('/modelos-3d', authMembro, async(req,res)=>{
-  if(!(await ehEspecificador(req.membro.id))){
-    return res.send(html('Modelos 3D', `<div class="card"><p style="color:var(--muted)">Esta ferramenta é exclusiva de membros com a função <strong style="color:var(--gold)">Especificador</strong> ativa. <a href="/minhas-funcoes" style="color:var(--gold)">Ativar função →</a></p></div>`, true));
-  }
-  const temImpacto = await temFuncaoComImpacto(req.membro.id);
-  const obras = await pool.query(`
-    SELECT id, codigo, nome, colecao, formato_recomendado, tamanhos_recomendados, orientacao, imagem_preview
-    FROM almare_obras WHERE status='aprovada' AND codigo <> 'ALM-001' AND imagem_preview IS NOT NULL
-    ORDER BY nome`);
-
-  let corpo = navBar('modelos3d', temImpacto, true);
-  corpo += `<h2 style="font-size:28px;margin-bottom:8px;">Modelos 3D</h2>`;
-  corpo += `<p style="color:var(--muted);margin-bottom:24px;">Escolha a obra, o tamanho, a moldura e o formato. O arquivo é gerado na hora — monte sua lista e baixe tudo de uma vez.</p>`;
-
-  corpo += `<div id="carrinho-3d-resumo" class="card" style="margin-bottom:24px;display:none;position:sticky;top:12px;z-index:10;border-color:var(--gold);">
-    <div style="display:flex;justify-content:space-between;align-items:center;">
-      <div><strong id="carrinho-3d-contagem">0</strong> arquivo(s) na lista</div>
-      <div style="display:flex;gap:8px;">
-        <button onclick="limparCarrinho3d()" class="btn btn-outline" style="padding:8px 14px;font-size:11px;">Limpar</button>
-        <button onclick="baixarCarrinho3d()" class="btn btn-primary" style="padding:8px 14px;font-size:11px;">Gerar e baixar (.zip)</button>
-      </div>
-    </div>
-    <div id="carrinho-3d-itens" style="margin-top:10px;font-size:12px;color:var(--muted);"></div>
-  </div>`;
-
-  obras.rows.forEach(o=>{
-    corpo += `<div class="card" style="margin-bottom:16px;" data-obra="${o.id}" data-codigo="${o.codigo}" data-nome="${o.nome.replace(/"/g,'&quot;')}">
-      <div style="display:flex;gap:14px;align-items:center;margin-bottom:14px;">
-        <img src="${o.imagem_preview}" style="width:56px;height:56px;object-fit:cover;border-radius:4px;">
-        <div><div style="font-size:10px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);">${o.colecao||''}</div>
-        <div style="font-family:'Cormorant Garamond',serif;font-size:19px;">${o.nome}</div></div>
-      </div>
-      <div id="opcoes-${o.id}" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
-        <div style="flex:1;min-width:140px;"><label style="font-size:10px;color:var(--muted);">Tamanho</label>
-          <select id="tam-${o.id}" style="width:100%;padding:8px;background:#0d0d0d;border:1px solid var(--border);color:#fff;border-radius:3px;">Carregando...</select></div>
-        <div style="min-width:130px;"><label style="font-size:10px;color:var(--muted);">Moldura</label>
-          <select id="mold-${o.id}" style="width:100%;padding:8px;background:#0d0d0d;border:1px solid var(--border);color:#fff;border-radius:3px;">
-            <option value="preta">Preta</option><option value="carvalho">Carvalho</option><option value="aco_escovado">Aço escovado</option>
-          </select></div>
-        <div style="min-width:100px;"><label style="font-size:10px;color:var(--muted);">Formato</label>
-          <select id="fmt-${o.id}" style="width:100%;padding:8px;background:#0d0d0d;border:1px solid var(--border);color:#fff;border-radius:3px;">
-            <option value="skp">.skp</option><option value="obj">.obj</option><option value="dxf">.dxf</option>
-          </select></div>
-        <button type="button" onclick="adicionarItem3d(${o.id})" class="btn btn-outline" style="padding:8px 14px;font-size:11px;">+ Adicionar</button>
-      </div>
-    </div>`;
-  });
-
-  corpo += `<script>
-    let CARRINHO3D = [];
-
-    document.querySelectorAll('[data-obra]').forEach(async (cardEl) => {
-      const obraId = cardEl.dataset.obra;
-      const r = await fetch('/modelos-3d/tamanhos/' + obraId);
-      const d = await r.json();
-      const sel = document.getElementById('tam-' + obraId);
-      sel.innerHTML = (d.tamanhos||[]).map((t,idx)=>'<option value=\\''+t.largura+'x'+t.altura+'\\'>'+t.label+'</option>').join('');
-    });
-
-    function adicionarItem3d(obraId){
-      const cardEl = document.querySelector('[data-obra="'+obraId+'"]');
-      const [largura, altura] = document.getElementById('tam-'+obraId).value.split('x').map(Number);
-      const moldura = document.getElementById('mold-'+obraId).value;
-      const formato = document.getElementById('fmt-'+obraId).value;
-      CARRINHO3D.push({ obraId: Number(obraId), obraCodigo: cardEl.dataset.codigo, obraNome: cardEl.dataset.nome, largura, altura, moldura, formato });
-      atualizarResumoCarrinho3d();
-    }
-
-    function atualizarResumoCarrinho3d(){
-      const resumo = document.getElementById('carrinho-3d-resumo');
-      const contagem = document.getElementById('carrinho-3d-contagem');
-      const itens = document.getElementById('carrinho-3d-itens');
-      if(CARRINHO3D.length === 0){ resumo.style.display = 'none'; return; }
-      resumo.style.display = 'block';
-      contagem.textContent = CARRINHO3D.length;
-      const nomesMoldura = { preta:'Preta', carvalho:'Carvalho', aco_escovado:'Aço escovado' };
-      itens.innerHTML = CARRINHO3D.map((i,idx) => i.obraNome+' · '+i.largura+'×'+i.altura+'cm · '+(nomesMoldura[i.moldura]||i.moldura)+' · .'+i.formato+' <a href="#" onclick="removerItem3d('+idx+');return false;" style="color:var(--danger);margin-left:6px;">✕</a>').join('<br>');
-    }
-
-    function removerItem3d(idx){ CARRINHO3D.splice(idx,1); atualizarResumoCarrinho3d(); }
-    function limparCarrinho3d(){ CARRINHO3D = []; atualizarResumoCarrinho3d(); }
-
-    async function baixarCarrinho3d(){
-      if(!CARRINHO3D.length) return;
-      const btn = event.target;
-      const textoOriginal = btn.textContent;
-      btn.disabled = true; btn.textContent = 'Gerando arquivos...';
-      try{
-        const r = await fetch('/modelos-3d/baixar', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ itens: CARRINHO3D }) });
-        if(!r.ok){ const t = await r.text(); alert('Erro: '+t); btn.disabled=false; btn.textContent=textoOriginal; return; }
-        const blob = await r.blob();
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url; a.download = 'ALMARE_modelos-3d.zip';
-        document.body.appendChild(a); a.click(); a.remove();
-        window.URL.revokeObjectURL(url);
-      }catch(e){ alert('Erro ao gerar: '+e.message); }
-      btn.disabled = false; btn.textContent = textoOriginal;
-    }
-  </script>`;
-
-  res.send(html('Modelos 3D', corpo, true));
-});
-
-// Tamanhos validos pra essa obra (mesma regra ja usada no simulador — respeita formato/orientacao)
-app.get('/modelos-3d/tamanhos/:obraId', authMembro, async(req,res)=>{
-  try{
-    const o = await pool.query('SELECT formato_recomendado, tamanhos_recomendados, orientacao FROM almare_obras WHERE id=$1', [req.params.obraId]);
-    if(!o.rows.length) return res.json({ tamanhos: [] });
-    let tams = tamanhosOficiais(o.rows[0].formato_recomendado, o.rows[0].tamanhos_recomendados);
-    const orient = String(o.rows[0].orientacao||'').toLowerCase();
-    if(/vertical|retrato/.test(orient)){ const v = tams.filter(t=>t.altura>=t.largura); if(v.length) tams=v; }
-    else if(/horizontal|paisagem/.test(orient)){ const h = tams.filter(t=>t.largura>=t.altura); if(h.length) tams=h; }
-    res.json({ tamanhos: tams });
-  }catch(e){ res.status(500).json({ erro: e.message }); }
-});
-
-app.post('/modelos-3d/baixar', authMembro, async(req,res)=>{
-  try{
-    if(!(await ehEspecificador(req.membro.id))) return res.status(403).send('Acesso restrito a especificadores.');
-    const { itens } = req.body;
-    if(!itens || !itens.length) return res.status(400).send('Nenhum item selecionado.');
-    if(itens.length > 30) return res.status(400).send('Máximo de 30 arquivos por download.');
-
-    const zip = new AdmZip();
-    for(const item of itens){
-      const obra = await pool.query('SELECT imagem_preview FROM almare_obras WHERE id=$1', [item.obraId]);
-      if(!obra.rows.length || !obra.rows[0].imagem_preview) continue;
-      const base64Img = obra.rows[0].imagem_preview.replace(/^data:image\/\w+;base64,/, '');
-      const imagemBytes = Buffer.from(base64Img, 'base64');
-
-      const resultado = await gerarModelo3D({
-        obraCodigo: item.obraCodigo, obraNome: item.obraNome,
-        larguraCm: item.largura, alturaCm: item.altura, moldura: item.moldura, formato: item.formato,
-        imagemBytes
-      });
-      zip.addFile(resultado.nomeArquivo, resultado.buffer);
-      if(resultado.mtlBuffer) zip.addFile(resultado.nomeArquivoMtl, resultado.mtlBuffer);
-
-      await pool.query(
-        `INSERT INTO circulo_downloads_3d (membro_id, obra_id, obra_nome, largura, altura, moldura, formato) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-        [req.membro.id, item.obraId, item.obraNome, item.largura, item.altura, item.moldura, item.formato]);
-    }
-
-    const buf = zip.toBuffer();
-    res.setHeader('Content-Type', 'application/zip');
-    res.setHeader('Content-Disposition', 'attachment; filename="ALMARE_modelos-3d.zip"');
-    res.send(buf);
-  }catch(e){
-    console.error('ERRO GERACAO 3D:', e.message);
-    res.status(500).send('Erro ao gerar modelo: ' + e.message);
-  }
-});
-
-app.get('/identificar', authMembro, async(req,res)=>{
-  const temImpacto = await temFuncaoComImpacto(req.membro.id);
-  res.send(html('Identificar obra',`
-    ${navBar('identificar', temImpacto, await ehEspecificador(req.membro.id))}
-    <h2 style="font-size:28px;margin-bottom:8px;">Identificar obra</h2>
-    <p style="color:var(--muted);margin-bottom:32px;">Tire uma foto de uma peça física e o sistema reconhece qual obra do acervo ALMARE ela é.</p>
-    <div class="card">
-      <div class="field">
-        <label>Foto da peça</label>
-        <input type="file" id="id-foto" accept="image/*" capture="environment" style="width:100%;padding:10px;background:#0d0d0d;border:1px solid var(--border);border-radius:3px;color:#fff">
-      </div>
-      <div id="id-preview" style="margin:16px 0;"></div>
-      <button class="btn btn-primary" id="id-btn" onclick="identificarFoto()">Identificar</button>
-      <div id="id-resultado" style="margin-top:20px;"></div>
-    </div>
-    <script>
-      document.getElementById('id-foto').addEventListener('change', function(e){
-        const f = e.target.files[0];
-        if (!f) return;
-        document.getElementById('id-preview').innerHTML = '<img src="'+URL.createObjectURL(f)+'" style="max-width:240px;border-radius:4px;">';
-      });
-      async function identificarFoto(){
-        const inp = document.getElementById('id-foto');
-        const btn = document.getElementById('id-btn');
-        const res = document.getElementById('id-resultado');
-        if (!inp.files[0]) { alert('Escolhe uma foto primeiro.'); return; }
-        btn.disabled = true; btn.textContent = 'Identificando...';
-        res.innerHTML = '';
-        try {
-          const fd = new FormData();
-          fd.append('foto', inp.files[0]);
-          const r = await fetch('/identificar', { method: 'POST', body: fd });
-          const texto = await r.text();
-          let d; try { d = JSON.parse(texto); } catch(e) { throw new Error('O servidor demorou ou teve uma instabilidade. Tenta de novo.'); }
-          if (!r.ok) throw new Error(d.erro || 'Erro ao identificar');
-          if (!d.encontrado) {
-            res.innerHTML = '<div class="msg-erro">Não consegui identificar com segurança. '+(d.justificativa||'')+'</div>';
-          } else {
-            res.innerHTML = '<div style="display:flex;gap:16px;align-items:center;padding:16px;border:1px solid var(--gold);border-radius:4px;">'
-              + (d.obra.imagem_preview ? '<img src="'+d.obra.imagem_preview+'" style="width:80px;height:80px;object-fit:cover;border-radius:4px;flex-shrink:0;">' : '')
-              + '<div><div style="font-family:\\'Cormorant Garamond\\',serif;font-size:20px;">'+d.obra.nome+'</div>'
-              + '<div style="font-size:12px;color:var(--muted);margin-bottom:8px;">'+d.obra.codigo+' · '+(d.obra.colecao||'')+' · Confiança: '+d.confianca+'</div>'
-              + '<a href="/obra/'+d.obra.id+'/comprar" class="btn btn-outline" style="padding:6px 14px;font-size:11px;">Ver obra</a></div></div>';
-          }
-        } catch(e) {
-          res.innerHTML = '<div class="msg-erro">'+e.message+'</div>';
-        }
-        btn.disabled = false; btn.textContent = 'Identificar';
-      }
-    </script>
-  `,true));
-});
-
-app.post('/identificar', authMembro, uploadFoto.single('foto'), async(req,res)=>{
-  try {
-    if (!req.file) return res.status(400).json({ erro: 'Nenhuma foto enviada' });
-
-    const fotoResized = await sharp(req.file.buffer).resize({ width: 500, height: 500, fit: 'inside' }).jpeg({ quality: 75 }).toBuffer();
-    const fotoB64 = fotoResized.toString('base64');
-
-    const obras = await pool.query(`SELECT id, codigo, nome, colecao, imagem_preview FROM almare_obras WHERE imagem_preview IS NOT NULL ORDER BY id`);
-    if (!obras.rows.length) return res.status(404).json({ erro: 'Nenhuma obra cadastrada no acervo ainda' });
-
-    const referencias = [];
-    for (const o of obras.rows) {
-      try {
-        const base64Original = o.imagem_preview.replace(/^data:image\/\w+;base64,/, '');
-        const buf = Buffer.from(base64Original, 'base64');
-        const mini = await sharp(buf).resize({ width: 300, height: 300, fit: 'inside' }).jpeg({ quality: 70 }).toBuffer();
-        referencias.push({ codigo: o.codigo, nome: o.nome, colecao: o.colecao, b64: mini.toString('base64') });
-      } catch (e) {}
-    }
-
-    const content = [
-      { type: 'text', text: `Voce e um especialista em reconhecimento visual de obras de arte. A primeira imagem abaixo e uma FOTO de uma peca fisica que precisa ser identificada. As imagens seguintes sao referencias do banco de dados, cada uma com um codigo.\n\nCompare a foto com cada referencia considerando: padrao de cores, textura, composicao, formas — mesmo com variacao de iluminacao, angulo ou reflexo.\n\nResponda APENAS com JSON, sem markdown:\n{"codigo_identificado":"ALM-XXX ou null se nenhuma bater","confianca":"Alta/Media/Baixa/Nenhuma","justificativa":"1 frase curta"}` },
-      { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: fotoB64 } }
-    ];
-    referencias.forEach(r => {
-      content.push({ type: 'text', text: `Referencia ${r.codigo} — ${r.nome || 'sem nome'} (${r.colecao || 'sem colecao'}):` });
-      content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: r.b64 } });
-    });
-
-    const apiRes = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
-      body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 500, messages: [{ role: 'user', content }] })
-    });
-    const apiData = await apiRes.json();
-    if (apiData.error) throw new Error(apiData.error.message);
-    const txt = apiData.content?.map(i => i.text || '').join('') || '';
-    const resultado = JSON.parse(txt.replace(/```json|```/g, '').trim());
-
-    if (!resultado.codigo_identificado || resultado.confianca === 'Nenhuma') {
-      return res.json({ encontrado: false, justificativa: resultado.justificativa });
-    }
-    const obraEncontrada = await pool.query('SELECT * FROM almare_obras WHERE codigo=$1', [resultado.codigo_identificado]);
-    if (!obraEncontrada.rows.length) return res.json({ encontrado: false, justificativa: 'Código identificado não encontrado no banco' });
-
-    res.json({ encontrado: true, confianca: resultado.confianca, justificativa: resultado.justificativa, obra: obraEncontrada.rows[0] });
-  } catch (e) {
-    console.error('ERRO IDENTIFICAR:', e.message);
-    res.status(500).json({ erro: e.message });
-  }
-});
-
-
 app.get('/catalogo',authMembro,async(req,res)=>{
   try{
     const fRows=await pool.query(`SELECT f.slug FROM circulo_membro_funcoes mf JOIN circulo_funcoes f ON f.id=mf.funcao_id WHERE mf.membro_id=$1 AND mf.ativo=true`,[req.membro.id]);
@@ -2840,7 +2413,7 @@ app.get('/catalogo',authMembro,async(req,res)=>{
     const cardsHtml=obras.rows.map(o=>{
       let detalhe=campo('Conceito',o.conceito)+campo('Essência',o.essencia)+campo('Sensação',o.sensacao_provocada)+campo('O que permanece',o.o_que_permanece)+campo('Ambientes',o.ambientes_compativeis)+campo('Texto curatorial',o.texto_curatorial)+campo('Paleta',o.paleta)+campo('Cores',o.paleta_detalhe);
       if(isEmbaixador||isEspecificador||isCurador) detalhe+=campo('Perfil de cliente',o.perfil_de_cliente);
-      if(isEspecificador||isCurador) detalhe+=campo('Nível de destaque',o.nivel_de_destaque)+campo('Personalidade',o.personalidade_da_obra)+campo('Perfil arquitetônico',o.perfil_arquitetonico)+campo('Composição múltipla',o.possibilidade_composicao);
+      if(isEspecificador||isCurador) detalhe+=campo('Nível de destaque',o.nivel_de_destaque)+campo('Personalidade',o.personalidade_da_obra)+campo('Perfil arquitetônico',o.perfil_arquitetonico)+campo('Composição múltipla',o.possibilidade_composicao)+campo('Tamanhos recomendados',o.tamanhos_recomendados)+campo('Formato recomendado',o.formato_recomendado);
       if(isCurador) detalhe+=campo('Nota do curador',o.nota_curador)+campo('Potencial',o.potencial_nota?o.potencial_nota+'/100':'')+campo('Justificativa',o.potencial_justificativa)+campo('Obs. produção',o.observacoes_producao)+campo('Descrição comercial',o.descricao_comercial);
 
       const palataAttr=o.paleta?o.paleta.toLowerCase().replace(/\s+/g,'-'):'';
@@ -2866,7 +2439,7 @@ app.get('/catalogo',authMembro,async(req,res)=>{
     const opcoesPaleta=paletas.map(p=>`<option value="${p.toLowerCase().replace(/\s+/g,'-')}">${p}</option>`).join('');
 
     res.send(html('Catálogo',`
-      ${navBar('obras', !!navImpacto, slugs.includes('especificador'))}
+      <div class="nav-bar"><a href="/portal" class="nav-link">Passaporte</a><a href="/catalogo" class="nav-link ativo">Obras</a><a href="/simulador" class="nav-link">Simulador</a><a href="/carrinho" class="nav-link">Carrinho</a>${navImpacto}<a href="/sugestoes" class="nav-link">Voz</a><a href="/minhas-funcoes" class="nav-link">Funções</a><a href="/meu-convite" class="nav-link">Convidar</a></div>
 
       <!-- BARRA DE FILTROS -->
       <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:32px;align-items:center;">
@@ -2929,20 +2502,18 @@ app.get('/catalogo',authMembro,async(req,res)=>{
                 <img src="\${img.src}" style="max-width:100%;max-height:480px;width:auto;height:auto;object-fit:contain;display:block;">
               </div>
             </div>\`;
-            html+=\`<div style="display:flex;gap:8px;align-items:center;justify-content:center;margin-bottom:16px;">
+            html+=\`<div style="display:flex;gap:8px;align-items:center;justify-content:center;margin-bottom:24px;">
               <span style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-right:8px;">Moldura:</span>
               <button type="button" onclick="trocarMolduraModal('#1a1a1a',this)" data-cor="preta" style="width:32px;height:32px;background:#1a1a1a;border:2px solid var(--gold);border-radius:3px;cursor:pointer;" title="Preta"></button>
-              <button type="button" onclick="trocarMolduraModal('#8a6d3b',this)" data-cor="carvalho" style="width:32px;height:32px;background:#8a6d3b;border:2px solid var(--border);border-radius:3px;cursor:pointer;" title="Carvalho"></button>
+              <button type="button" onclick="trocarMolduraModal('#5c4a2e',this)" data-cor="carvalho" style="width:32px;height:32px;background:#5c4a2e;border:2px solid var(--border);border-radius:3px;cursor:pointer;" title="Carvalho"></button>
               <button type="button" onclick="trocarMolduraModal('#9a9a9a',this)" data-cor="aco_escovado" style="width:32px;height:32px;background:linear-gradient(135deg,#aaa,#777);border:2px solid var(--border);border-radius:3px;cursor:pointer;" title="Aço escovado"></button>
             </div>\`;
-            html+=\`<div id="tamanhos-obra-\${id}" style="text-align:center;margin-bottom:24px;font-size:12px;color:var(--muted);">Carregando tamanhos disponíveis...</div>\`;
-            carregarTamanhosModal(id);
           }
           html+=\`<div style="font-size:10px;letter-spacing:.25em;text-transform:uppercase;color:var(--muted);margin-bottom:6px;">\${colecao}</div>\`;
           html+=\`<h2 style="font-family:'Cormorant Garamond',serif;font-size:28px;font-weight:400;margin-bottom:24px;">\${nome}</h2>\`;
           html+=\`<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 32px;">\${src.innerHTML}</div>\`;
           html+=\`<a href="/obra/\${id}/link" class="btn btn-outline btn-full" style="margin-top:24px;">Indicar esta obra</a>\`;
-          html+=\`<a href="/obra/\${id}/comprar" id="link-comprar-\${id}" class="btn btn-primary btn-full" style="margin-top:10px;">Adicionar ao carrinho</a>\`;
+          html+=\`<a href="/obra/\${id}/comprar" class="btn btn-primary btn-full" style="margin-top:10px;">Adicionar ao carrinho</a>\`;
           document.getElementById('modal-body').innerHTML=html;
           document.getElementById('modal').style.display='block';
           document.body.style.overflow='hidden';
@@ -2954,45 +2525,6 @@ app.get('/catalogo',authMembro,async(req,res)=>{
           const grupo = btn.parentElement;
           grupo.querySelectorAll('button').forEach(b=>{ b.style.borderColor = 'var(--border)'; });
           btn.style.borderColor = 'var(--gold)';
-          MODAL_SELECAO.moldura = btn.dataset.cor;
-          atualizarLinkComprar(MODAL_SELECAO.obraId);
-        }
-
-        let MODAL_SELECAO = { obraId: null, moldura: 'preta', tamanhoIdx: null };
-
-        async function carregarTamanhosModal(obraId){
-          MODAL_SELECAO = { obraId, moldura: 'preta', tamanhoIdx: null };
-          const box = document.getElementById('tamanhos-obra-'+obraId);
-          try{
-            const r = await fetch('/obra/'+obraId+'/tamanhos-json');
-            const d = await r.json();
-            const tams = d.tamanhos || [];
-            if(!tams.length){ box.innerHTML = 'Sem tamanhos cadastrados para esta obra.'; return; }
-            let html2 = '<div style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:8px;">Tamanhos disponíveis:</div>';
-            html2 += '<div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center;">';
-            tams.forEach((t)=>{
-              html2 += '<button type="button" onclick="escolherTamanhoModal('+t.id+',this)" class="btn btn-outline" style="padding:8px 14px;font-size:11px;">'+t.label+' &middot; '+t.precoLabel+'</button>';
-            });
-            html2 += '</div>';
-            box.innerHTML = html2;
-          }catch(e){ box.innerHTML = 'Não consegui carregar os tamanhos.'; }
-        }
-
-        function escolherTamanhoModal(idx, btn){
-          const grupo = btn.parentElement;
-          grupo.querySelectorAll('button').forEach(b=>{ b.classList.remove('btn-primary'); b.classList.add('btn-outline'); });
-          btn.classList.remove('btn-outline'); btn.classList.add('btn-primary');
-          MODAL_SELECAO.tamanhoIdx = idx;
-          atualizarLinkComprar(MODAL_SELECAO.obraId);
-        }
-
-        function atualizarLinkComprar(obraId){
-          const link = document.getElementById('link-comprar-'+obraId);
-          if(!link) return;
-          const params = new URLSearchParams();
-          if(MODAL_SELECAO.tamanhoIdx !== null) params.set('tamanho_id', MODAL_SELECAO.tamanhoIdx);
-          if(MODAL_SELECAO.moldura) params.set('moldura', MODAL_SELECAO.moldura);
-          link.href = '/obra/'+obraId+'/comprar' + (params.toString() ? '?'+params.toString() : '');
         }
 
         function fecharModal(e){
@@ -3013,7 +2545,7 @@ app.get('/meu-impacto',authMembro,async(req,res)=>{
     const saldo=await pool.query('SELECT * FROM circulo_saldo_credito WHERE membro_id=$1',[req.membro.id]);
     const s=saldo.rows[0]||{saldo_disponivel:0,saldo_total:0};
     const linhas=trans.rows.map(t=>`<tr><td>Obra #${t.obra_id}</td><td>R$ ${parseFloat(t.valor_obra).toFixed(2).replace('.',',')}</td><td><span class="badge ${t.modalidade==='credito'?'badge-gold':'badge-muted'}">${t.modalidade==='credito'?'Crédito':'Cashback'}</span></td><td style="color:var(--gold)">R$ ${parseFloat(t.valor_beneficio).toFixed(2).replace('.',',')}</td><td><span class="badge ${t.status==='pago'?'badge-success':'badge-pending'}">${t.status}</span></td></tr>`).join('');
-    res.send(html('Impacto',`${navBar('impacto', true, await ehEspecificador(req.membro.id))}<div class="grid-2" style="margin-bottom:32px;"><div class="stat-box"><div class="num">R$ ${parseFloat(s.saldo_disponivel).toFixed(2).replace('.',',')}</div><div class="lbl">Crédito disponível</div></div><div class="stat-box"><div class="num">R$ ${parseFloat(s.saldo_total).toFixed(2).replace('.',',')}</div><div class="lbl">Total histórico</div></div></div><div class="card"><h3 style="font-size:18px;margin-bottom:20px;">Histórico</h3>${trans.rows.length?`<table><thead><tr><th>Obra</th><th>Valor</th><th>Modalidade</th><th>Benefício</th><th>Status</th></tr></thead><tbody>${linhas}</tbody></table>`:'<p style="color:var(--muted)">Nenhuma venda ainda.</p>'}</div>`,true));
+    res.send(html('Impacto',`<div class="nav-bar"><a href="/portal" class="nav-link">Passaporte</a><a href="/catalogo" class="nav-link">Obras</a><a href="/simulador" class="nav-link">Simulador</a><a href="/carrinho" class="nav-link">Carrinho</a><a href="/meu-impacto" class="nav-link ativo">Impacto</a><a href="/sugestoes" class="nav-link">Voz</a><a href="/minhas-funcoes" class="nav-link">Funções</a><a href="/meu-convite" class="nav-link">Convidar</a></div><div class="grid-2" style="margin-bottom:32px;"><div class="stat-box"><div class="num">R$ ${parseFloat(s.saldo_disponivel).toFixed(2).replace('.',',')}</div><div class="lbl">Crédito disponível</div></div><div class="stat-box"><div class="num">R$ ${parseFloat(s.saldo_total).toFixed(2).replace('.',',')}</div><div class="lbl">Total histórico</div></div></div><div class="card"><h3 style="font-size:18px;margin-bottom:20px;">Histórico</h3>${trans.rows.length?`<table><thead><tr><th>Obra</th><th>Valor</th><th>Modalidade</th><th>Benefício</th><th>Status</th></tr></thead><tbody>${linhas}</tbody></table>`:'<p style="color:var(--muted)">Nenhuma venda ainda.</p>'}</div>`,true));
   }catch(e){res.send(html('Impacto',`<div class="msg-erro">${e.message}</div>`,true));}
 });
 
@@ -3021,7 +2553,7 @@ app.get('/meu-impacto',authMembro,async(req,res)=>{
 app.get('/sugestoes',authMembro,async(req,res)=>{
   const lista=await pool.query('SELECT * FROM circulo_sugestoes WHERE membro_id=$1 ORDER BY criado_em DESC',[req.membro.id]);
   const itens=lista.rows.map(s=>`<div style="padding:16px 0;border-bottom:1px solid var(--border);"><div style="display:flex;justify-content:space-between;margin-bottom:6px;"><span class="badge ${s.status==='incorporada'?'badge-success':s.status==='em_analise'?'badge-pending':'badge-muted'}">${s.status}</span><span style="font-size:11px;color:var(--muted)">${new Date(s.criado_em).toLocaleDateString('pt-BR')}</span></div><p style="font-size:13px;line-height:1.6;">${s.texto}</p>${s.resposta?`<p style="font-size:12px;color:var(--gold);margin-top:8px;font-style:italic;">↳ ${s.resposta}</p>`:''}</div>`).join('');
-  res.send(html('Voz',`${navBar('voz', await temFuncaoComImpacto(req.membro.id), await ehEspecificador(req.membro.id))}<h2 style="font-size:28px;margin-bottom:8px;">Sua voz no Círculo</h2><p style="color:var(--muted);margin-bottom:32px;">Sugira temas, formatos, ambientes. Anderson lê tudo.</p><div class="card" style="margin-bottom:24px;"><form method="POST" action="/sugestoes"><div class="field"><label>Sua sugestão</label><textarea name="texto" required placeholder="Uma ideia..."></textarea></div><button type="submit" class="btn btn-primary">Enviar</button></form></div>${lista.rows.length?`<div class="card"><h3 style="font-size:16px;margin-bottom:16px;">Anteriores</h3>${itens}</div>`:''}`,true));
+  res.send(html('Voz',`<div class="nav-bar"><a href="/portal" class="nav-link">Passaporte</a><a href="/catalogo" class="nav-link">Obras</a><a href="/simulador" class="nav-link">Simulador</a><a href="/carrinho" class="nav-link">Carrinho</a><a href="/meu-impacto" class="nav-link">Impacto</a><a href="/sugestoes" class="nav-link ativo">Voz</a><a href="/minhas-funcoes" class="nav-link">Funções</a><a href="/meu-convite" class="nav-link">Convidar</a></div><h2 style="font-size:28px;margin-bottom:8px;">Sua voz no Círculo</h2><p style="color:var(--muted);margin-bottom:32px;">Sugira temas, formatos, ambientes. Anderson lê tudo.</p><div class="card" style="margin-bottom:24px;"><form method="POST" action="/sugestoes"><div class="field"><label>Sua sugestão</label><textarea name="texto" required placeholder="Uma ideia..."></textarea></div><button type="submit" class="btn btn-primary">Enviar</button></form></div>${lista.rows.length?`<div class="card"><h3 style="font-size:16px;margin-bottom:16px;">Anteriores</h3>${itens}</div>`:''}`,true));
 });
 app.post('/sugestoes',authMembro,async(req,res)=>{
   await pool.query('INSERT INTO circulo_sugestoes (membro_id,texto) VALUES ($1,$2)',[req.membro.id,req.body.texto]);
@@ -3033,7 +2565,7 @@ app.get('/meu-convite',authMembro,async(req,res)=>{
   const conv=await pool.query('SELECT * FROM circulo_convites WHERE membro_id=$1 LIMIT 1',[req.membro.id]);
   const c=conv.rows[0];
   const link=c?`${BASE_URL}/convite/${c.codigo}`:'';
-  res.send(html('Convidar',`${navBar('convidar', await temFuncaoComImpacto(req.membro.id), await ehEspecificador(req.membro.id))}<h2 style="font-size:28px;margin-bottom:8px;">Seu link de convite</h2><p style="color:var(--muted);margin-bottom:32px;">Compartilhe com quem acredita que pertence ao Círculo.</p><div class="card"><div style="font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);margin-bottom:12px;">Link pessoal</div><div style="background:#0d0d0d;border:1px solid var(--border);border-radius:3px;padding:14px;font-size:13px;word-break:break-all;margin-bottom:16px;">${link}</div><button onclick="navigator.clipboard.writeText('${link}');this.textContent='Copiado ✓'" class="btn btn-outline">Copiar link</button><div style="margin-top:20px;font-size:12px;color:var(--muted)">${c?c.usos:0} pessoa(s) entrou pela sua indicação</div></div>`,true));
+  res.send(html('Convidar',`<div class="nav-bar"><a href="/portal" class="nav-link">Passaporte</a><a href="/catalogo" class="nav-link">Obras</a><a href="/simulador" class="nav-link">Simulador</a><a href="/carrinho" class="nav-link">Carrinho</a><a href="/meu-impacto" class="nav-link">Impacto</a><a href="/sugestoes" class="nav-link">Voz</a><a href="/minhas-funcoes" class="nav-link">Funções</a><a href="/meu-convite" class="nav-link ativo">Convidar</a></div><h2 style="font-size:28px;margin-bottom:8px;">Seu link de convite</h2><p style="color:var(--muted);margin-bottom:32px;">Compartilhe com quem acredita que pertence ao Círculo.</p><div class="card"><div style="font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);margin-bottom:12px;">Link pessoal</div><div style="background:#0d0d0d;border:1px solid var(--border);border-radius:3px;padding:14px;font-size:13px;word-break:break-all;margin-bottom:16px;">${link}</div><button onclick="navigator.clipboard.writeText('${link}');this.textContent='Copiado ✓'" class="btn btn-outline">Copiar link</button><div style="margin-top:20px;font-size:12px;color:var(--muted)">${c?c.usos:0} pessoa(s) entrou pela sua indicação</div></div>`,true));
 });
 
 // ════════════════════════════════════════════════════════════════
@@ -3047,76 +2579,7 @@ app.post('/admin/login',(req,res)=>{
 });
 app.get('/admin/logout',(req,res)=>{res.clearCookie('circulo_admin');res.redirect('/admin/login');});
 
-
-// ─── SINCRONIZAR MEMBROS ANTIGOS COM O BLING (retroativo, so nome+email — sem documento/endereco que nunca foram guardados) ──
-app.post('/admin/bling/sincronizar', authAdmin, async (req, res) => {
-  const pendentes = await pool.query("SELECT id, nome, email FROM circulo_membros WHERE bling_id IS NULL");
-  let ok = 0, falhas = [];
-  for (const m of pendentes.rows) {
-    try {
-      const blingId = await salvarContatoBling({ nome: m.nome, email: m.email }, null);
-      if (blingId) {
-        await pool.query('UPDATE circulo_membros SET bling_id=$1 WHERE id=$2', [blingId, m.id]);
-        ok++;
-      } else {
-        falhas.push(m.nome);
-      }
-    } catch (e) {
-      falhas.push(`${m.nome} (${e.message})`);
-    }
-    await new Promise(r => setTimeout(r, 1500)); // bem abaixo do limite de 3 req/s do Bling
-  }
-  res.redirect(`/admin?bling_sync=${ok}&bling_falhas=${encodeURIComponent(falhas.join(', '))}`);
-});
-
-// ─── ADMIN — MODELOS 3D: dashboard de downloads (a geracao e sob demanda, nao ha upload) ──
-app.get('/admin/modelos-3d', authAdmin, async(req,res)=>{
-  const stats = await pool.query(`SELECT COUNT(*) total, COUNT(DISTINCT membro_id) especificadores FROM circulo_downloads_3d`);
-  const topObras = await pool.query(`SELECT obra_nome, COUNT(*) qtd FROM circulo_downloads_3d GROUP BY obra_nome ORDER BY qtd DESC LIMIT 10`);
-  const recentes = await pool.query(`
-    SELECT d.*, m.nome as membro_nome FROM circulo_downloads_3d d
-    LEFT JOIN circulo_membros m ON m.id=d.membro_id
-    ORDER BY d.baixado_em DESC LIMIT 20`);
-  const nomesMoldura = {preta:'Preta', carvalho:'Carvalho', aco_escovado:'Aço escovado'};
-
-  let corpo = `<a href="/admin" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);">← Voltar ao admin</a>`;
-  corpo += `<h2 style="font-size:28px;margin:12px 0 8px;">Modelos 3D</h2>`;
-  corpo += `<p style="color:var(--muted);font-size:13px;margin-bottom:24px;">Os arquivos sao gerados na hora do pedido do especificador — nao ha upload manual.</p>`;
-
-  corpo += `<div class="grid-3" style="margin-bottom:24px;">
-    <div class="stat-box"><div class="num">${stats.rows[0].total}</div><div class="lbl">Downloads totais</div></div>
-    <div class="stat-box"><div class="num">${stats.rows[0].especificadores}</div><div class="lbl">Especificadores ativos</div></div>
-  </div>`;
-
-  if(topObras.rows.length){
-    corpo += `<div class="card" style="margin-bottom:24px;"><div style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);margin-bottom:10px;">Mais baixadas</div>`;
-    topObras.rows.forEach(t => { corpo += `<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;"><span>${t.obra_nome}</span><span style="color:var(--gold);">${t.qtd}</span></div>`; });
-    corpo += `</div>`;
-  }
-
-  if(recentes.rows.length){
-    corpo += `<div class="card"><div style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);margin-bottom:10px;">Downloads recentes</div>`;
-    recentes.rows.forEach(d => {
-      corpo += `<div style="display:flex;justify-content:space-between;padding:6px 0;border-top:1px solid var(--border);font-size:12px;">
-        <span>${d.obra_nome} · ${d.largura}×${d.altura}cm · ${nomesMoldura[d.moldura]||d.moldura} · .${d.formato}</span>
-        <span style="color:var(--muted);">${d.membro_nome||'—'}</span>
-      </div>`;
-    });
-    corpo += `</div>`;
-  } else {
-    corpo += `<div class="card"><p style="color:var(--muted)">Nenhum download ainda.</p></div>`;
-  }
-
-  res.send(html('Modelos 3D', corpo));
-});
-
-
-
 app.get('/admin',authAdmin,async(req,res)=>{
-  const blingCfg = await pool.query('SELECT autorizado, expira_em FROM circulo_bling_config WHERE id=1').catch(()=>({rows:[]}));
-  const blingConectado = blingCfg.rows[0]?.autorizado;
-  const pendentesBling = await pool.query("SELECT COUNT(*) FROM circulo_membros WHERE bling_id IS NULL").catch(()=>({rows:[{count:0}]}));
-  const qtdPendentesBling = parseInt(pendentesBling.rows[0].count);
   // Funções pendentes de aprovação
   const pendentes=await pool.query(`
     SELECT mf.id as mf_id, m.nome, m.email, m.codigo_membro, f.nome as funcao, f.slug, m.id as membro_id
@@ -3161,29 +2624,6 @@ app.get('/admin',authAdmin,async(req,res)=>{
       <div class="stat-box"><div class="num">${membros.rows.length}</div><div class="lbl">Membros ativos</div></div>
       <div class="stat-box"><div class="num">${membros.rows.reduce((a,m)=>a+parseInt(m.obras_que_encontraram_lar||0),0)}</div><div class="lbl">Obras que encontraram lar</div></div>
     </div>
-    <div class="card" style="margin-bottom:24px;display:flex;justify-content:space-between;align-items:center;">
-      <div><strong>Modelos 3D para especificadores</strong><br><span style="font-size:12px;color:var(--muted)">Gerados sob demanda (.skp/.obj/.dxf) — dashboard de downloads</span></div>
-      <a href="/admin/modelos-3d" class="btn btn-outline" style="padding:8px 16px;font-size:11px;">Gerenciar</a>
-    </div>
-    <div class="card" style="margin-bottom:24px;display:flex;justify-content:space-between;align-items:center;">
-      <div>
-        <strong>Conexão Bling do Círculo</strong><br>
-        <span style="font-size:12px;color:var(--muted)">${blingConectado?'✓ Conectado (isolado, exclusivo do Círculo)':'⚠ Não conectado — cadastros não sincronizam com o Bling'}</span>
-        ${blingConectado && qtdPendentesBling > 0 ? `<br><span style="font-size:12px;color:var(--gold)">${qtdPendentesBling} membro(s) ainda sem contato no Bling</span>` : ''}
-      </div>
-      <div style="display:flex;gap:8px">
-        ${blingConectado && qtdPendentesBling > 0 ? `
-          <form method="POST" action="/admin/bling/sincronizar" style="display:inline">
-            <button class="btn btn-primary" style="padding:8px 16px;font-size:11px;">Sincronizar ${qtdPendentesBling} pendente(s)</button>
-          </form>` : ''}
-        <a href="/auth/bling/conectar" class="btn btn-outline" style="padding:8px 16px;font-size:11px;">${blingConectado?'Reconectar':'Conectar Bling'}</a>
-      </div>
-    </div>
-    ${req.query.bling_sync !== undefined ? `
-    <div class="card" style="margin-bottom:24px;background:rgba(0,255,150,0.05);">
-      <strong>Sincronização concluída:</strong> ${req.query.bling_sync} membro(s) enviado(s) ao Bling com sucesso.
-      ${req.query.bling_falhas ? `<br><span style="font-size:12px;color:var(--muted)">Falharam: ${decodeURIComponent(req.query.bling_falhas)}</span>` : ''}
-    </div>` : ''}
     ${pendentes.rows.length?`
     <div class="card" style="margin-bottom:24px;">
       <h3 style="font-size:18px;margin-bottom:20px;color:var(--gold);">Funções aguardando aprovação</h3>
@@ -3265,27 +2705,6 @@ app.post('/admin/sugestoes/:id/responder',authAdmin,async(req,res)=>{
 // ─── GARANTE ESTRUTURA DO BANCO (cria o que faltar ao iniciar, nunca apaga nada) ──────────
 async function garantirTabelas(){
   try{
-    // Conexao Bling PROPRIA do Circulo — isolada de qualquer outro sistema (nunca compartilha tabela/token com o ALMARE)
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS circulo_bling_config (
-        id INTEGER PRIMARY KEY DEFAULT 1,
-        access_token TEXT,
-        refresh_token TEXT,
-        expira_em TIMESTAMPTZ,
-        autorizado BOOLEAN DEFAULT FALSE,
-        CONSTRAINT circulo_bling_config_singleton CHECK (id = 1)
-      );`);
-    // Registro de downloads de modelos 3D (gerados sob demanda) — pro dashboard do admin
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS circulo_downloads_3d (
-        id SERIAL PRIMARY KEY,
-        membro_id INTEGER REFERENCES circulo_membros(id) ON DELETE SET NULL,
-        obra_id INTEGER,
-        obra_nome VARCHAR(255),
-        largura INTEGER, altura INTEGER,
-        moldura VARCHAR(20), formato VARCHAR(10),
-        baixado_em TIMESTAMPTZ DEFAULT NOW()
-      );`);
     await pool.query(`
       CREATE TABLE IF NOT EXISTS circulo_obra_links (
         id SERIAL PRIMARY KEY,
