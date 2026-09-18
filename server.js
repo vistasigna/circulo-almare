@@ -1316,7 +1316,7 @@ app.get('/simulador', authMembro, async(req,res)=>{
         html += '<div style="display:flex;gap:8px;align-items:center;margin-bottom:16px;"><span class="badge badge-gold">'+(i+1)+'ª sugestão</span>'+(scoreRef?'<span style="font-size:11px;color:var(--muted);">'+Math.round(scoreRef)+' pontos de compatibilidade</span>':'')+'</div>';
 
         // ── Uma única foto, com TODAS as peças desta composição sobrepostas ──
-        html += '<div id="sim-container-'+i+'" style="position:relative;background:#0d0d0d;border-radius:4px;overflow:hidden;margin-bottom:16px;line-height:0;">';
+        html += '<div id="sim-container-'+i+'" style="position:relative;background:#0d0d0d;border-radius:4px;overflow:hidden;margin-bottom:12px;line-height:0;">';
         html += '<img src="'+data.foto_local+'" style="width:100%;display:block;" draggable="false">';
 
         c.pecas.forEach((p,j)=>{
@@ -1330,7 +1330,7 @@ app.get('/simulador', authMembro, async(req,res)=>{
           else if(numPecas>1){ posX = bx.left_pct + bx.width_pct*(j+1)/(numPecas+1); posY = centroYpadrao; }
           else { posX = centroXpadrao; posY = centroYpadrao; }
 
-          html += '<div id="quadro-wrap-'+i+'-'+j+'" style="position:absolute;top:'+posY+'%;left:'+posX+'%;transform:translate(-50%,-50%);width:'+larguraFinal+'%;aspect-ratio:'+(t?t.largura:1)+'/'+(t?t.altura:1)+';'+(p.ajustando?'cursor:move;box-shadow:0 0 0 2px var(--gold);z-index:50;':'z-index:2;')+'">';
+          html += '<div id="quadro-wrap-'+i+'-'+j+'" style="position:absolute;top:'+posY+'%;left:'+posX+'%;transform:translate(-50%,-50%);width:'+larguraFinal+'%;aspect-ratio:'+(t?t.largura:1)+'/'+(t?t.altura:1)+';'+(c.ajustando?'cursor:move;box-shadow:0 0 0 2px var(--gold);z-index:10;':'z-index:2;')+'">';
           html += '<div id="moldura-real-'+i+'-'+j+'" style="border:1px solid '+molduraCor+';padding:1px;background:#000;box-sizing:border-box;width:100%;height:100%;">';
           html += '<div style="position:relative;width:100%;height:100%;">';
           html += '<img src="'+p.obra.imagem_preview+'" style="width:100%;height:100%;object-fit:fill;background:#f4f2ee;display:block;" draggable="false">';
@@ -1339,68 +1339,61 @@ app.get('/simulador', authMembro, async(req,res)=>{
         });
         html += '</div>';
 
-        // ── Bloco de controles, um por peça, agrupado ──
+        // ── Um único controle de posição pra composição toda ──
+        if(c.ajustando){
+          html += '<div style="display:flex;gap:8px;margin-bottom:12px;">';
+          html += '<button type="button" onclick="finalizarAjuste('+i+')" class="btn btn-primary" style="flex:1;font-size:12px;padding:9px;">✓ Concluir</button>';
+          html += '<button type="button" onclick="resetarPosicao('+i+')" class="btn btn-outline" style="font-size:12px;padding:9px 14px;">Centralizar</button>';
+          html += '</div>';
+          if(numPecas>1){ html += '<div style="font-size:11px;color:var(--gold);text-align:center;margin-bottom:12px;">Arraste qualquer obra para reposicionar</div>'; }
+        } else {
+          html += '<button type="button" onclick="iniciarAjuste('+i+')" class="btn btn-outline" style="width:100%;margin-bottom:12px;font-size:12px;padding:9px;">✥ Ajustar posição'+(numPecas>1?' das obras':'')+'</button>';
+        }
+
+        // ── Lista compacta: miniatura + nome + tamanho + ícones (trocar/remover) ──
+        html += '<div style="border:1px solid var(--border);border-radius:4px;overflow:hidden;margin-bottom:10px;">';
         c.pecas.forEach((p,j)=>{
           const o = p.obra;
           const t = p.tamanho;
-          html += '<div style="margin-bottom:16px;padding:16px;background:rgba(255,255,255,.02);border:1px solid var(--border);border-radius:4px;">';
-          if(numPecas>1){ html += '<div style="font-size:10px;letter-spacing:.15em;text-transform:uppercase;color:var(--gold);margin-bottom:10px;">Obra '+(j+1)+' desta composição</div>'; }
-          html += '<div style="font-size:10px;letter-spacing:.25em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;">'+(o.colecao||'')+'</div>';
-          html += '<h4 style="font-family:\\'Cormorant Garamond\\',serif;font-size:20px;margin-bottom:4px;">'+o.nome+'</h4>';
-          html += '<div style="font-size:11px;color:var(--muted);margin-bottom:14px;">Código: '+(o.codigo||o.id)+'</div>';
-
-          html += '<div style="display:flex;flex-direction:column;gap:12px;">';
-
-          if(p.ajustando){
-            html += '<div style="display:flex;gap:8px;">';
-            html += '<button type="button" onclick="finalizarAjuste('+i+','+j+')" class="btn btn-primary" style="flex:1;">✓ Concluir ajuste</button>';
-            html += '<button type="button" onclick="resetarPosicao('+i+','+j+')" class="btn btn-outline">Centralizar</button>';
-            html += '</div>';
-            html += '<div style="font-size:11px;color:var(--gold);text-align:center;">Arraste o quadro para a posição desejada</div>';
-          } else {
-            html += '<button type="button" onclick="iniciarAjuste('+i+','+j+')" class="btn btn-outline" style="width:100%;">✥ Ajustar posição do quadro</button>';
-          }
-
           const tamanhos = o._tamanhosDisponiveis || (t?[t]:[]);
+          html += '<div style="display:flex;align-items:center;gap:10px;padding:10px 12px;'+(j<numPecas-1?'border-bottom:1px solid var(--border);':'')+'">';
+          html += '<img src="'+o.imagem_preview+'" style="width:38px;height:38px;object-fit:cover;border-radius:3px;flex-shrink:0;background:#0d0d0d;">';
+          html += '<div style="flex:1;min-width:0;">';
+          html += '<div style="font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:\\'Cormorant Garamond\\',serif;">'+o.nome+'</div>';
           if(tamanhos.length){
-            html += '<div>';
-            html += '<div style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:8px;">Tamanho</div>';
-            html += '<select onchange="mudarTamanho('+i+','+j+',this.value)" style="width:100%;background:#0d0d0d;border:1px solid var(--border);color:var(--text);padding:11px 14px;border-radius:3px;font-size:14px;font-family:\\'Inter\\',sans-serif;outline:none;cursor:pointer;">';
+            html += '<select onchange="mudarTamanho('+i+','+j+',this.value)" style="font-size:10px;background:#0d0d0d;border:1px solid var(--border);color:var(--muted);padding:2px 4px;border-radius:2px;margin-top:2px;max-width:100%;">';
             tamanhos.forEach((tm,idx)=>{
               const sel = (t && tm.largura===t.largura && tm.altura===t.altura) ? 'selected' : '';
               html += '<option value="'+idx+'" '+sel+'>'+tm.label+(tm.precoLabel?' · '+tm.precoLabel:'')+'</option>';
             });
-            html += '</select></div>';
+            html += '</select>';
           }
-
-          html += '<div>';
-          html += '<div style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:8px;">Moldura'+(p.moldura===a.moldura_recomendada?' <span style="color:var(--gold);">(recomendada)</span>':'')+'</div>';
-          html += '<div style="display:flex;gap:8px;" id="molduras-'+i+'-'+j+'">';
+          html += '</div>';
+          // molduras mini
+          html += '<div style="display:flex;gap:3px;flex-shrink:0;">';
           [['preta','#1a1a1a'],['carvalho','#5c4a2e'],['aco_escovado','linear-gradient(135deg,#aaa,#777)']].forEach(([slug,bg])=>{
             const borda = p.moldura===slug ? 'var(--gold)' : 'var(--border)';
-            html += '<button type="button" onclick="mudarMoldura('+i+','+j+',\\''+slug+'\\')" data-cor="'+slug+'" style="width:36px;height:36px;background:'+bg+';border:2px solid '+borda+';border-radius:3px;cursor:pointer;" title="'+(nomesMoldura[slug])+'"></button>';
+            html += '<button type="button" onclick="mudarMoldura('+i+','+j+',\\''+slug+'\\')" style="width:16px;height:16px;background:'+bg+';border:1.5px solid '+borda+';border-radius:2px;cursor:pointer;padding:0;" title="'+(nomesMoldura[slug])+'"></button>';
           });
-          html += '</div></div>';
-
-          html += '<button type="button" onclick="abrirGaleria('+i+','+j+')" class="btn btn-outline" style="width:100%;">Trocar por outra obra</button>';
+          html += '</div>';
+          // trocar (icone + texto pequeno)
+          html += '<button type="button" onclick="abrirGaleria('+i+','+j+')" title="Trocar por outra obra" style="flex-shrink:0;background:none;border:1px solid var(--border);color:var(--muted);border-radius:3px;padding:5px 8px;font-size:14px;cursor:pointer;line-height:1;">⇄</button>';
+          // remover (só se tiver mais de 1)
           if(numPecas>1){
-            html += '<button type="button" onclick="removerPeca('+i+','+j+')" class="btn btn-outline" style="width:100%;color:#e77;border-color:#e77;">Remover esta obra da composição</button>';
+            html += '<button type="button" onclick="removerPeca('+i+','+j+')" title="Remover esta obra" style="flex-shrink:0;background:none;border:1px solid #e77;color:#e77;border-radius:3px;padding:5px 8px;font-size:12px;cursor:pointer;line-height:1;">✕</button>';
           }
-
-          if(o._motivos && o._motivos.length){
-            html += '<div style="font-size:12px;color:#aaa;line-height:1.7;"><strong style="color:var(--gold);">Por que combina:</strong> '+o._motivos.join('; ')+'.</div>';
-          }
-
-          html += '</div>'; // fecha coluna
-          html += '</div>'; // fecha bloco da peça
+          html += '</div>';
         });
+        html += '</div>';
 
-        html += '<button type="button" onclick="abrirGaleriaAdicionar('+i+')" class="btn btn-outline btn-full" style="border-style:dashed;margin-bottom:8px;">+ Incluir outra obra nesta composição</button>';
+        // Incluir obra — botão pequeno, não ocupa a largura toda
+        html += '<button type="button" onclick="abrirGaleriaAdicionar('+i+')" title="Incluir outra obra nesta composição" style="background:none;border:1px dashed var(--border);color:var(--muted);border-radius:3px;padding:7px 14px;font-size:12px;cursor:pointer;">+ Incluir obra</button>';
+
         html += '</div>'; // fecha .card
 
         document.getElementById('card-slot-'+i).innerHTML = html;
 
-        c.pecas.forEach((p,j)=>{ if(p.ajustando) setTimeout(()=>ativarArrastar(i,j), 0); });
+        if(c.ajustando){ setTimeout(()=>{ c.pecas.forEach((p,j)=>ativarArrastar(i,j)); }, 0); }
         // Fileto (6mm) e vão (7mm) em pixel real, por peça — CSS não aceita borda em porcentagem.
         c.pecas.forEach((p,j)=>{ setTimeout(()=>ajustarMolduraReal(i,j,p.tamanho), 0); });
       }
@@ -1462,21 +1455,20 @@ app.get('/simulador', authMembro, async(req,res)=>{
         }catch(e){ alert('Erro ao salvar: '+e.message); }
       }
 
-      // ── Ajuste manual de posição (arrastar), por peça ──
-      function iniciarAjuste(i,j){
-        SIM.cards[i].pecas[j].ajustando = true;
+      // ── Ajuste manual de posição (arrastar), pra composição TODA de uma vez ──
+      function iniciarAjuste(i){
+        SIM.cards[i].ajustando = true;
         montarCard(i);
-        ativarArrastar(i,j);
+        SIM.cards[i].pecas.forEach((p,j)=>ativarArrastar(i,j));
       }
-      function finalizarAjuste(i,j){
-        SIM.cards[i].pecas[j].ajustando = false;
+      function finalizarAjuste(i){
+        SIM.cards[i].ajustando = false;
         montarCard(i);
       }
-      function resetarPosicao(i,j){
-        delete SIM.cards[i].pecas[j].posX;
-        delete SIM.cards[i].pecas[j].posY;
+      function resetarPosicao(i){
+        SIM.cards[i].pecas.forEach(p=>{ delete p.posX; delete p.posY; });
         montarCard(i);
-        if(SIM.cards[i].pecas[j].ajustando) ativarArrastar(i,j);
+        if(SIM.cards[i].ajustando){ SIM.cards[i].pecas.forEach((p,j)=>ativarArrastar(i,j)); }
       }
       // Controle de arrastar CENTRALIZADO e único — evita qualquer sobra de "escutadores"
       // de uma peça interferindo na próxima. Só existe UM arrasto ativo por vez, sempre.
