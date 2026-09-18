@@ -1220,15 +1220,17 @@ app.get('/simulador', authMembro, async(req,res)=>{
               const d = await r.json();
               if(load) load.style.display='none';
               if(d.erro){ document.getElementById('resultado').innerHTML='<div class="msg-erro">'+d.erro+'</div>'; return; }
-              // reconstrói SIM.data no formato que renderResultado espera
+              // Normaliza simulações salvas ANTES desta mudança (formato antigo: obra/tamanho
+              // direto no card) para o formato novo (lista de peças por composição).
+              const cardsNormalizados = d.cards.map(c => c.pecas ? c : { pecas: [c] });
               renderResultado({
                 analise: d.analise || { parede_bbox:{left_pct:5,top_pct:5,width_pct:90,height_pct:90}, moldura_recomendada:'preta', paleta_dominante:'', temperatura:'', estilo:'', carga_visual:'', justificativa_ambiente:'' },
-                sugestoes: d.cards.map(c=>({ ...c.obra, _melhorTamanho:c.tamanho, _tamanhosDisponiveis:c.obra._tamanhosDisponiveis })),
+                sugestoes: cardsNormalizados.map(c=>({ ...c.pecas[0].obra, _melhorTamanho:c.pecas[0].tamanho, _tamanhosDisponiveis:c.pecas[0].obra._tamanhosDisponiveis })),
                 watermark: d.watermark || '',
                 foto_local: d.foto_local,
                 parede_largura: d.parede_largura,
                 parede_altura: d.parede_altura,
-                _cardsRestore: d.cards
+                _cardsRestore: cardsNormalizados
               });
             }catch(e){ if(load) load.style.display='none'; }
           });
@@ -1241,15 +1243,15 @@ app.get('/simulador', authMembro, async(req,res)=>{
         const a = data.analise;
         const sugestoes = (data.sugestoes || []).slice(0, 3);
 
-        // Estado editável de cada card (tamanho e obra podem mudar; moldura começa na recomendada)
+        // Cada sugestão agora guarda uma LISTA de peças (uma ou várias obras compondo a
+        // mesma parede/foto). Por padrão começa com 1 peça (a sugestão da curadoria).
         SIM.cards = sugestoes.map((o,idx) => {
           const restore = (data._cardsRestore && data._cardsRestore[idx]) ? data._cardsRestore[idx] : null;
+          if(restore && restore.pecas && restore.pecas.length){
+            return { pecas: restore.pecas };
+          }
           return {
-            obra: o,
-            tamanho: restore ? restore.tamanho : o._melhorTamanho,
-            moldura: restore ? restore.moldura : (a.moldura_recomendada || 'preta'),
-            posX: restore ? restore.posX : undefined,
-            posY: restore ? restore.posY : undefined
+            pecas: [{ obra:o, tamanho:o._melhorTamanho, moldura: a.moldura_recomendada || 'preta' }]
           };
         });
 
@@ -1266,7 +1268,6 @@ app.get('/simulador', authMembro, async(req,res)=>{
         html += '</div>';
         html += '<p style="font-size:13px;color:#ccc;font-style:italic;line-height:1.7;">'+a.justificativa_ambiente+'</p>';
 
-        // Bloco de curadoria destacado (moldura recomendada + justificativa)
         if(a.moldura_recomendada){
           html += '<div style="margin-top:20px;padding:16px;background:rgba(201,169,110,.06);border:1px solid rgba(201,169,110,.25);border-radius:4px;">';
           html += '<div style="font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--gold);margin-bottom:6px;">Recomendação de curadoria</div>';
@@ -1279,10 +1280,8 @@ app.get('/simulador', authMembro, async(req,res)=>{
         html += '</div>';
 
         html += '<h3 style="font-size:22px;margin-bottom:8px;">Obras sugeridas</h3>';
-        html += '<p style="font-size:12px;color:var(--muted);margin-bottom:20px;">Nossa curadoria escolheu estas três. Você pode ajustar o tamanho, trocar a obra, ou incluir mais obras para montar uma composição.</p>';
+        html += '<p style="font-size:12px;color:var(--muted);margin-bottom:20px;">Nossa curadoria escolheu estas três. Em cada uma você pode ajustar tamanho, trocar a obra, ou incluir mais obras para montar uma composição na mesma parede.</p>';
 
-        // Containers dos cards (preenchidos por montarCard) — este container é fixo e
-        // recebe novos slots quando o cliente inclui obras extras pra composição.
         html += '<div id="cards-container">';
         SIM.cards.forEach((c,i)=>{ html += '<div id="card-slot-'+i+'"></div>'; });
         html += '</div>';
@@ -1295,13 +1294,12 @@ app.get('/simulador', authMembro, async(req,res)=>{
         SIM.cards.forEach((c,i)=> montarCard(i));
       }
 
-      // Desenha (ou redesenha) o card do slot i com o estado atual (obra + tamanho + moldura)
+      // Desenha (ou redesenha) o card i — uma sugestão pode ter várias peças (composição)
+      // dentro da MESMA foto/simulação.
       function montarCard(i){
         const data = SIM.data;
         const a = data.analise;
         const c = SIM.cards[i];
-        const o = c.obra;
-        const t = c.tamanho;
         const nomesMoldura = {preta:'Preta', carvalho:'Carvalho', aco_escovado:'Aço escovado'};
         const coresMoldura = { preta:'#1a1a1a', carvalho:'#5c4a2e', aco_escovado:'#9a9a9a' };
 
@@ -1309,144 +1307,144 @@ app.get('/simulador', authMembro, async(req,res)=>{
         const bx = (bbox && typeof bbox.left_pct==='number') ? bbox : {left_pct:15, top_pct:10, width_pct:70, height_pct:75};
         const larguraRealParede = parseInt(data.parede_largura) || 300;
         const alturaParedeCm = parseInt(data.parede_altura) || 270;
-        const centroX = bx.left_pct + bx.width_pct/2;
-        const centroY = Math.max(12, Math.min(88, ((alturaParedeCm - 160) / alturaParedeCm) * 100));
-
-        // Escala HONESTA e proporcional: o tamanho já foi filtrado no backend para caber de verdade
-        // (altura e largura). Aqui só desenhamos na escala REAL, sem forçar redução — se chegou aqui,
-        // o quadro cabe. A largura na foto = fração real do tamanho vs largura da parede.
-        const larguraFracao = t ? (t.largura / larguraRealParede) : 0.4;
-        const larguraNaFoto = larguraFracao * bx.width_pct;
-        // Sem piso artificial — um quadro pequeno de verdade (ex: 25x25cm) precisa
-        // aparecer pequeno na parede, do tamanho real dele, não inflado.
-        const larguraFinal = Math.min(Math.max(larguraNaFoto, 1.5), bx.width_pct*0.98);
-        const molduraCor = coresMoldura[c.moldura] || '#1a1a1a';
+        const centroXpadrao = bx.left_pct + bx.width_pct/2;
+        const centroYpadrao = Math.max(12, Math.min(88, ((alturaParedeCm - 160) / alturaParedeCm) * 100));
+        const numPecas = c.pecas.length;
 
         let html = '<div class="card" style="margin-bottom:24px;">';
-        html += '<div style="display:flex;gap:8px;align-items:center;margin-bottom:16px;"><span class="badge badge-gold">'+(c.extra?'Obra incluída':(i+1)+'ª sugestão')+'</span>'+(o._score?'<span style="font-size:11px;color:var(--muted);">'+Math.round(o._score)+' pontos de compatibilidade</span>':'')+'</div>';
+        const scoreRef = c.pecas[0] && c.pecas[0].obra ? c.pecas[0].obra._score : null;
+        html += '<div style="display:flex;gap:8px;align-items:center;margin-bottom:16px;"><span class="badge badge-gold">'+(i+1)+'ª sugestão</span>'+(scoreRef?'<span style="font-size:11px;color:var(--muted);">'+Math.round(scoreRef)+' pontos de compatibilidade</span>':'')+'</div>';
 
-        // Simulação — usa posição ajustada manualmente se existir, senão a calculada
-        const posX = (typeof c.posX === 'number') ? c.posX : centroX;
-        const posY = (typeof c.posY === 'number') ? c.posY : centroY;
-        html += '<div id="sim-container-'+i+'" style="position:relative;background:#0d0d0d;border-radius:4px;overflow:hidden;margin-bottom:12px;line-height:0;">';
+        // ── Uma única foto, com TODAS as peças desta composição sobrepostas ──
+        html += '<div id="sim-container-'+i+'" style="position:relative;background:#0d0d0d;border-radius:4px;overflow:hidden;margin-bottom:16px;line-height:0;">';
         html += '<img src="'+data.foto_local+'" style="width:100%;display:block;" draggable="false">';
-        html += '<div id="quadro-wrap-'+i+'" class="quadro-wrap-'+i+'" style="position:absolute;top:'+posY+'%;left:'+posX+'%;transform:translate(-50%,-50%);width:'+larguraFinal+'%;aspect-ratio:'+(t?t.largura:1)+'/'+(t?t.altura:1)+';'+(c.ajustando?'cursor:move;box-shadow:0 0 0 2px var(--gold);':'')+'">';
-        html += '<div id="moldura-real-'+i+'" class="moldura-'+i+'" style="border:1px solid '+molduraCor+';padding:1px;background:#000;box-sizing:border-box;width:100%;height:100%;">';
-        html += '<div style="position:relative;width:100%;height:100%;">';
-        html += '<img src="'+o.imagem_preview+'" style="width:100%;height:100%;object-fit:fill;background:#f4f2ee;display:block;" draggable="false">';
-        html += '<div style="position:absolute;inset:0;background-image:url('+data.watermark+');background-repeat:repeat;mix-blend-mode:overlay;pointer-events:none;"></div>';
-        html += '</div></div></div>';
-        html += '</div>';
 
-        // Info da obra
-        html += '<div style="font-size:10px;letter-spacing:.25em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;">'+(o.colecao||'')+'</div>';
-        html += '<h4 style="font-family:\\'Cormorant Garamond\\',serif;font-size:22px;margin-bottom:4px;">'+o.nome+'</h4>';
-        html += '<div style="font-size:11px;color:var(--muted);margin-bottom:18px;">Código: '+(o.codigo||o.id)+'</div>';
+        c.pecas.forEach((p,j)=>{
+          const t = p.tamanho;
+          const larguraFracao = t ? (t.largura / larguraRealParede) : 0.4;
+          const larguraNaFoto = larguraFracao * bx.width_pct;
+          const larguraFinal = Math.min(Math.max(larguraNaFoto, 1.5), bx.width_pct*0.98);
+          const molduraCor = coresMoldura[p.moldura] || '#1a1a1a';
+          let posX, posY;
+          if(typeof p.posX === 'number'){ posX = p.posX; posY = p.posY; }
+          else if(numPecas>1){ posX = bx.left_pct + bx.width_pct*(j+1)/(numPecas+1); posY = centroYpadrao; }
+          else { posX = centroXpadrao; posY = centroYpadrao; }
 
-        // ── TODOS OS CONTROLES DESTA SUGESTÃO, AGRUPADOS NUM BLOCO SÓ ──
-        html += '<div style="display:flex;flex-direction:column;gap:12px;padding:16px;background:rgba(255,255,255,.02);border:1px solid var(--border);border-radius:4px;">';
-
-        // Posição
-        if(c.ajustando){
-          html += '<div style="display:flex;gap:8px;">';
-          html += '<button type="button" onclick="finalizarAjuste('+i+')" class="btn btn-primary" style="flex:1;">✓ Concluir ajuste</button>';
-          html += '<button type="button" onclick="resetarPosicao('+i+')" class="btn btn-outline">Centralizar</button>';
-          html += '</div>';
-          html += '<div style="font-size:11px;color:var(--gold);text-align:center;">Arraste o quadro para a posição desejada</div>';
-        } else {
-          html += '<button type="button" onclick="iniciarAjuste('+i+')" class="btn btn-outline" style="width:100%;">✥ Ajustar posição do quadro</button>';
-        }
-
-        // Dropdown de tamanho
-        const tamanhos = o._tamanhosDisponiveis || (t?[t]:[]);
-        if(tamanhos.length){
-          html += '<div>';
-          html += '<div style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:8px;">Tamanho</div>';
-          html += '<select onchange="mudarTamanho('+i+',this.value)" style="width:100%;background:#0d0d0d;border:1px solid var(--border);color:var(--text);padding:11px 14px;border-radius:3px;font-size:14px;font-family:\\'Inter\\',sans-serif;outline:none;cursor:pointer;">';
-          tamanhos.forEach((tm,idx)=>{
-            const sel = (t && tm.largura===t.largura && tm.altura===t.altura) ? 'selected' : '';
-            html += '<option value="'+idx+'" '+sel+'>'+tm.label+(tm.precoLabel?' · '+tm.precoLabel:'')+'</option>';
-          });
-          html += '</select></div>';
-        }
-
-        // Moldura
-        html += '<div>';
-        html += '<div style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:8px;">Moldura'+(c.moldura===a.moldura_recomendada?' <span style="color:var(--gold);">(recomendada)</span>':'')+'</div>';
-        html += '<div style="display:flex;gap:8px;" id="molduras-'+i+'">';
-        [['preta','#1a1a1a'],['carvalho','#5c4a2e'],['aco_escovado','linear-gradient(135deg,#aaa,#777)']].forEach(([slug,bg])=>{
-          const borda = c.moldura===slug ? 'var(--gold)' : 'var(--border)';
-          html += '<button type="button" onclick="mudarMoldura('+i+',\\''+slug+'\\')" data-cor="'+slug+'" style="width:36px;height:36px;background:'+bg+';border:2px solid '+borda+';border-radius:3px;cursor:pointer;" title="'+(nomesMoldura[slug])+'"></button>';
+          html += '<div id="quadro-wrap-'+i+'-'+j+'" style="position:absolute;top:'+posY+'%;left:'+posX+'%;transform:translate(-50%,-50%);width:'+larguraFinal+'%;aspect-ratio:'+(t?t.largura:1)+'/'+(t?t.altura:1)+';'+(p.ajustando?'cursor:move;box-shadow:0 0 0 2px var(--gold);z-index:5;':'z-index:2;')+'">';
+          html += '<div id="moldura-real-'+i+'-'+j+'" style="border:1px solid '+molduraCor+';padding:1px;background:#000;box-sizing:border-box;width:100%;height:100%;">';
+          html += '<div style="position:relative;width:100%;height:100%;">';
+          html += '<img src="'+p.obra.imagem_preview+'" style="width:100%;height:100%;object-fit:fill;background:#f4f2ee;display:block;" draggable="false">';
+          html += '<div style="position:absolute;inset:0;background-image:url('+data.watermark+');background-repeat:repeat;mix-blend-mode:overlay;pointer-events:none;"></div>';
+          html += '</div></div></div>';
         });
-        html += '</div></div>';
-
-        // Trocar obra / Incluir obra / Remover — cada sugestão tem seu conjunto completo e independente
-        html += '<button type="button" onclick="abrirGaleria('+i+')" class="btn btn-outline" style="width:100%;">Trocar por outra obra</button>';
-        html += '<button type="button" onclick="abrirGaleriaAdicionar()" class="btn btn-outline" style="width:100%;border-style:dashed;">+ Incluir outra obra na composição</button>';
-        if(c.extra){
-          html += '<button type="button" onclick="removerDaComposicao('+i+')" class="btn btn-outline" style="width:100%;color:#e77;border-color:#e77;">Remover desta composição</button>';
-        }
-
-        html += '</div>'; // fecha o bloco de controles agrupados
-
-        // Por que combina
-        if(o._motivos && o._motivos.length){
-          html += '<div style="font-size:12px;color:#aaa;line-height:1.7;margin-top:14px;"><strong style="color:var(--gold);">Por que combina:</strong> '+o._motivos.join('; ')+'.</div>';
-        }
         html += '</div>';
+
+        // ── Bloco de controles, um por peça, agrupado ──
+        c.pecas.forEach((p,j)=>{
+          const o = p.obra;
+          const t = p.tamanho;
+          html += '<div style="margin-bottom:16px;padding:16px;background:rgba(255,255,255,.02);border:1px solid var(--border);border-radius:4px;">';
+          if(numPecas>1){ html += '<div style="font-size:10px;letter-spacing:.15em;text-transform:uppercase;color:var(--gold);margin-bottom:10px;">Obra '+(j+1)+' desta composição</div>'; }
+          html += '<div style="font-size:10px;letter-spacing:.25em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;">'+(o.colecao||'')+'</div>';
+          html += '<h4 style="font-family:\\'Cormorant Garamond\\',serif;font-size:20px;margin-bottom:4px;">'+o.nome+'</h4>';
+          html += '<div style="font-size:11px;color:var(--muted);margin-bottom:14px;">Código: '+(o.codigo||o.id)+'</div>';
+
+          html += '<div style="display:flex;flex-direction:column;gap:12px;">';
+
+          if(p.ajustando){
+            html += '<div style="display:flex;gap:8px;">';
+            html += '<button type="button" onclick="finalizarAjuste('+i+','+j+')" class="btn btn-primary" style="flex:1;">✓ Concluir ajuste</button>';
+            html += '<button type="button" onclick="resetarPosicao('+i+','+j+')" class="btn btn-outline">Centralizar</button>';
+            html += '</div>';
+            html += '<div style="font-size:11px;color:var(--gold);text-align:center;">Arraste o quadro para a posição desejada</div>';
+          } else {
+            html += '<button type="button" onclick="iniciarAjuste('+i+','+j+')" class="btn btn-outline" style="width:100%;">✥ Ajustar posição do quadro</button>';
+          }
+
+          const tamanhos = o._tamanhosDisponiveis || (t?[t]:[]);
+          if(tamanhos.length){
+            html += '<div>';
+            html += '<div style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:8px;">Tamanho</div>';
+            html += '<select onchange="mudarTamanho('+i+','+j+',this.value)" style="width:100%;background:#0d0d0d;border:1px solid var(--border);color:var(--text);padding:11px 14px;border-radius:3px;font-size:14px;font-family:\\'Inter\\',sans-serif;outline:none;cursor:pointer;">';
+            tamanhos.forEach((tm,idx)=>{
+              const sel = (t && tm.largura===t.largura && tm.altura===t.altura) ? 'selected' : '';
+              html += '<option value="'+idx+'" '+sel+'>'+tm.label+(tm.precoLabel?' · '+tm.precoLabel:'')+'</option>';
+            });
+            html += '</select></div>';
+          }
+
+          html += '<div>';
+          html += '<div style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:8px;">Moldura'+(p.moldura===a.moldura_recomendada?' <span style="color:var(--gold);">(recomendada)</span>':'')+'</div>';
+          html += '<div style="display:flex;gap:8px;" id="molduras-'+i+'-'+j+'">';
+          [['preta','#1a1a1a'],['carvalho','#5c4a2e'],['aco_escovado','linear-gradient(135deg,#aaa,#777)']].forEach(([slug,bg])=>{
+            const borda = p.moldura===slug ? 'var(--gold)' : 'var(--border)';
+            html += '<button type="button" onclick="mudarMoldura('+i+','+j+',\\''+slug+'\\')" data-cor="'+slug+'" style="width:36px;height:36px;background:'+bg+';border:2px solid '+borda+';border-radius:3px;cursor:pointer;" title="'+(nomesMoldura[slug])+'"></button>';
+          });
+          html += '</div></div>';
+
+          html += '<button type="button" onclick="abrirGaleria('+i+','+j+')" class="btn btn-outline" style="width:100%;">Trocar por outra obra</button>';
+          if(numPecas>1){
+            html += '<button type="button" onclick="removerPeca('+i+','+j+')" class="btn btn-outline" style="width:100%;color:#e77;border-color:#e77;">Remover esta obra da composição</button>';
+          }
+
+          if(o._motivos && o._motivos.length){
+            html += '<div style="font-size:12px;color:#aaa;line-height:1.7;"><strong style="color:var(--gold);">Por que combina:</strong> '+o._motivos.join('; ')+'.</div>';
+          }
+
+          html += '</div>'; // fecha coluna
+          html += '</div>'; // fecha bloco da peça
+        });
+
+        html += '<button type="button" onclick="abrirGaleriaAdicionar('+i+')" class="btn btn-outline btn-full" style="border-style:dashed;margin-bottom:8px;">+ Incluir outra obra nesta composição</button>';
+        html += '</div>'; // fecha .card
 
         document.getElementById('card-slot-'+i).innerHTML = html;
-        // Se está em modo de ajuste, reativa o arrastar (o innerHTML recriou o elemento)
-        if(SIM.cards[i].ajustando){ setTimeout(()=>ativarArrastar(i), 0); }
-        // Calcula o fileto (6mm) e o vão (7mm) em PIXELS REAIS, medindo o tamanho que a
-        // caixa realmente ocupa na tela — CSS não aceita borda em porcentagem, então isso
-        // é feito via JS pra escalar certo com o tamanho real da obra (1,5x1,5m fica fino,
-        // uma obra pequena fica proporcionalmente mais grossa, igual moldura física).
-        setTimeout(()=>ajustarMolduraReal(i, t), 0);
+
+        c.pecas.forEach((p,j)=>{ if(p.ajustando) setTimeout(()=>ativarArrastar(i,j), 0); });
+        // Fileto (6mm) e vão (7mm) em pixel real, por peça — CSS não aceita borda em porcentagem.
+        c.pecas.forEach((p,j)=>{ setTimeout(()=>ajustarMolduraReal(i,j,p.tamanho), 0); });
       }
 
-      function ajustarMolduraReal(i, t){
-        const wrap = document.getElementById('quadro-wrap-'+i);
-        const moldura = document.getElementById('moldura-real-'+i);
+      function ajustarMolduraReal(i,j,t){
+        const wrap = document.getElementById('quadro-wrap-'+i+'-'+j);
+        const moldura = document.getElementById('moldura-real-'+i+'-'+j);
         if(!wrap || !moldura || !t) return;
-        const larguraCmReal = t.largura;
         const larguraPxReal = wrap.offsetWidth;
-        if(!larguraPxReal || !larguraCmReal) return;
-        const pxPorCm = larguraPxReal / larguraCmReal;
-        const filetoPx = Math.max(1, Math.round(pxPorCm * 0.6)); // 6mm = 0,6cm
-        const vaoPx = Math.max(1, Math.round(pxPorCm * 0.7));    // 7mm = 0,7cm
+        if(!larguraPxReal || !t.largura) return;
+        const pxPorCm = larguraPxReal / t.largura;
+        const filetoPx = Math.max(1, Math.round(pxPorCm * 0.6)); // 6mm
+        const vaoPx = Math.max(1, Math.round(pxPorCm * 0.7));    // 7mm
         moldura.style.borderWidth = filetoPx + 'px';
         moldura.style.padding = vaoPx + 'px';
       }
 
-      function mudarTamanho(i, idx){
-        const tamanhos = SIM.cards[i].obra._tamanhosDisponiveis || [];
-        if(tamanhos[idx]){ SIM.cards[i].tamanho = tamanhos[idx]; montarCard(i); }
+      function mudarTamanho(i,j,idx){
+        const tamanhos = SIM.cards[i].pecas[j].obra._tamanhosDisponiveis || [];
+        if(tamanhos[idx]){ SIM.cards[i].pecas[j].tamanho = tamanhos[idx]; montarCard(i); }
       }
 
-      function mudarMoldura(i, slug){
-        SIM.cards[i].moldura = slug;
+      function mudarMoldura(i,j,slug){
+        SIM.cards[i].pecas[j].moldura = slug;
         montarCard(i);
       }
 
-      // ── Ajuste manual de posição (arrastar) ──
       // ── Salvar simulação ──
       function abrirSalvar(){
         const nome = prompt('Dê um nome para esta simulação (ex: Sala do cliente João):');
-        if(nome === null) return; // cancelou
+        if(nome === null) return;
         if(!nome.trim()){ alert('Digite um nome.'); return; }
         salvarSimulacao(nome.trim());
       }
       async function salvarSimulacao(nome){
-        // Monta os cards com só o essencial pra reabrir
         const cardsSalvar = SIM.cards.map(c => ({
-          obra: {
-            id: c.obra.id, codigo: c.obra.codigo, nome: c.obra.nome, colecao: c.obra.colecao,
-            imagem_preview: c.obra.imagem_preview, _tamanhosDisponiveis: c.obra._tamanhosDisponiveis || [],
-            _motivos: c.obra._motivos || []
-          },
-          tamanho: c.tamanho, moldura: c.moldura,
-          posX: c.posX, posY: c.posY
+          pecas: c.pecas.map(p => ({
+            obra: {
+              id: p.obra.id, codigo: p.obra.codigo, nome: p.obra.nome, colecao: p.obra.colecao,
+              imagem_preview: p.obra.imagem_preview, _tamanhosDisponiveis: p.obra._tamanhosDisponiveis || [],
+              _motivos: p.obra._motivos || []
+            },
+            tamanho: p.tamanho, moldura: p.moldura, posX: p.posX, posY: p.posY
+          }))
         }));
         try{
           const r = await fetch('/simulador/salvar', {
@@ -1464,27 +1462,27 @@ app.get('/simulador', authMembro, async(req,res)=>{
         }catch(e){ alert('Erro ao salvar: '+e.message); }
       }
 
-      function iniciarAjuste(i){
-        SIM.cards[i].ajustando = true;
+      // ── Ajuste manual de posição (arrastar), por peça ──
+      function iniciarAjuste(i,j){
+        SIM.cards[i].pecas[j].ajustando = true;
         montarCard(i);
-        ativarArrastar(i);
+        ativarArrastar(i,j);
       }
-      function finalizarAjuste(i){
-        SIM.cards[i].ajustando = false;
+      function finalizarAjuste(i,j){
+        SIM.cards[i].pecas[j].ajustando = false;
         montarCard(i);
       }
-      function resetarPosicao(i){
-        delete SIM.cards[i].posX;
-        delete SIM.cards[i].posY;
+      function resetarPosicao(i,j){
+        delete SIM.cards[i].pecas[j].posX;
+        delete SIM.cards[i].pecas[j].posY;
         montarCard(i);
-        if(SIM.cards[i].ajustando) ativarArrastar(i);
+        if(SIM.cards[i].pecas[j].ajustando) ativarArrastar(i,j);
       }
-      function ativarArrastar(i){
-        const wrap = document.getElementById('quadro-wrap-'+i);
+      function ativarArrastar(i,j){
+        const wrap = document.getElementById('quadro-wrap-'+i+'-'+j);
         const container = document.getElementById('sim-container-'+i);
         if(!wrap || !container) return;
         let arrastando = false;
-
         function mover(e){
           if(!arrastando) return;
           e.preventDefault();
@@ -1495,8 +1493,8 @@ app.get('/simulador', authMembro, async(req,res)=>{
           let py = ((clientY - rect.top) / rect.height) * 100;
           px = Math.max(0, Math.min(100, px));
           py = Math.max(0, Math.min(100, py));
-          SIM.cards[i].posX = px;
-          SIM.cards[i].posY = py;
+          SIM.cards[i].pecas[j].posX = px;
+          SIM.cards[i].pecas[j].posY = py;
           wrap.style.left = px + '%';
           wrap.style.top = py + '%';
         }
@@ -1511,31 +1509,22 @@ app.get('/simulador', authMembro, async(req,res)=>{
         wrap.ontouchstart = function(e){ arrastando = true; document.addEventListener('touchmove', mover, {passive:false}); document.addEventListener('touchend', soltar); };
       }
 
-      // ── Galeria de troca de obra ──
-      let GALERIA = { obras:null, slot:null, modo:'trocar' };
+      // ── Galeria de obras — "trocar" (substitui uma peça) ou "adicionar" (nova peça na composição) ──
+      let GALERIA = { obras:null, alvo:null, modo:'trocar' };
 
-      async function abrirGaleria(i){
-        GALERIA.slot = i;
+      async function abrirGaleria(i,j){
+        GALERIA.alvo = {i:i,j:j};
         GALERIA.modo = 'trocar';
-        const modal = document.getElementById('galeria-modal');
-        modal.style.display = 'block';
-        document.body.style.overflow = 'hidden';
-        document.getElementById('galeria-grid').innerHTML = '<p style="color:var(--muted);text-align:center;padding:40px;">Carregando obras...</p>';
-        if(!GALERIA.obras){
-          try{
-            const r = await fetch('/simulador/obras');
-            const d = await r.json();
-            GALERIA.obras = d.obras || [];
-          }catch(e){ GALERIA.obras = []; }
-        }
-        renderGaleria('');
+        abrirModalGaleria();
       }
 
-      // Abre a galeria em modo "adicionar" — escolher uma obra aqui cria um card NOVO
-      // na composição, em vez de substituir uma sugestão existente.
-      async function abrirGaleriaAdicionar(){
-        GALERIA.slot = null;
+      async function abrirGaleriaAdicionar(i){
+        GALERIA.alvo = {i:i};
         GALERIA.modo = 'adicionar';
+        abrirModalGaleria();
+      }
+
+      async function abrirModalGaleria(){
         const modal = document.getElementById('galeria-modal');
         modal.style.display = 'block';
         document.body.style.overflow = 'hidden';
@@ -1587,27 +1576,24 @@ app.get('/simulador', authMembro, async(req,res)=>{
         const tamanhoInicial = nova.tamanhos && nova.tamanhos.length ? nova.tamanhos[0] : null;
 
         if(GALERIA.modo === 'adicionar'){
-          // Cria um card NOVO no final, para composição — nunca mexe nos que já existem
-          const novoIndex = SIM.cards.length;
-          SIM.cards.push({ obra: objObra, tamanho: tamanhoInicial, moldura: SIM.data.analise.moldura_recomendada || 'preta', extra:true });
-          document.getElementById('cards-container').insertAdjacentHTML('beforeend', '<div id="card-slot-'+novoIndex+'"></div>');
+          const i = GALERIA.alvo.i;
+          SIM.cards[i].pecas.push({ obra: objObra, tamanho: tamanhoInicial, moldura: (SIM.data.analise.moldura_recomendada || 'preta') });
           fecharGaleria();
-          montarCard(novoIndex);
+          montarCard(i);
         } else {
-          const i = GALERIA.slot;
-          SIM.cards[i].obra = objObra;
-          SIM.cards[i].tamanho = tamanhoInicial;
+          const i = GALERIA.alvo.i, j = GALERIA.alvo.j;
+          SIM.cards[i].pecas[j].obra = objObra;
+          SIM.cards[i].pecas[j].tamanho = tamanhoInicial;
           fecharGaleria();
           montarCard(i);
         }
       }
 
-      // Remove um card extra adicionado à composição (nunca remove as 3 sugestões originais)
-      function removerDaComposicao(i){
+      // Remove uma peça específica da composição (nunca remove a última peça de uma sugestão)
+      function removerPeca(i,j){
         if(!confirm('Remover esta obra da composição?')) return;
-        const slot = document.getElementById('card-slot-'+i);
-        if(slot) slot.remove();
-        SIM.cards[i] = null;
+        SIM.cards[i].pecas.splice(j,1);
+        montarCard(i);
       }
     </script>
   `,true));
