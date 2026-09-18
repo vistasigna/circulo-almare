@@ -1377,13 +1377,44 @@ app.get('/simulador', authMembro, async(req,res)=>{
         html += '<div id="cards-container">';
         SIM.cards.forEach((c,i)=>{ html += '<div id="card-slot-'+i+'"></div>'; });
         html += '</div>';
+
+        // Orçamento fica escondido por padrão — a experiência de simular não deve empurrar
+        // preço o tempo todo. A pessoa vê o valor só quando pede, de propósito.
+        html += '<div id="orcamento-area" style="margin-top:20px;"></div>';
         html += '<div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap;">';
-        html += '<button onclick="abrirSalvar()" class="btn btn-primary" style="flex:1;min-width:180px;">Salvar esta simulação</button>';
+        html += '<button onclick="verOrcamento()" class="btn btn-primary" style="flex:1;min-width:180px;">Ver orçamento</button>';
+        html += '<button onclick="abrirSalvar()" class="btn btn-outline" style="flex:1;min-width:180px;">Salvar esta simulação</button>';
         html += '<button onclick="location.reload()" class="btn btn-outline" style="flex:1;min-width:180px;">Simular outro ambiente</button>';
         html += '</div>';
 
         document.getElementById('resultado').innerHTML = html;
         SIM.cards.forEach((c,i)=> montarCard(i));
+      }
+
+      // Mostra o preço total só quando a pessoa pede — nunca fica exposto durante a simulação.
+      function verOrcamento(){
+        let total = 0;
+        let linhas = '';
+        SIM.cards.forEach(c=>{
+          c.pecas.forEach(p=>{
+            if(p.tamanho && p.tamanho.preco){
+              total += p.tamanho.preco;
+              linhas += '<div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);font-size:13px;">';
+              linhas += '<span>'+p.obra.nome+' <span style="color:var(--muted);">· '+p.tamanho.label+'</span></span>';
+              linhas += '<span style="color:var(--gold);">R$ '+p.tamanho.preco.toLocaleString('pt-BR')+'</span>';
+              linhas += '</div>';
+            }
+          });
+        });
+        const html =
+          '<div class="card" style="border-color:var(--gold);">' +
+          '<h3 style="font-size:18px;margin-bottom:16px;">Orçamento</h3>' +
+          linhas +
+          '<div style="display:flex;justify-content:space-between;align-items:center;padding-top:16px;margin-top:8px;">' +
+          '<span style="font-size:13px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);">Total</span>' +
+          '<span style="font-family:\\'Cormorant Garamond\\',serif;font-size:26px;color:var(--gold);">R$ '+total.toLocaleString('pt-BR')+'</span>' +
+          '</div></div>';
+        document.getElementById('orcamento-area').innerHTML = html;
       }
 
       // Desenha (ou redesenha) o card i — uma sugestão pode ter várias peças (composição)
@@ -1448,38 +1479,40 @@ app.get('/simulador', authMembro, async(req,res)=>{
           const o = p.obra;
           const t = p.tamanho;
           const tamanhos = o._tamanhosDisponiveis || (t?[t]:[]);
-          html += '<div style="display:flex;align-items:center;gap:10px;padding:10px 12px;'+(j<numPecas-1?'border-bottom:1px solid var(--border);':'')+'">';
-          html += '<img src="'+o.imagem_preview+'" style="width:38px;height:38px;object-fit:cover;border-radius:3px;flex-shrink:0;background:#0d0d0d;">';
+          html += '<div style="display:flex;align-items:center;gap:10px;padding:12px;'+(j<numPecas-1?'border-bottom:1px solid var(--border);':'')+'">';
+          html += '<img src="'+o.imagem_preview+'" style="width:42px;height:42px;object-fit:cover;border-radius:3px;flex-shrink:0;background:#0d0d0d;">';
           html += '<div style="flex:1;min-width:0;">';
-          html += '<div style="font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:\\'Cormorant Garamond\\',serif;">'+o.nome+'</div>';
+          html += '<div style="font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:\\'Cormorant Garamond\\',serif;">'+o.nome+'</div>';
           if(tamanhos.length){
-            html += '<select onchange="mudarTamanho('+i+','+j+',this.value)" style="font-size:10px;background:#0d0d0d;border:1px solid var(--border);color:var(--muted);padding:2px 4px;border-radius:2px;margin-top:2px;max-width:100%;">';
+            // Sem preço aqui de propósito — a experiência de simular não deve empurrar valor
+            // o tempo todo. O preço só aparece quando a pessoa pede o orçamento, no final.
+            html += '<select onchange="mudarTamanho('+i+','+j+',this.value)" style="font-size:11px;background:#0d0d0d;border:1px solid var(--border);color:var(--muted);padding:3px 5px;border-radius:2px;margin-top:3px;max-width:100%;">';
             tamanhos.forEach((tm,idx)=>{
               const sel = (t && tm.largura===t.largura && tm.altura===t.altura) ? 'selected' : '';
-              html += '<option value="'+idx+'" '+sel+'>'+tm.label+(tm.precoLabel?' · '+tm.precoLabel:'')+'</option>';
+              html += '<option value="'+idx+'" '+sel+'>'+tm.label+'</option>';
             });
             html += '</select>';
           }
           html += '</div>';
           // molduras mini
-          html += '<div style="display:flex;gap:3px;flex-shrink:0;">';
+          html += '<div style="display:flex;gap:4px;flex-shrink:0;">';
           [['preta','#1a1a1a'],['carvalho','#5c4a2e'],['aco_escovado','linear-gradient(135deg,#aaa,#777)']].forEach(([slug,bg])=>{
             const borda = p.moldura===slug ? 'var(--gold)' : 'var(--border)';
-            html += '<button type="button" onclick="mudarMoldura('+i+','+j+',\\''+slug+'\\')" style="width:16px;height:16px;background:'+bg+';border:1.5px solid '+borda+';border-radius:2px;cursor:pointer;padding:0;" title="'+(nomesMoldura[slug])+'"></button>';
+            html += '<button type="button" onclick="mudarMoldura('+i+','+j+',\\''+slug+'\\')" style="width:18px;height:18px;background:'+bg+';border:1.5px solid '+borda+';border-radius:2px;cursor:pointer;padding:0;" title="'+(nomesMoldura[slug])+'"></button>';
           });
           html += '</div>';
-          // trocar (icone + texto pequeno)
-          html += '<button type="button" onclick="abrirGaleria('+i+','+j+')" title="Trocar por outra obra" style="flex-shrink:0;background:none;border:1px solid var(--border);color:var(--muted);border-radius:3px;padding:5px 8px;font-size:14px;cursor:pointer;line-height:1;">⇄</button>';
+          // trocar — com texto, bem visível
+          html += '<button type="button" onclick="abrirGaleria('+i+','+j+')" style="flex-shrink:0;display:flex;align-items:center;gap:5px;background:rgba(201,169,110,.08);border:1px solid var(--gold);color:var(--gold);border-radius:4px;padding:8px 12px;font-size:12px;cursor:pointer;font-weight:500;">⇄ Trocar</button>';
           // remover (só se tiver mais de 1)
           if(numPecas>1){
-            html += '<button type="button" onclick="removerPeca('+i+','+j+')" title="Remover esta obra" style="flex-shrink:0;background:none;border:1px solid #e77;color:#e77;border-radius:3px;padding:5px 8px;font-size:12px;cursor:pointer;line-height:1;">✕</button>';
+            html += '<button type="button" onclick="removerPeca('+i+','+j+')" title="Remover esta obra" style="flex-shrink:0;background:none;border:1px solid #e77;color:#e77;border-radius:4px;padding:8px 10px;font-size:13px;cursor:pointer;line-height:1;">✕</button>';
           }
           html += '</div>';
         });
         html += '</div>';
 
-        // Incluir obra — botão pequeno, não ocupa a largura toda
-        html += '<button type="button" onclick="abrirGaleriaAdicionar('+i+')" title="Incluir outra obra nesta composição" style="background:none;border:1px dashed var(--border);color:var(--muted);border-radius:3px;padding:7px 14px;font-size:12px;cursor:pointer;">+ Incluir obra</button>';
+        // Incluir obra — botão claro, centralizado, com destaque real
+        html += '<button type="button" onclick="abrirGaleriaAdicionar('+i+')" style="display:block;margin:0 auto;background:rgba(201,169,110,.08);border:1.5px dashed var(--gold);color:var(--gold);border-radius:4px;padding:10px 22px;font-size:13px;cursor:pointer;font-weight:500;">+ Incluir outra obra</button>';
 
         html += '</div>'; // fecha .card
 
