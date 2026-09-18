@@ -1316,8 +1316,6 @@ app.get('/simulador', authMembro, async(req,res)=>{
         const larguraNaFoto = larguraFracao * bx.width_pct;
         const larguraFinal = Math.min(Math.max(larguraNaFoto, 6), bx.width_pct*0.98);
         const molduraCor = coresMoldura[c.moldura] || '#1a1a1a';
-        const larguraCmObra = t ? t.largura : 100;
-        const gapPct = Math.min(Math.max((0.6/larguraCmObra)*100, 0.4), 3.5);
 
         let html = '<div class="card" style="margin-bottom:24px;">';
         html += '<div style="display:flex;gap:8px;align-items:center;margin-bottom:16px;"><span class="badge badge-gold">'+(i+1)+'ª sugestão</span>'+(o._score?'<span style="font-size:11px;color:var(--muted);">'+Math.round(o._score)+' pontos de compatibilidade</span>':'')+'</div>';
@@ -1328,7 +1326,7 @@ app.get('/simulador', authMembro, async(req,res)=>{
         html += '<div id="sim-container-'+i+'" style="position:relative;background:#0d0d0d;border-radius:4px;overflow:hidden;margin-bottom:12px;line-height:0;">';
         html += '<img src="'+data.foto_local+'" style="width:100%;display:block;" draggable="false">';
         html += '<div id="quadro-wrap-'+i+'" class="quadro-wrap-'+i+'" style="position:absolute;top:'+posY+'%;left:'+posX+'%;transform:translate(-50%,-50%);width:'+larguraFinal+'%;aspect-ratio:'+(t?t.largura:1)+'/'+(t?t.altura:1)+';'+(c.ajustando?'cursor:move;box-shadow:0 0 0 2px var(--gold);':'')+'">';
-        html += '<div class="moldura-'+i+'" style="border:2px solid '+molduraCor+';padding:'+gapPct.toFixed(2)+'%;background:#0a0a0a;box-sizing:border-box;width:100%;height:100%;">';
+        html += '<div id="moldura-real-'+i+'" class="moldura-'+i+'" style="border:1px solid '+molduraCor+';padding:1px;background:#000;box-sizing:border-box;width:100%;height:100%;">';
         html += '<div style="position:relative;width:100%;height:100%;">';
         html += '<img src="'+o.imagem_preview+'" style="width:100%;height:100%;object-fit:fill;background:#f4f2ee;display:block;" draggable="false">';
         html += '<div style="position:absolute;inset:0;background-image:url('+data.watermark+');background-repeat:repeat;mix-blend-mode:overlay;pointer-events:none;"></div>';
@@ -1386,6 +1384,25 @@ app.get('/simulador', authMembro, async(req,res)=>{
         document.getElementById('card-slot-'+i).innerHTML = html;
         // Se está em modo de ajuste, reativa o arrastar (o innerHTML recriou o elemento)
         if(SIM.cards[i].ajustando){ setTimeout(()=>ativarArrastar(i), 0); }
+        // Calcula o fileto (6mm) e o vão (7mm) em PIXELS REAIS, medindo o tamanho que a
+        // caixa realmente ocupa na tela — CSS não aceita borda em porcentagem, então isso
+        // é feito via JS pra escalar certo com o tamanho real da obra (1,5x1,5m fica fino,
+        // uma obra pequena fica proporcionalmente mais grossa, igual moldura física).
+        setTimeout(()=>ajustarMolduraReal(i, t), 0);
+      }
+
+      function ajustarMolduraReal(i, t){
+        const wrap = document.getElementById('quadro-wrap-'+i);
+        const moldura = document.getElementById('moldura-real-'+i);
+        if(!wrap || !moldura || !t) return;
+        const larguraCmReal = t.largura;
+        const larguraPxReal = wrap.offsetWidth;
+        if(!larguraPxReal || !larguraCmReal) return;
+        const pxPorCm = larguraPxReal / larguraCmReal;
+        const filetoPx = Math.max(1, Math.round(pxPorCm * 0.6)); // 6mm = 0,6cm
+        const vaoPx = Math.max(1, Math.round(pxPorCm * 0.7));    // 7mm = 0,7cm
+        moldura.style.borderWidth = filetoPx + 'px';
+        moldura.style.padding = vaoPx + 'px';
       }
 
       function mudarTamanho(i, idx){
