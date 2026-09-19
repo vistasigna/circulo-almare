@@ -2165,7 +2165,7 @@ async function tamanhosDaObra(obraId){
 }
 
 async function pegarOuCriarCarrinho(membroId){
-  let p = await pool.query(`SELECT * FROM circulo_pedidos WHERE membro_id=$1 AND status='CARRINHO'`,[membroId]);
+  let p = await pool.query(`SELECT * FROM circulo_pedidos WHERE membro_id=$1 AND status='CARRINHO' ORDER BY criado_em DESC LIMIT 1`,[membroId]);
   if(p.rows.length) return p.rows[0];
   const numero = 'C'+Date.now().toString(36).toUpperCase();
   const r = await pool.query(
@@ -2211,7 +2211,7 @@ app.post('/comprar/:obraId/adicionar', authMembro, async(req,res)=>{
 
 // Ver o carrinho
 app.get('/carrinho', authMembro, async(req,res)=>{
-  const pedidoRes = await pool.query(`SELECT * FROM circulo_pedidos WHERE membro_id=$1 AND status='CARRINHO'`,[req.membro.id]);
+  const pedidoRes = await pool.query(`SELECT * FROM circulo_pedidos WHERE membro_id=$1 AND status='CARRINHO' ORDER BY criado_em DESC LIMIT 1`,[req.membro.id]);
   const navBarHtml = navBar('carrinho', await temFuncaoComImpacto(req.membro.id), await ehEspecificador(req.membro.id));
   if(!pedidoRes.rows.length){
     return res.send(html('Carrinho',`${navBarHtml}<h2 style="font-size:28px;margin-bottom:16px;">Seu carrinho</h2><div class="card" style="text-align:center;padding:48px 24px;"><p style="color:var(--muted);margin-bottom:20px;">Seu carrinho está vazio.</p><a href="/catalogo" class="btn btn-primary">Ver obras no catálogo</a></div>`,true));
@@ -2364,9 +2364,27 @@ app.get('/carrinho/buscar-cliente', authMembro, async(req,res)=>{
 app.post('/carrinho/definir-cliente', authMembro, async(req,res)=>{
   try{
     const { cliente_membro_id } = req.body;
-    const pedido = await pool.query(`SELECT id FROM circulo_pedidos WHERE membro_id=$1 AND status='CARRINHO'`,[req.membro.id]);
+    // Busca o pedido mais recente do membro que ainda pode receber cliente (carrinho aberto
+    // ou aguardando pagamento) — nunca um pedido antigo/esquecido de uma tentativa anterior.
+    const pedido = await pool.query(
+      `SELECT id, cliente_membro_id FROM circulo_pedidos WHERE membro_id=$1 AND status IN ('CARRINHO','AGUARDANDO_PAGAMENTO') ORDER BY criado_em DESC LIMIT 1`,
+      [req.membro.id]
+    );
     if(!pedido.rows.length) return res.json({ erro:'Carrinho não encontrado.' });
-    await pool.query('UPDATE circulo_pedidos SET cliente_membro_id=$1 WHERE id=$2',[cliente_membro_id, pedido.rows[0].id]);
+    const pedidoId = pedido.rows[0].id;
+    const clienteMudou = pedido.rows[0].cliente_membro_id !== parseInt(cliente_membro_id);
+
+    if(clienteMudou){
+      // O cliente mudou — qualquer cobrança já gerada era pro cliente ANTERIOR e não vale
+      // mais. Limpa tudo e volta pro status de carrinho, forçando gerar uma cobrança nova
+      // na próxima vez que a pessoa for pro pagamento.
+      await pool.query(
+        `UPDATE circulo_pedidos SET cliente_membro_id=$1, asaas_cliente_id=NULL, asaas_cobranca_id=NULL, invoice_url=NULL, link_publico=NULL, status='CARRINHO' WHERE id=$2`,
+        [cliente_membro_id, pedidoId]
+      );
+    } else {
+      await pool.query('UPDATE circulo_pedidos SET cliente_membro_id=$1 WHERE id=$2',[cliente_membro_id, pedidoId]);
+    }
     res.json({ ok:true });
   }catch(e){ res.json({ erro:e.message }); }
 });
@@ -2505,7 +2523,7 @@ async function montarResumoPedidoHtml(pedidoId){
 
 // ─── ROTA: membro finaliza o pedido (resumo + escolha de quem paga) ──────────
 app.get('/carrinho/finalizar', authMembro, async(req,res)=>{
-  const pedidoRes = await pool.query(`SELECT * FROM circulo_pedidos WHERE membro_id=$1 AND status='CARRINHO'`,[req.membro.id]);
+  const pedidoRes = await pool.query(`SELECT * FROM circulo_pedidos WHERE membro_id=$1 AND status='CARRINHO' ORDER BY criado_em DESC LIMIT 1`,[req.membro.id]);
   if(!pedidoRes.rows.length) return res.redirect('/carrinho');
   const pedido = pedidoRes.rows[0];
   if(!pedido.cliente_membro_id) return res.redirect('/carrinho');
@@ -2563,7 +2581,7 @@ app.get('/carrinho/finalizar', authMembro, async(req,res)=>{
 // Gera (ou reaproveita) a cobrança Asaas e devolve o link de pagamento + link público
 app.post('/carrinho/gerar-cobranca', authMembro, async(req,res)=>{
   try{
-    const pedidoRes = await pool.query(`SELECT * FROM circulo_pedidos WHERE membro_id=$1 AND status IN ('CARRINHO','AGUARDANDO_PAGAMENTO')`,[req.membro.id]);
+    const pedidoRes = await pool.query(`SELECT * FROM circulo_pedidos WHERE membro_id=$1 AND status IN ('CARRINHO','AGUARDANDO_PAGAMENTO') ORDER BY criado_em DESC LIMIT 1`,[req.membro.id]);
     if(!pedidoRes.rows.length) return res.json({ erro:'Pedido não encontrado.' });
     const pedido = pedidoRes.rows[0];
     const cobranca = await garantirCobrancaAsaas(pedido.id);
