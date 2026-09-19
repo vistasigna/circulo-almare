@@ -688,7 +688,7 @@ app.get('/portfolio', authMembro, async(req,res)=>{
 
   const r = await pool.query(`
     SELECT e.id as exemplar_id, e.numero, e.tamanho, e.tecnica_impressao, e.data_venda, e.arca_codigo,
-           o.id as obra_id, o.nome, o.colecao, o.imagem_preview, o.tiragem_total, o.essencia,
+           o.id as obra_id, o.codigo, o.nome, o.colecao, o.imagem_preview, o.tiragem_total, o.essencia,
            reg.codigo_arca, reg.token_verificacao, reg.ano
     FROM almare_exemplares e
     JOIN almare_obras o ON o.id = e.obra_id
@@ -704,11 +704,16 @@ app.get('/portfolio', authMembro, async(req,res)=>{
       ? `https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent('https://almare-production.up.railway.app/arca/verificar/'+p.token_verificacao)}`
       : null;
     const dataAquisicao = p.data_venda ? new Date(p.data_venda).toLocaleDateString('pt-BR') : null;
+    // Peça 001 é mantida em sigilo — nunca mostra a foto no portfólio, só ela.
+    const sigilo = (p.codigo === 'ALM-001');
 
     return `
       <div class="card" style="margin-bottom:24px;overflow:hidden;padding:0;">
-        <div style="background:#0d0d0d;text-align:center;">
-          ${p.imagem_preview?`<img src="${esc(p.imagem_preview)}" style="max-width:100%;max-height:420px;display:inline-block;">`:''}
+        <div style="background:#0d0d0d;text-align:center;${sigilo?'padding:60px 24px;':''}">
+          ${sigilo
+            ? `<div style="color:var(--muted);font-size:11px;letter-spacing:.15em;text-transform:uppercase;">Imagem mantida em sigilo</div>`
+            : (p.imagem_preview?`<img src="${esc(p.imagem_preview)}" style="max-width:100%;max-height:420px;display:inline-block;">`:'')
+          }
         </div>
         <div style="padding:24px;">
           <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:8px;flex-wrap:wrap;">
