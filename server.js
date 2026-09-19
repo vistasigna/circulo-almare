@@ -1436,7 +1436,7 @@ app.get('/simulador', authMembro, async(req,res)=>{
 
         // ── Uma única foto, com TODAS as peças desta composição sobrepostas ──
         html += '<div id="sim-container-'+i+'" style="position:relative;background:#0d0d0d;border-radius:4px;overflow:hidden;margin-bottom:12px;line-height:0;">';
-        html += '<img src="'+data.foto_local+'" style="width:100%;display:block;" draggable="false">';
+        html += '<img src="'+data.foto_local+'" style="width:100%;display:block;" draggable="false" onload="recalcularMolduraCard('+i+')">';
 
         c.pecas.forEach((p,j)=>{
           const t = p.tamanho;
@@ -1535,6 +1535,24 @@ app.get('/simulador', authMembro, async(req,res)=>{
         moldura.style.borderWidth = filetoPx + 'px';
         moldura.style.padding = vaoPx + 'px';
       }
+
+      // Recalcula a moldura de TODAS as peças de um card — chamado quando a foto termina
+      // de carregar de verdade (mais confiável que um timeout cego, especialmente no celular,
+      // onde a imagem pode demorar mais a assentar no layout).
+      function recalcularMolduraCard(i){
+        const c = SIM.cards[i];
+        if(!c) return;
+        c.pecas.forEach((p,j)=>ajustarMolduraReal(i,j,p.tamanho));
+      }
+
+      // Recalcula tudo que está na tela — chamado ao girar o celular ou redimensionar a
+      // janela, pra moldura nunca ficar desproporcional por causa de mudança de layout.
+      function recalcularTodasMolduras(){
+        if(!SIM.cards) return;
+        SIM.cards.forEach((c,i)=>recalcularMolduraCard(i));
+      }
+      window.addEventListener('resize', recalcularTodasMolduras);
+      window.addEventListener('orientationchange', ()=>setTimeout(recalcularTodasMolduras, 200));
 
       function mudarTamanho(i,j,idx){
         const tamanhos = SIM.cards[i].pecas[j].obra._tamanhosDisponiveis || [];
