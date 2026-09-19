@@ -27,11 +27,23 @@ const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 
 function gerarToken(payload, opts) { return jwt.sign(payload, JWT_SECRET, opts || { expiresIn: '7d' }); }
 
-function authMembro(req, res, next) {
+// Rotas que precisam continuar acessíveis mesmo com cadastro incompleto — senão vira loop
+const ROTAS_LIVRES_CADASTRO_INCOMPLETO = ['/completar-cadastro', '/logout'];
+
+async function authMembro(req, res, next) {
   const token = req.cookies.circulo_token;
   if (!token) return res.redirect('/login');
-  try { req.membro = jwt.verify(token, JWT_SECRET); next(); }
+  try { req.membro = jwt.verify(token, JWT_SECRET); }
   catch { res.clearCookie('circulo_token'); return res.redirect('/login'); }
+
+  if (ROTAS_LIVRES_CADASTRO_INCOMPLETO.includes(req.path)) return next();
+  try {
+    const r = await pool.query('SELECT documento, cep, numero FROM circulo_membros WHERE id=$1',[req.membro.id]);
+    if (r.rows.length && (!r.rows[0].documento || !r.rows[0].cep || !r.rows[0].numero)) {
+      return res.redirect('/completar-cadastro');
+    }
+  } catch(e){ console.error('Checar cadastro completo:', e.message); }
+  next();
 }
 
 function authAdmin(req, res, next) {
@@ -745,6 +757,83 @@ app.get('/portfolio', authMembro, async(req,res)=>{
     <p style="color:var(--muted);margin-bottom:32px;">As obras registradas em seu nome — sua coleção pessoal ALMARE.</p>
     ${pecas || '<div class="card" style="text-align:center;padding:48px 24px;"><p style="color:var(--muted);">Você ainda não tem nenhuma obra registrada em seu nome.</p></div>'}
   `,true));
+});
+
+// ─── COMPLETAR CADASTRO — obrigatório para quem se cadastrou antes de CPF/endereço
+// existirem no formulário. Bloqueia o resto do sistema até preencher. ────────────
+app.get('/completar-cadastro', authMembro, async(req,res)=>{
+  const r = await pool.query('SELECT * FROM circulo_membros WHERE id=$1',[req.membro.id]);
+  const m = r.rows[0];
+  res.send(html('Complete seu cadastro',`
+    <div class="msg-info" style="margin-bottom:24px;">Seu cadastro está incompleto. Preencha os dados abaixo para continuar usando o Círculo ALMARE — são necessários para emissão de certificado e nota fiscal.</div>
+    ${req.query.erro?`<div class="msg-erro">${esc(req.query.erro)}</div>`:''}
+    <div class="card">
+      <div class="field"><label>Nome</label><input value="${esc(m.nome)}" disabled style="opacity:.5"></div>
+      <form method="POST" action="/completar-cadastro">
+        <div class="field"><label>CPF / CNPJ *</label><input name="documento" required value="${esc(m.documento||'')}" placeholder="CPF ou CNPJ"></div>
+        <div class="grid-2">
+          <div class="field"><label>Telefone</label><input name="telefone" value="${esc(m.telefone||'')}"></div>
+          <div class="field"><label>Celular / WhatsApp *</label><input name="celular" required value="${esc(m.celular||'')}"></div>
+        </div>
+        <hr class="divider">
+        <h3 style="font-size:18px;margin-bottom:20px;">Endereço</h3>
+        <div class="grid-2">
+          <div class="field"><label>CEP *</label><input name="cep" id="cep" required value="${esc(m.cep||'')}" oninput="buscarCepCompletar(this.value)"></div>
+          <div class="field"><label>Estado</label><input name="estado" id="estado" maxlength="2" value="${esc(m.estado||'')}"></div>
+        </div>
+        <div class="field"><label>Endereço</label><input name="endereco" id="endereco" value="${esc(m.endereco||'')}"></div>
+        <div class="grid-2">
+          <div class="field"><label>Número *</label><input name="numero" id="numero" required value="${esc(m.numero||'')}"></div>
+          <div class="field"><label>Complemento</label><input name="complemento" id="complemento" value="${esc(m.complemento||'')}"></div>
+        </div>
+        <div class="grid-2">
+          <div class="field"><label>Bairro</label><input name="bairro" id="bairro" value="${esc(m.bairro||'')}"></div>
+          <div class="field"><label>Cidade</label><input name="cidade" id="cidade" value="${esc(m.cidade||'')}"></div>
+        </div>
+        <button type="submit" class="btn btn-primary btn-full" style="margin-top:8px;">Salvar e continuar</button>
+      </form>
+    </div>
+    <script>
+      async function buscarCepCompletar(v){
+        const cep=v.replace(/\\D/g,'');
+        if(cep.length!==8)return;
+        try{
+          const r=await fetch('https://viacep.com.br/ws/'+cep+'/json/');
+          const d=await r.json();
+          if(d.erro)return;
+          document.getElementById('endereco').value=d.logradouro||'';
+          document.getElementById('bairro').value=d.bairro||'';
+          document.getElementById('cidade').value=d.localidade||'';
+          document.getElementById('estado').value=d.uf||'';
+        }catch{}
+      }
+    </script>
+  `));
+});
+
+app.post('/completar-cadastro', authMembro, async(req,res)=>{
+  const { documento, telefone, celular, cep, endereco, numero, complemento, bairro, cidade, estado } = req.body;
+  try{
+    if(!documento || !documento.trim()) return res.redirect('/completar-cadastro?erro=CPF/CNPJ+é+obrigatório');
+    if(!cep || !numero) return res.redirect('/completar-cadastro?erro=CEP+e+número+são+obrigatórios');
+    await pool.query(
+      `UPDATE circulo_membros SET documento=$1,telefone=$2,celular=$3,cep=$4,endereco=$5,numero=$6,complemento=$7,bairro=$8,cidade=$9,estado=$10 WHERE id=$11`,
+      [documento.trim(), telefone||null, celular||null, cep, endereco||null, numero, complemento||null, bairro||null, cidade||null, estado||null, req.membro.id]
+    );
+    // Sincroniza com o Bling em segundo plano — nunca bloqueia o cadastro se falhar
+    try{
+      const m = await pool.query('SELECT * FROM circulo_membros WHERE id=$1',[req.membro.id]);
+      const mm = m.rows[0];
+      await salvarContatoBling({
+        nome: mm.nome, email: mm.email, documento: mm.documento, ie: mm.ie,
+        telefone: mm.telefone, celular: mm.celular, cep: mm.cep, endereco: mm.endereco,
+        numero: mm.numero, complemento: mm.complemento, bairro: mm.bairro, cidade: mm.cidade, estado: mm.estado
+      }, mm.bling_id || null);
+    }catch(e){ console.error('Sync Bling completar-cadastro:', e.message); }
+    res.redirect('/portal');
+  }catch(e){
+    res.redirect('/completar-cadastro?erro='+encodeURIComponent(e.message));
+  }
 });
 
 app.get('/meus-dados', authMembro, async(req,res)=>{
