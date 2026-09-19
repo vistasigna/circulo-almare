@@ -2731,6 +2731,41 @@ app.post('/pedido/:token/pagar', async(req,res)=>{
   }catch(e){ res.json({ erro: e.message }); }
 });
 
+// ─── WEBHOOK ASAAS — confirma pagamento automaticamente ──────────────────────
+// O Asaas chama esta rota sozinho quando o status de uma cobrança muda. Nunca requer
+// login (é o próprio Asaas batendo aqui, não um membro). Sempre responde rápido.
+app.post('/webhook/asaas', async(req,res)=>{
+  try{
+    const { id: eventId, event, payment } = req.body || {};
+    if(!eventId || !event) return res.json({ received:true });
+
+    // Idempotência: o Asaas pode reenviar o mesmo evento mais de uma vez. Se já
+    // processamos este event_id antes, não processa de novo — só confirma recebido.
+    const dedup = await pool.query(
+      'INSERT INTO circulo_asaas_eventos (event_id) VALUES ($1) ON CONFLICT DO NOTHING RETURNING event_id',
+      [eventId]
+    );
+    if(!dedup.rows.length) return res.json({ received:true });
+
+    if((event === 'PAYMENT_CONFIRMED' || event === 'PAYMENT_RECEIVED') && payment && payment.externalReference){
+      const m = String(payment.externalReference).match(/^circulo-pedido-(\d+)$/);
+      if(m){
+        const pedidoId = parseInt(m[1]);
+        const upd = await pool.query(
+          `UPDATE circulo_pedidos SET status='PAGO' WHERE id=$1 AND status<>'PAGO' RETURNING id`,
+          [pedidoId]
+        );
+        if(upd.rows.length) console.log(`Webhook Asaas: pedido ${pedidoId} marcado como PAGO (evento ${event})`);
+      }
+    }
+    res.json({ received:true });
+  }catch(e){
+    console.error('Webhook Asaas erro:', e.message);
+    // Responde erro pro Asaas tentar de novo mais tarde — só em falha real (ex: banco fora do ar)
+    res.status(500).json({ received:false });
+  }
+});
+
 
 // Página de compra de uma obra (escolher tamanho, moldura, quantidade)
 // Tamanhos oficiais da obra (com preço), pra exibir no catálogo assim que a pessoa abre a obra
@@ -3512,6 +3547,11 @@ async function garantirTabelas(){
     await pool.query(`ALTER TABLE circulo_membros ADD COLUMN IF NOT EXISTS bairro VARCHAR(100);`).catch(()=>{});
     await pool.query(`ALTER TABLE circulo_membros ADD COLUMN IF NOT EXISTS cidade VARCHAR(100);`).catch(()=>{});
     await pool.query(`ALTER TABLE circulo_membros ADD COLUMN IF NOT EXISTS estado VARCHAR(2);`).catch(()=>{});
+    // Evita processar o mesmo evento do Asaas duas vezes (eles reenviam em caso de falha)
+    await pool.query(`CREATE TABLE IF NOT EXISTS circulo_asaas_eventos (
+      event_id VARCHAR(80) PRIMARY KEY,
+      recebido_em TIMESTAMP DEFAULT NOW()
+    );`).catch(()=>{});
     await pool.query(`ALTER TABLE circulo_pedidos ADD COLUMN IF NOT EXISTS cliente_membro_id INTEGER REFERENCES circulo_membros(id);`).catch(()=>{});
     await pool.query(`ALTER TABLE circulo_pedidos ADD COLUMN IF NOT EXISTS link_publico VARCHAR(20) UNIQUE;`).catch(()=>{});
     await pool.query(`ALTER TABLE circulo_pedidos ADD COLUMN IF NOT EXISTS invoice_url TEXT;`).catch(()=>{});
