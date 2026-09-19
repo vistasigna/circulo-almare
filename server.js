@@ -249,6 +249,7 @@ async function temFuncaoComImpacto(membroId) {
 function navBar(ativo, temImpacto=false, ehEspec=false) {
   const base = [
     { key: 'passaporte', href: '/portal', label: 'Passaporte' },
+    { key: 'portfolio', href: '/portfolio', label: 'Portfólio' },
     { key: 'obras', href: '/catalogo', label: 'Obras' },
     { key: 'simulador', href: '/simulador', label: 'Simulador' },
     { key: 'identificar', href: '/identificar', label: 'Identificar' },
@@ -676,6 +677,71 @@ app.get('/portal',authMembro,async(req,res)=>{
 
 // ─── MINHAS FUNÇÕES — ativar/desativar ───────────────────────────────────────
 // ─── MEUS DADOS — membro edita email, telefone e endereço (nunca nome/CPF) ────
+// ─── PORTFÓLIO — obras que o membro possui de verdade (registradas em seu nome) ──
+// Vínculo é pelo e-mail no cadastro do certificado (almare_exemplares.cliente_email),
+// não pelo pagamento — cobre doações/fragmentos que não passam pelo checkout.
+app.get('/portfolio', authMembro, async(req,res)=>{
+  const fRows = await pool.query(`SELECT f.slug FROM circulo_membro_funcoes mf JOIN circulo_funcoes f ON f.id=mf.funcao_id WHERE mf.membro_id=$1 AND mf.ativo=true`,[req.membro.id]);
+  const slugs = fRows.rows.map(r=>r.slug);
+  const temImpacto = slugs.some(s=>['embaixador','especificador','artista','colaborador'].includes(s));
+  const ehEspec = slugs.includes('especificador');
+
+  const r = await pool.query(`
+    SELECT e.id as exemplar_id, e.numero, e.tamanho, e.tecnica_impressao, e.data_venda, e.arca_codigo,
+           o.id as obra_id, o.nome, o.colecao, o.imagem_preview, o.tiragem_total, o.essencia,
+           reg.codigo_arca, reg.token_verificacao, reg.ano
+    FROM almare_exemplares e
+    JOIN almare_obras o ON o.id = e.obra_id
+    LEFT JOIN arca_registros reg ON reg.exemplar_id = e.id
+    WHERE LOWER(e.cliente_email) = LOWER($1)
+    ORDER BY e.data_venda DESC NULLS LAST, e.created_at DESC`, [req.membro.email]);
+
+  const pecas = r.rows.map(p=>{
+    const totalTiragem = p.tiragem_total || null;
+    const peca = totalTiragem ? `Peça ${p.numero} de ${totalTiragem}` : (p.numero ? `Exemplar nº ${p.numero}` : '');
+    const codigoArca = p.codigo_arca || p.arca_codigo || null;
+    const qrUrl = p.token_verificacao
+      ? `https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent('https://almare-production.up.railway.app/arca/verificar/'+p.token_verificacao)}`
+      : null;
+    const dataAquisicao = p.data_venda ? new Date(p.data_venda).toLocaleDateString('pt-BR') : null;
+
+    return `
+      <div class="card" style="margin-bottom:24px;overflow:hidden;padding:0;">
+        <div style="background:#0d0d0d;text-align:center;">
+          ${p.imagem_preview?`<img src="${esc(p.imagem_preview)}" style="max-width:100%;max-height:420px;display:inline-block;">`:''}
+        </div>
+        <div style="padding:24px;">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:8px;flex-wrap:wrap;">
+            <div>
+              <div style="font-size:10px;letter-spacing:.25em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;">${esc(p.colecao||'')}</div>
+              <h3 style="font-family:'Cormorant Garamond',serif;font-size:26px;">${esc(p.nome)}</h3>
+            </div>
+            ${peca?`<span class="badge badge-gold">${esc(peca)}</span>`:''}
+          </div>
+          ${p.essencia?`<p style="font-style:italic;color:var(--gold-light);font-size:14px;margin:12px 0;">${esc(p.essencia)}</p>`:''}
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 24px;font-size:13px;margin-top:16px;padding-top:16px;border-top:1px solid var(--border);">
+            ${p.tamanho?`<div><span style="color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.1em;">Tamanho</span><br>${esc(p.tamanho)}</div>`:''}
+            ${p.tecnica_impressao?`<div><span style="color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.1em;">Técnica</span><br>${esc(p.tecnica_impressao)}</div>`:''}
+            ${codigoArca?`<div><span style="color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.1em;">Código ARCA</span><br>${esc(codigoArca)}</div>`:''}
+            ${dataAquisicao?`<div><span style="color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.1em;">Desde</span><br>${esc(dataAquisicao)}</div>`:''}
+          </div>
+          ${qrUrl?`
+            <div style="display:flex;align-items:center;gap:14px;margin-top:20px;padding-top:20px;border-top:1px solid var(--border);">
+              <img src="${qrUrl}" style="width:72px;height:72px;border-radius:4px;background:#fff;padding:4px;">
+              <div style="font-size:12px;color:var(--muted);">Escaneie para verificar a autenticidade desta obra no registro ARCA.</div>
+            </div>`:''}
+        </div>
+      </div>`;
+  }).join('');
+
+  res.send(html('Meu Portfólio',`
+    ${navBar('portfolio', temImpacto, ehEspec)}
+    <h2 style="font-size:28px;margin-bottom:8px;">Meu Portfólio</h2>
+    <p style="color:var(--muted);margin-bottom:32px;">As obras registradas em seu nome — sua coleção pessoal ALMARE.</p>
+    ${pecas || '<div class="card" style="text-align:center;padding:48px 24px;"><p style="color:var(--muted);">Você ainda não tem nenhuma obra registrada em seu nome.</p></div>'}
+  `,true));
+});
+
 app.get('/meus-dados', authMembro, async(req,res)=>{
   const r = await pool.query('SELECT * FROM circulo_membros WHERE id=$1',[req.membro.id]);
   const m = r.rows[0];
