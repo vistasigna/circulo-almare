@@ -266,6 +266,7 @@ function navBar(ativo, temImpacto=false, ehEspec=false) {
     { key: 'simulador', href: '/simulador', label: 'Simulador' },
     { key: 'identificar', href: '/identificar', label: 'Identificar' },
     { key: 'carrinho', href: '/carrinho', label: 'Carrinho' },
+    { key: 'pedidos', href: '/meus-pedidos', label: 'Pedidos' },
     { key: 'meusdados', href: '/meus-dados', label: 'Meus dados' },
   ];
   const especLink = ehEspec ? [{ key: 'modelos3d', href: '/modelos-3d', label: 'Modelos 3D' }] : [];
@@ -2299,6 +2300,69 @@ app.post('/comprar/:obraId/adicionar', authMembro, async(req,res)=>{
 });
 
 // Ver o carrinho
+// ─── MEUS PEDIDOS — histórico de pedidos (feitos por mim ou pra mim), pagos ou não ──
+app.get('/meus-pedidos', authMembro, async(req,res)=>{
+  const fRows = await pool.query(`SELECT f.slug FROM circulo_membro_funcoes mf JOIN circulo_funcoes f ON f.id=mf.funcao_id WHERE mf.membro_id=$1 AND mf.ativo=true`,[req.membro.id]);
+  const slugs = fRows.rows.map(r=>r.slug);
+  const temImpacto = slugs.some(s=>['embaixador','especificador','artista','colaborador'].includes(s));
+  const ehEspec = slugs.includes('especificador');
+
+  const r = await pool.query(`
+    SELECT p.id, p.numero, p.status, p.total, p.criado_em, p.membro_id, p.cliente_membro_id,
+           (SELECT COUNT(*) FROM circulo_pedido_itens pi WHERE pi.pedido_id=p.id) as total_itens,
+           m.nome as membro_nome, c.nome as cliente_nome
+    FROM circulo_pedidos p
+    LEFT JOIN circulo_membros m ON m.id = p.membro_id
+    LEFT JOIN circulo_membros c ON c.id = p.cliente_membro_id
+    WHERE (p.membro_id = $1 OR p.cliente_membro_id = $1) AND p.status <> 'CARRINHO'
+    ORDER BY p.criado_em DESC`, [req.membro.id]);
+
+  const statusInfo = {
+    AGUARDANDO_PAGAMENTO: { label:'Aguardando pagamento', cor:'var(--gold)' },
+    PAGO: { label:'Pago', cor:'#4caf6a' },
+    CANCELADO: { label:'Cancelado', cor:'#e77' },
+  };
+
+  const linhas = r.rows.map(p=>{
+    const info = statusInfo[p.status] || { label:p.status, cor:'var(--muted)' };
+    const data = new Date(p.criado_em).toLocaleDateString('pt-BR');
+    const papel = p.membro_id === req.membro.id
+      ? (p.cliente_membro_id === req.membro.id ? '' : `Faturado a ${esc(p.cliente_nome||'—')}`)
+      : `Comprado por ${esc(p.membro_nome||'—')}`;
+    return `
+      <div class="card" style="margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;" data-busca="${esc((p.numero+' '+(p.cliente_nome||'')+' '+(p.membro_nome||'')).toLowerCase())}">
+        <div>
+          <div style="font-family:'Cormorant Garamond',serif;font-size:18px;margin-bottom:4px;">Pedido ${esc(p.numero)}</div>
+          <div style="font-size:12px;color:var(--muted);">${data} · ${p.total_itens} obra${p.total_itens!=1?'s':''}${papel?' · '+papel:''}</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:16px;">
+          <span style="font-size:12px;color:${info.cor};font-weight:600;">${info.label}</span>
+          <span style="font-family:'Cormorant Garamond',serif;font-size:20px;color:var(--gold);">R$ ${parseFloat(p.total).toLocaleString('pt-BR',{minimumFractionDigits:2})}</span>
+        </div>
+      </div>`;
+  }).join('');
+
+  res.send(html('Meus Pedidos',`
+    ${navBar('pedidos', temImpacto, ehEspec)}
+    <h2 style="font-size:28px;margin-bottom:8px;">Meus Pedidos</h2>
+    <p style="color:var(--muted);margin-bottom:24px;">Pedidos que você fez ou que foram faturados em seu nome.</p>
+    <div class="field" style="margin-bottom:20px;">
+      <input type="text" id="busca-pedidos" placeholder="Buscar por número ou nome..." oninput="filtrarPedidos(this.value)">
+    </div>
+    <div id="lista-pedidos">
+      ${linhas || '<div class="card" style="text-align:center;padding:48px 24px;"><p style="color:var(--muted);">Nenhum pedido ainda.</p></div>'}
+    </div>
+    <script>
+      function filtrarPedidos(termo){
+        const t = termo.toLowerCase();
+        document.querySelectorAll('#lista-pedidos [data-busca]').forEach(el=>{
+          el.style.display = el.dataset.busca.includes(t) ? '' : 'none';
+        });
+      }
+    </script>
+  `,true));
+});
+
 app.get('/carrinho', authMembro, async(req,res)=>{
   const pedidoRes = await pool.query(`SELECT * FROM circulo_pedidos WHERE membro_id=$1 AND status='CARRINHO' ORDER BY criado_em DESC LIMIT 1`,[req.membro.id]);
   const navBarHtml = navBar('carrinho', await temFuncaoComImpacto(req.membro.id), await ehEspecificador(req.membro.id));
