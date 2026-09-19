@@ -2736,6 +2736,16 @@ app.post('/pedido/:token/pagar', async(req,res)=>{
 // login (é o próprio Asaas batendo aqui, não um membro). Sempre responde rápido.
 app.post('/webhook/asaas', async(req,res)=>{
   try{
+    // Valida que a chamada realmente veio do Asaas — protege contra alguém forjar o aviso.
+    // Se a variável não estiver configurada ainda, deixa passar (evita travar antes de configurar).
+    if(process.env.ASAAS_WEBHOOK_TOKEN){
+      const tokenRecebido = req.headers['asaas-access-token'];
+      if(tokenRecebido !== process.env.ASAAS_WEBHOOK_TOKEN){
+        console.error('Webhook Asaas: token inválido, requisição rejeitada.');
+        return res.status(401).json({ received:false });
+      }
+    }
+
     const { id: eventId, event, payment } = req.body || {};
     if(!eventId || !event) return res.json({ received:true });
 
