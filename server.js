@@ -2370,7 +2370,11 @@ app.get('/meus-pedidos', authMembro, async(req,res)=>{
           <div><span style="text-transform:uppercase;letter-spacing:.05em;">Cliente:</span> ${esc(p.cliente_nome||'—')}${p.cliente_documento?' · '+esc(p.cliente_documento):''}</div>
           <div><span style="text-transform:uppercase;letter-spacing:.05em;">Processado por:</span> ${esc(p.membro_nome||'—')}</div>
         </div>
-        ${p.status === 'AGUARDANDO_PAGAMENTO' ? `<a href="/pedido-interno/${p.id}/pagar" class="btn btn-primary btn-full" style="margin-top:14px;">Pagar agora</a>` : ''}
+        ${p.status === 'AGUARDANDO_PAGAMENTO' ? `
+          <div style="display:flex;gap:8px;margin-top:14px;">
+            <a href="/pedido-interno/${p.id}/pagar" class="btn btn-primary" style="flex:1;">Pagar agora</a>
+            <button type="button" onclick="cancelarPedido(${p.id})" class="btn btn-outline" style="color:#e77;border-color:#e77;">Cancelar</button>
+          </div>` : ''}
       </div>`;
   }).join('');
 
@@ -2382,7 +2386,8 @@ app.get('/meus-pedidos', authMembro, async(req,res)=>{
       <input type="text" id="busca-pedidos" placeholder="Buscar por número, cliente ou obra..." oninput="filtrarPedidos()">
     </div>
     <div style="display:flex;gap:8px;margin-bottom:24px;flex-wrap:wrap;">
-      <button type="button" onclick="filtrarStatus('', this)" class="btn btn-outline filtro-status ativo" style="padding:8px 16px;font-size:11px;">Todos</button>
+      <button type="button" onclick="filtrarStatus('TODOS', this)" class="btn btn-outline filtro-status" style="padding:8px 16px;font-size:11px;">Todos</button>
+      <button type="button" onclick="filtrarStatus('PADRAO', this)" class="btn btn-outline filtro-status ativo" style="padding:8px 16px;font-size:11px;border-color:var(--gold);color:var(--gold);">Ativos</button>
       <button type="button" onclick="filtrarStatus('AGUARDANDO_PAGAMENTO', this)" class="btn btn-outline filtro-status" style="padding:8px 16px;font-size:11px;">Aguardando pagamento</button>
       <button type="button" onclick="filtrarStatus('PAGO', this)" class="btn btn-outline filtro-status" style="padding:8px 16px;font-size:11px;">Pagos</button>
       <button type="button" onclick="filtrarStatus('CANCELADO', this)" class="btn btn-outline filtro-status" style="padding:8px 16px;font-size:11px;">Cancelados</button>
@@ -2391,7 +2396,8 @@ app.get('/meus-pedidos', authMembro, async(req,res)=>{
       ${linhas || '<div class="card" style="text-align:center;padding:48px 24px;"><p style="color:var(--muted);">Nenhum pedido ainda.</p></div>'}
     </div>
     <script>
-      let STATUS_ATIVO = '';
+      // "Ativos" (padrão) esconde cancelados — só aparecem se escolher "Todos" ou "Cancelados" direto.
+      let STATUS_ATIVO = 'PADRAO';
       function filtrarStatus(status, btn){
         STATUS_ATIVO = status;
         document.querySelectorAll('.filtro-status').forEach(b=>{ b.style.borderColor='var(--border)'; b.style.color='var(--text)'; });
@@ -2402,9 +2408,21 @@ app.get('/meus-pedidos', authMembro, async(req,res)=>{
         const termo = document.getElementById('busca-pedidos').value.toLowerCase();
         document.querySelectorAll('#lista-pedidos [data-busca]').forEach(el=>{
           const bateBusca = el.dataset.busca.includes(termo);
-          const bateStatus = !STATUS_ATIVO || el.dataset.status === STATUS_ATIVO;
+          let bateStatus;
+          if(STATUS_ATIVO === 'TODOS') bateStatus = true;
+          else if(STATUS_ATIVO === 'PADRAO') bateStatus = el.dataset.status !== 'CANCELADO';
+          else bateStatus = el.dataset.status === STATUS_ATIVO;
           el.style.display = (bateBusca && bateStatus) ? '' : 'none';
         });
+      }
+      async function cancelarPedido(id){
+        if(!confirm('Cancelar este pedido? Isso não pode ser desfeito.')) return;
+        try{
+          const r = await fetch('/pedido-interno/'+id+'/cancelar', { method:'POST' });
+          const d = await r.json();
+          if(d.erro){ alert(d.erro); return; }
+          location.reload();
+        }catch(e){ alert('Erro ao cancelar pedido.'); }
       }
     </script>
   `,true));
@@ -2877,6 +2895,18 @@ async function montarResumoPedidoHtml(pedidoId){
 
 // ─── ROTA: membro finaliza o pedido (resumo + pagamento embutido: PIX ou cartão) ──
 // ─── Retomar pagamento de um pedido específico (a partir de "Meus Pedidos") ──
+app.post('/pedido-interno/:id/cancelar', authMembro, async(req,res)=>{
+  try{
+    const pedidoId = parseInt(req.params.id);
+    const r = await pool.query(
+      `UPDATE circulo_pedidos SET status='CANCELADO' WHERE id=$1 AND (membro_id=$2 OR cliente_membro_id=$2) AND status='AGUARDANDO_PAGAMENTO' RETURNING id`,
+      [pedidoId, req.membro.id]
+    );
+    if(!r.rows.length) return res.json({ erro:'Não foi possível cancelar este pedido.' });
+    res.json({ ok:true });
+  }catch(e){ res.json({ erro: e.message }); }
+});
+
 app.get('/pedido-interno/:id/pagar', authMembro, async(req,res)=>{
   const pedidoId = parseInt(req.params.id);
   const check = await pool.query(
