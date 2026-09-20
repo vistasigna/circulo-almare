@@ -12,6 +12,7 @@ const AdmZip = require('adm-zip');
 const uploadFoto = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
 const app = express();
+app.set('trust proxy', true); // essencial pro req.ip pegar o IP real do cliente (Railway fica atrás de proxy)
 app.use(express.json({ limit: '25mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
@@ -2610,36 +2611,6 @@ async function garantirClienteAsaas(clienteMembroId){
 }
 
 // Cria (ou reaproveita) a cobrança do pedido no Asaas
-async function garantirCobrancaAsaas(pedidoId){
-  const pRes = await pool.query('SELECT * FROM circulo_pedidos WHERE id=$1',[pedidoId]);
-  const pedido = pRes.rows[0];
-  if(!pedido) throw new Error('Pedido não encontrado.');
-  if(!pedido.cliente_membro_id) throw new Error('Vincule um cliente ao pedido antes de gerar o pagamento.');
-
-  if(pedido.asaas_cobranca_id && pedido.invoice_url){
-    return { id: pedido.asaas_cobranca_id, invoiceUrl: pedido.invoice_url };
-  }
-
-  const asaasClienteId = await garantirClienteAsaas(pedido.cliente_membro_id);
-  const hoje = new Date();
-  const vencimento = new Date(hoje.getTime() + 3*24*60*60*1000).toISOString().slice(0,10);
-
-  const cobranca = await asaasRequest('POST', '/payments', {
-    customer: asaasClienteId,
-    billingType: 'UNDEFINED', // deixa o cliente escolher PIX ou cartão na fatura
-    value: parseFloat(pedido.total),
-    dueDate: vencimento,
-    description: 'Pedido ALMARE '+pedido.numero,
-    externalReference: 'circulo-pedido-'+pedido.id
-  });
-
-  await pool.query(
-    `UPDATE circulo_pedidos SET asaas_cliente_id=$1, asaas_cobranca_id=$2, invoice_url=$3, status='AGUARDANDO_PAGAMENTO' WHERE id=$4`,
-    [asaasClienteId, cobranca.id, cobranca.invoiceUrl, pedido.id]
-  );
-  return { id: cobranca.id, invoiceUrl: cobranca.invoiceUrl };
-}
-
 // Gera um link público único para o pedido (usado quando o cliente vai pagar sozinho)
 async function garantirLinkPublico(pedidoId){
   const r = await pool.query('SELECT link_publico FROM circulo_pedidos WHERE id=$1',[pedidoId]);
@@ -2647,6 +2618,190 @@ async function garantirLinkPublico(pedidoId){
   const token = crypto.randomBytes(8).toString('hex');
   await pool.query('UPDATE circulo_pedidos SET link_publico=$1 WHERE id=$2',[token, pedidoId]);
   return token;
+}
+
+// Cria (ou reaproveita) uma cobrança PIX vinculada ao cliente, devolve QR pra exibir na hora.
+async function obterOuCriarPix(pedidoId){
+  const pRes = await pool.query('SELECT * FROM circulo_pedidos WHERE id=$1',[pedidoId]);
+  const p = pRes.rows[0];
+  if(!p) throw new Error('Pedido não encontrado.');
+  if(!p.cliente_membro_id) throw new Error('Vincule um cliente ao pedido antes de gerar o pagamento.');
+  if(p.status === 'PAGO') throw new Error('Este pedido já foi pago.');
+
+  const asaasClienteId = await garantirClienteAsaas(p.cliente_membro_id);
+  let paymentId = p.asaas_cobranca_id;
+
+  if(!paymentId){
+    const vencimento = new Date(Date.now() + 1*24*60*60*1000).toISOString().slice(0,10);
+    const cobranca = await asaasRequest('POST', '/payments', {
+      customer: asaasClienteId, billingType: 'PIX', value: parseFloat(p.total),
+      dueDate: vencimento, description: 'Pedido ALMARE '+p.numero,
+      externalReference: 'circulo-pedido-'+p.id
+    });
+    paymentId = cobranca.id;
+    await pool.query(`UPDATE circulo_pedidos SET asaas_cliente_id=$1, asaas_cobranca_id=$2, status='AGUARDANDO_PAGAMENTO' WHERE id=$3`,[asaasClienteId, paymentId, p.id]);
+  }
+
+  const qr = await asaasRequest('GET', '/payments/'+paymentId+'/pixQrCode');
+  return { encodedImage: qr.encodedImage, payload: qr.payload, expirationDate: qr.expirationDate };
+}
+
+// Cobra no cartão diretamente (sem redirecionar pro Asaas) — cliente continua vinculado,
+// e a pessoa escolhe o parcelamento (1 a 6x) na NOSSA tela, não na deles.
+async function pagarComCartao(pedidoId, dados, remoteIp){
+  const pRes = await pool.query('SELECT * FROM circulo_pedidos WHERE id=$1',[pedidoId]);
+  const p = pRes.rows[0];
+  if(!p) throw new Error('Pedido não encontrado.');
+  if(!p.cliente_membro_id) throw new Error('Vincule um cliente ao pedido antes de gerar o pagamento.');
+  if(p.status === 'PAGO') throw new Error('Este pedido já foi pago.');
+
+  const asaasClienteId = await garantirClienteAsaas(p.cliente_membro_id);
+  const valorTotal = Math.round(parseFloat(p.total)*100)/100;
+  const parcelas = Math.max(1, Math.min(6, parseInt(dados.parcelas)||1));
+  const hoje = new Date().toISOString().slice(0,10);
+
+  const corpo = {
+    customer: asaasClienteId, billingType: 'CREDIT_CARD', dueDate: hoje,
+    description: 'Pedido ALMARE '+p.numero, externalReference: 'circulo-pedido-'+p.id,
+    remoteIp: remoteIp,
+    creditCard: {
+      holderName: dados.holderName,
+      number: String(dados.number||'').replace(/\s+/g,''),
+      expiryMonth: String(dados.expiryMonth||'').padStart(2,'0'),
+      expiryYear: dados.expiryYear,
+      ccv: dados.ccv
+    },
+    creditCardHolderInfo: {
+      name: dados.holderName, email: dados.email,
+      cpfCnpj: String(dados.cpfCnpj||'').replace(/\D/g,''),
+      postalCode: String(dados.postalCode||'').replace(/\D/g,''),
+      addressNumber: dados.addressNumber,
+      phone: String(dados.phone||'').replace(/\D/g,'')
+    }
+  };
+  if(parcelas > 1){ corpo.installmentCount = parcelas; corpo.totalValue = valorTotal; }
+  else { corpo.value = valorTotal; }
+
+  const resultado = await asaasRequest('POST', '/payments', corpo);
+  const novoStatus = (resultado.status==='CONFIRMED' || resultado.status==='RECEIVED') ? 'PAGO' : 'AGUARDANDO_PAGAMENTO';
+  await pool.query(`UPDATE circulo_pedidos SET asaas_cliente_id=$1, asaas_cobranca_id=$2, status=$3 WHERE id=$4`,
+    [asaasClienteId, resultado.id, novoStatus, p.id]);
+  return { status: resultado.status, pago: novoStatus==='PAGO' };
+}
+
+// Monta o formulário/UI de pagamento (PIX + Cartão) — reaproveitado na tela do membro
+// e na página pública do cliente. urlBasePix/urlBaseCartao são os endpoints a chamar.
+function montarUiPagamento(urlBasePix, urlBaseCartao, dadosPreenchidos){
+  const d = dadosPreenchidos || {};
+  return `
+    <div style="display:flex;gap:8px;margin-bottom:20px;">
+      <button type="button" onclick="mostrarAba('pix')" id="aba-pix" class="btn btn-outline" style="flex:1;">PIX</button>
+      <button type="button" onclick="mostrarAba('cartao')" id="aba-cartao" class="btn btn-outline" style="flex:1;">Cartão de crédito</button>
+    </div>
+
+    <div id="painel-pix" style="display:none;">
+      <button type="button" onclick="gerarPix()" id="btn-gerar-pix" class="btn btn-primary btn-full">Gerar QR Code PIX</button>
+      <div id="resultado-pix" style="margin-top:16px;"></div>
+    </div>
+
+    <div id="painel-cartao" style="display:none;">
+      <div class="field"><label>Parcelas</label>
+        <select id="pg-parcelas"></select>
+      </div>
+      <div class="field"><label>Nome impresso no cartão</label><input id="pg-holderName" placeholder="Como está no cartão"></div>
+      <div class="field"><label>Número do cartão</label><input id="pg-number" placeholder="0000 0000 0000 0000" maxlength="19"></div>
+      <div class="grid-2">
+        <div class="field"><label>Validade (MM/AAAA)</label>
+          <div style="display:flex;gap:8px;">
+            <input id="pg-expiryMonth" placeholder="MM" maxlength="2" style="width:70px;">
+            <input id="pg-expiryYear" placeholder="AAAA" maxlength="4" style="width:90px;">
+          </div>
+        </div>
+        <div class="field"><label>CVV</label><input id="pg-ccv" placeholder="000" maxlength="4" style="width:90px;"></div>
+      </div>
+      <hr class="divider">
+      <p style="font-size:12px;color:var(--muted);margin-bottom:12px;">Dados do titular do cartão (pode ser diferente do cliente, se estiver pagando com cartão de outra pessoa).</p>
+      <div class="field"><label>Nome completo do titular</label><input id="pg-nome" value="${esc(d.nome||'')}"></div>
+      <div class="grid-2">
+        <div class="field"><label>CPF/CNPJ do titular</label><input id="pg-cpf" value="${esc(d.documento||'')}"></div>
+        <div class="field"><label>Telefone do titular</label><input id="pg-telefone" value="${esc(d.telefone||'')}"></div>
+      </div>
+      <div class="field"><label>E-mail do titular</label><input id="pg-email" value="${esc(d.email||'')}"></div>
+      <div class="grid-2">
+        <div class="field"><label>CEP do titular</label><input id="pg-cep" value="${esc(d.cep||'')}"></div>
+        <div class="field"><label>Número do endereço</label><input id="pg-numero" value="${esc(d.numero||'')}"></div>
+      </div>
+      <button type="button" onclick="pagarCartao()" id="btn-pagar-cartao" class="btn btn-primary btn-full" style="margin-top:8px;">Pagar</button>
+      <div id="resultado-cartao" style="margin-top:16px;"></div>
+    </div>
+
+    <script>
+      const PG_TOTAL = ${dadosPreenchidos.total || 0};
+      const PG_URL_PIX = '${urlBasePix}';
+      const PG_URL_CARTAO = '${urlBaseCartao}';
+
+      function mostrarAba(aba){
+        document.getElementById('painel-pix').style.display = aba==='pix' ? 'block' : 'none';
+        document.getElementById('painel-cartao').style.display = aba==='cartao' ? 'block' : 'none';
+        document.getElementById('aba-pix').style.borderColor = aba==='pix' ? 'var(--gold)' : 'var(--border)';
+        document.getElementById('aba-cartao').style.borderColor = aba==='cartao' ? 'var(--gold)' : 'var(--border)';
+        if(aba==='cartao' && document.getElementById('pg-parcelas').options.length===0) montarParcelas();
+      }
+      function montarParcelas(){
+        const sel = document.getElementById('pg-parcelas');
+        for(let n=1;n<=6;n++){
+          const valor = (PG_TOTAL/n).toLocaleString('pt-BR',{minimumFractionDigits:2});
+          const opt = document.createElement('option');
+          opt.value = n;
+          opt.textContent = n===1 ? '1x de R$ '+valor+' (à vista)' : n+'x de R$ '+valor;
+          sel.appendChild(opt);
+        }
+      }
+      async function gerarPix(){
+        const btn = document.getElementById('btn-gerar-pix'); btn.disabled=true; btn.textContent='Gerando...';
+        const areaR = document.getElementById('resultado-pix');
+        try{
+          const r = await fetch(PG_URL_PIX, { method:'POST' });
+          const d = await r.json();
+          btn.disabled=false; btn.textContent='Gerar QR Code PIX';
+          if(d.erro){ areaR.innerHTML='<div class="msg-erro">'+d.erro+'</div>'; return; }
+          areaR.innerHTML =
+            '<div style="text-align:center;">'+
+            '<img src="data:image/png;base64,'+d.encodedImage+'" style="width:220px;height:220px;background:#fff;padding:10px;border-radius:6px;">'+
+            '<p style="font-size:12px;color:var(--muted);margin-top:12px;">Ou copie o código:</p>'+
+            '<div style="background:#0d0d0d;border:1px solid var(--border);border-radius:3px;padding:12px;font-size:11px;word-break:break-all;margin:8px 0;">'+d.payload+'</div>'+
+            '<button onclick="navigator.clipboard.writeText(this.dataset.payload);this.textContent=\\'Copiado ✓\\'" data-payload="'+d.payload+'" class="btn btn-outline">Copiar código PIX</button>'+
+            '</div>';
+        }catch(e){ btn.disabled=false; btn.textContent='Gerar QR Code PIX'; areaR.innerHTML='<div class="msg-erro">Erro ao gerar PIX.</div>'; }
+      }
+      async function pagarCartao(){
+        const btn = document.getElementById('btn-pagar-cartao'); btn.disabled=true; btn.textContent='Processando...';
+        const areaR = document.getElementById('resultado-cartao');
+        areaR.innerHTML = '';
+        const corpo = {
+          parcelas: document.getElementById('pg-parcelas').value,
+          holderName: document.getElementById('pg-holderName').value,
+          number: document.getElementById('pg-number').value,
+          expiryMonth: document.getElementById('pg-expiryMonth').value,
+          expiryYear: document.getElementById('pg-expiryYear').value,
+          ccv: document.getElementById('pg-ccv').value,
+          email: document.getElementById('pg-email').value,
+          cpfCnpj: document.getElementById('pg-cpf').value,
+          postalCode: document.getElementById('pg-cep').value,
+          addressNumber: document.getElementById('pg-numero').value,
+          phone: document.getElementById('pg-telefone').value
+        };
+        try{
+          const r = await fetch(PG_URL_CARTAO, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(corpo) });
+          const d = await r.json();
+          btn.disabled=false; btn.textContent='Pagar';
+          if(d.erro){ areaR.innerHTML='<div class="msg-erro">'+d.erro+'</div>'; return; }
+          if(d.pago){ areaR.innerHTML='<div class="msg-ok">Pagamento aprovado! Obrigado.</div>'; }
+          else { areaR.innerHTML='<div class="msg-info">Pagamento em análise (status: '+d.status+').</div>'; }
+        }catch(e){ btn.disabled=false; btn.textContent='Pagar'; areaR.innerHTML='<div class="msg-erro">Erro ao processar pagamento.</div>'; }
+      }
+    </script>
+  `;
 }
 
 // Monta o HTML do resumo do pedido (reaproveitado na tela do membro e na página pública)
@@ -2657,7 +2812,7 @@ async function montarResumoPedidoHtml(pedidoId){
     SELECT pi.*, o.nome as obra_nome, o.imagem_preview
     FROM circulo_pedido_itens pi JOIN almare_obras o ON o.id=pi.obra_id
     WHERE pi.pedido_id=$1 ORDER BY pi.criado_em`, [pedidoId]);
-  const cliente = pedido.cliente_membro_id ? (await pool.query('SELECT nome,documento FROM circulo_membros WHERE id=$1',[pedido.cliente_membro_id])).rows[0] : null;
+  const cliente = pedido.cliente_membro_id ? (await pool.query('SELECT * FROM circulo_membros WHERE id=$1',[pedido.cliente_membro_id])).rows[0] : null;
 
   const linhas = itens.rows.map(it=>`
     <div style="display:flex;align-items:center;gap:16px;padding:14px 0;border-bottom:1px solid var(--border);">
@@ -2674,14 +2829,19 @@ async function montarResumoPedidoHtml(pedidoId){
   return { pedido, cliente, itens: itens.rows, linhas };
 }
 
-// ─── ROTA: membro finaliza o pedido (resumo + escolha de quem paga) ──────────
+// ─── ROTA: membro finaliza o pedido (resumo + pagamento embutido: PIX ou cartão) ──
 app.get('/carrinho/finalizar', authMembro, async(req,res)=>{
-  const pedidoRes = await pool.query(`SELECT * FROM circulo_pedidos WHERE membro_id=$1 AND status='CARRINHO' ORDER BY criado_em DESC LIMIT 1`,[req.membro.id]);
+  const pedidoRes = await pool.query(`SELECT * FROM circulo_pedidos WHERE membro_id=$1 AND status IN ('CARRINHO','AGUARDANDO_PAGAMENTO') ORDER BY criado_em DESC LIMIT 1`,[req.membro.id]);
   if(!pedidoRes.rows.length) return res.redirect('/carrinho');
   const pedido = pedidoRes.rows[0];
   if(!pedido.cliente_membro_id) return res.redirect('/carrinho');
 
   const { cliente, linhas } = await montarResumoPedidoHtml(pedido.id);
+  const uiPagamento = montarUiPagamento('/carrinho/pagamento/pix', '/carrinho/pagamento/cartao', {
+    total: parseFloat(pedido.total),
+    nome: cliente.nome, documento: cliente.documento, telefone: cliente.telefone||cliente.celular,
+    email: cliente.email, cep: cliente.cep, numero: cliente.numero
+  });
 
   res.send(html('Finalizar pedido',`
     <a href="/carrinho" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);display:inline-block;margin-bottom:24px;">← Voltar ao carrinho</a>
@@ -2696,61 +2856,70 @@ app.get('/carrinho/finalizar', authMembro, async(req,res)=>{
         <span style="font-family:'Cormorant Garamond',serif;font-size:28px;color:var(--gold);">R$ ${parseFloat(pedido.total).toFixed(2).replace('.',',')}</span>
       </div>
     </div>
+    <div class="card" style="margin-bottom:20px;">
+      <h3 style="font-size:18px;margin-bottom:16px;">Pagar agora</h3>
+      ${uiPagamento}
+    </div>
     <div class="card">
-      <h3 style="font-size:18px;margin-bottom:16px;">Como vai ser pago?</h3>
-      <div style="display:flex;flex-direction:column;gap:10px;">
-        <button onclick="pagarAgora()" class="btn btn-primary btn-full" id="btn-pagar-agora">Eu pago agora (PIX ou cartão em até 6x)</button>
-        <button onclick="gerarLinkCliente()" class="btn btn-outline btn-full" id="btn-link-cliente">Enviar link para o cliente pagar</button>
-      </div>
-      <div id="resultado-checkout" style="margin-top:20px;"></div>
+      <h3 style="font-size:16px;margin-bottom:12px;">Ou envie para o cliente pagar sozinho</h3>
+      <button onclick="gerarLinkCliente()" class="btn btn-outline btn-full" id="btn-link-cliente">Gerar link para o cliente</button>
+      <div id="resultado-link" style="margin-top:16px;"></div>
     </div>
     <script>
-      async function pagarAgora(){
-        const btn=document.getElementById('btn-pagar-agora'); btn.disabled=true; btn.textContent='Gerando pagamento...';
-        try{
-          const r = await fetch('/carrinho/gerar-cobranca', { method:'POST' });
-          const d = await r.json();
-          if(d.erro){ document.getElementById('resultado-checkout').innerHTML='<div class="msg-erro">'+d.erro+'</div>'; btn.disabled=false; btn.textContent='Eu pago agora (PIX ou cartão em até 6x)'; return; }
-          window.location.href = d.invoiceUrl;
-        }catch(e){ document.getElementById('resultado-checkout').innerHTML='<div class="msg-erro">Erro ao gerar pagamento.</div>'; btn.disabled=false; }
-      }
       async function gerarLinkCliente(){
         const btn=document.getElementById('btn-link-cliente'); btn.disabled=true; btn.textContent='Gerando link...';
         try{
-          const r = await fetch('/carrinho/gerar-cobranca', { method:'POST' });
+          const r = await fetch('/carrinho/gerar-link', { method:'POST' });
           const d = await r.json();
-          btn.disabled=false; btn.textContent='Enviar link para o cliente pagar';
-          if(d.erro){ document.getElementById('resultado-checkout').innerHTML='<div class="msg-erro">'+d.erro+'</div>'; return; }
-          document.getElementById('resultado-checkout').innerHTML =
-            '<div class="msg-ok">Link gerado. Envie para o cliente:</div>'+
-            '<div style="background:#0d0d0d;border:1px solid var(--border);border-radius:3px;padding:14px;font-size:13px;word-break:break-all;margin:12px 0;">'+d.linkPublico+'</div>'+
+          btn.disabled=false; btn.textContent='Gerar link para o cliente';
+          if(d.erro){ document.getElementById('resultado-link').innerHTML='<div class="msg-erro">'+d.erro+'</div>'; return; }
+          document.getElementById('resultado-link').innerHTML =
+            '<div style="background:#0d0d0d;border:1px solid var(--border);border-radius:3px;padding:14px;font-size:13px;word-break:break-all;margin-bottom:12px;">'+d.linkPublico+'</div>'+
             '<button onclick="navigator.clipboard.writeText(\\''+d.linkPublico+'\\');this.textContent=\\'Copiado ✓\\'" class="btn btn-outline">Copiar link</button>';
-        }catch(e){ document.getElementById('resultado-checkout').innerHTML='<div class="msg-erro">Erro ao gerar link.</div>'; btn.disabled=false; }
+        }catch(e){ document.getElementById('resultado-link').innerHTML='<div class="msg-erro">Erro ao gerar link.</div>'; btn.disabled=false; }
       }
     </script>
   `,true));
 });
 
-// Gera (ou reaproveita) a cobrança Asaas e devolve o link de pagamento + link público
-app.post('/carrinho/gerar-cobranca', authMembro, async(req,res)=>{
+app.post('/carrinho/gerar-link', authMembro, async(req,res)=>{
   try{
-    const pedidoRes = await pool.query(`SELECT * FROM circulo_pedidos WHERE membro_id=$1 AND status IN ('CARRINHO','AGUARDANDO_PAGAMENTO') ORDER BY criado_em DESC LIMIT 1`,[req.membro.id]);
+    const pedidoRes = await pool.query(`SELECT id FROM circulo_pedidos WHERE membro_id=$1 AND status IN ('CARRINHO','AGUARDANDO_PAGAMENTO') ORDER BY criado_em DESC LIMIT 1`,[req.membro.id]);
     if(!pedidoRes.rows.length) return res.json({ erro:'Pedido não encontrado.' });
-    const pedido = pedidoRes.rows[0];
-    const cobranca = await garantirCobrancaAsaas(pedido.id);
-    const token = await garantirLinkPublico(pedido.id);
-    res.json({ invoiceUrl: cobranca.invoiceUrl, linkPublico: BASE_URL+'/pedido/'+token });
-  }catch(e){
-    console.error('Gerar cobranca:', e.message);
-    res.json({ erro: e.message });
-  }
+    const token = await garantirLinkPublico(pedidoRes.rows[0].id);
+    res.json({ linkPublico: BASE_URL+'/pedido/'+token });
+  }catch(e){ res.json({ erro: e.message }); }
 });
 
-// ─── PÁGINA PÚBLICA — cliente vê o pedido e paga, sem precisar de login ──────
+app.post('/carrinho/pagamento/pix', authMembro, async(req,res)=>{
+  try{
+    const pedidoRes = await pool.query(`SELECT id FROM circulo_pedidos WHERE membro_id=$1 AND status IN ('CARRINHO','AGUARDANDO_PAGAMENTO') ORDER BY criado_em DESC LIMIT 1`,[req.membro.id]);
+    if(!pedidoRes.rows.length) return res.json({ erro:'Pedido não encontrado.' });
+    const dadosPix = await obterOuCriarPix(pedidoRes.rows[0].id);
+    res.json(dadosPix);
+  }catch(e){ res.json({ erro: e.message }); }
+});
+
+app.post('/carrinho/pagamento/cartao', authMembro, async(req,res)=>{
+  try{
+    const pedidoRes = await pool.query(`SELECT id FROM circulo_pedidos WHERE membro_id=$1 AND status IN ('CARRINHO','AGUARDANDO_PAGAMENTO') ORDER BY criado_em DESC LIMIT 1`,[req.membro.id]);
+    if(!pedidoRes.rows.length) return res.json({ erro:'Pedido não encontrado.' });
+    const resultado = await pagarComCartao(pedidoRes.rows[0].id, req.body, req.ip);
+    res.json(resultado);
+  }catch(e){ res.json({ erro: e.message }); }
+});
+
+// ─── PÁGINA PÚBLICA — cliente vê o pedido e paga sozinho, sem precisar de login ──
 app.get('/pedido/:token', async(req,res)=>{
   const r = await pool.query('SELECT id FROM circulo_pedidos WHERE link_publico=$1',[req.params.token]);
   if(!r.rows.length) return res.status(404).send(html('Pedido',`<div class="container-sm"><div class="msg-erro">Este link não existe mais.</div></div>`));
   const { pedido, cliente, linhas } = await montarResumoPedidoHtml(r.rows[0].id);
+  const tokenEsc = esc(req.params.token);
+  const uiPagamento = montarUiPagamento('/pedido/'+tokenEsc+'/pagamento/pix', '/pedido/'+tokenEsc+'/pagamento/cartao', {
+    total: parseFloat(pedido.total),
+    nome: cliente.nome, documento: cliente.documento, telefone: cliente.telefone||cliente.celular,
+    email: cliente.email, cep: cliente.cep, numero: cliente.numero
+  });
 
   res.send(`<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
     <title>Seu pedido — ALMARE</title><style>${CSS}</style></head>
@@ -2768,30 +2937,28 @@ app.get('/pedido/:token', async(req,res)=>{
         </div>
       </div>
       <div class="card">
-        <p style="color:var(--muted);font-size:13px;margin-bottom:16px;">Pagamento via PIX ou cartão de crédito em até 6x, processado com segurança pelo Asaas.</p>
-        <button onclick="irPagar()" class="btn btn-primary btn-full" id="btn-ir-pagar">Ir para pagamento</button>
-        <div id="erro-pagamento" style="margin-top:12px;"></div>
+        <h3 style="font-size:18px;margin-bottom:16px;">Pagamento</h3>
+        <p style="color:var(--muted);font-size:12px;margin-bottom:16px;">PIX ou cartão de crédito em até 6x, processado com segurança pelo Asaas.</p>
+        ${uiPagamento}
       </div>
-      <script>
-        async function irPagar(){
-          const btn=document.getElementById('btn-ir-pagar'); btn.disabled=true; btn.textContent='Abrindo pagamento...';
-          try{
-            const r = await fetch('/pedido/${esc(req.params.token)}/pagar', { method:'POST' });
-            const d = await r.json();
-            if(d.erro){ document.getElementById('erro-pagamento').innerHTML='<div class="msg-erro">'+d.erro+'</div>'; btn.disabled=false; btn.textContent='Ir para pagamento'; return; }
-            window.location.href = d.invoiceUrl;
-          }catch(e){ document.getElementById('erro-pagamento').innerHTML='<div class="msg-erro">Erro ao abrir pagamento.</div>'; btn.disabled=false; }
-        }
-      </script>
     </div></body></html>`);
 });
 
-app.post('/pedido/:token/pagar', async(req,res)=>{
+app.post('/pedido/:token/pagamento/pix', async(req,res)=>{
   try{
     const r = await pool.query('SELECT id FROM circulo_pedidos WHERE link_publico=$1',[req.params.token]);
     if(!r.rows.length) return res.json({ erro:'Pedido não encontrado.' });
-    const cobranca = await garantirCobrancaAsaas(r.rows[0].id);
-    res.json({ invoiceUrl: cobranca.invoiceUrl });
+    const dadosPix = await obterOuCriarPix(r.rows[0].id);
+    res.json(dadosPix);
+  }catch(e){ res.json({ erro: e.message }); }
+});
+
+app.post('/pedido/:token/pagamento/cartao', async(req,res)=>{
+  try{
+    const r = await pool.query('SELECT id FROM circulo_pedidos WHERE link_publico=$1',[req.params.token]);
+    if(!r.rows.length) return res.json({ erro:'Pedido não encontrado.' });
+    const resultado = await pagarComCartao(r.rows[0].id, req.body, req.ip);
+    res.json(resultado);
   }catch(e){ res.json({ erro: e.message }); }
 });
 
