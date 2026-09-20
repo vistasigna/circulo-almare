@@ -2310,36 +2310,62 @@ app.get('/meus-pedidos', authMembro, async(req,res)=>{
 
   const r = await pool.query(`
     SELECT p.id, p.numero, p.status, p.total, p.criado_em, p.membro_id, p.cliente_membro_id,
-           (SELECT COUNT(*) FROM circulo_pedido_itens pi WHERE pi.pedido_id=p.id) as total_itens,
-           m.nome as membro_nome, c.nome as cliente_nome
+           m.nome as membro_nome, c.nome as cliente_nome, c.documento as cliente_documento
     FROM circulo_pedidos p
     LEFT JOIN circulo_membros m ON m.id = p.membro_id
     LEFT JOIN circulo_membros c ON c.id = p.cliente_membro_id
     WHERE (p.membro_id = $1 OR p.cliente_membro_id = $1) AND p.status <> 'CARRINHO'
     ORDER BY p.criado_em DESC`, [req.membro.id]);
 
+  const idsPedidos = r.rows.map(p=>p.id);
+  let itensPorPedido = {};
+  if(idsPedidos.length){
+    const itensRes = await pool.query(`
+      SELECT pi.pedido_id, o.nome as obra_nome, pi.tamanho_label, pi.moldura, pi.quantidade
+      FROM circulo_pedido_itens pi JOIN almare_obras o ON o.id = pi.obra_id
+      WHERE pi.pedido_id = ANY($1) ORDER BY pi.criado_em`, [idsPedidos]);
+    itensRes.rows.forEach(it=>{
+      if(!itensPorPedido[it.pedido_id]) itensPorPedido[it.pedido_id] = [];
+      itensPorPedido[it.pedido_id].push(it);
+    });
+  }
+
   const statusInfo = {
     AGUARDANDO_PAGAMENTO: { label:'Aguardando pagamento', cor:'var(--gold)' },
     PAGO: { label:'Pago', cor:'#4caf6a' },
     CANCELADO: { label:'Cancelado', cor:'#e77' },
   };
+  const nomesMoldura = {preta:'Preta', carvalho:'Carvalho', aco_escovado:'Aço escovado'};
 
   const linhas = r.rows.map(p=>{
     const info = statusInfo[p.status] || { label:p.status, cor:'var(--muted)' };
     const data = new Date(p.criado_em).toLocaleDateString('pt-BR');
-    const papel = p.membro_id === req.membro.id
-      ? (p.cliente_membro_id === req.membro.id ? '' : `Faturado a ${esc(p.cliente_nome||'—')}`)
-      : `Comprado por ${esc(p.membro_nome||'—')}`;
+    const itens = itensPorPedido[p.id] || [];
+    const obrasTexto = itens.map(it=>it.obra_nome).join(', ');
+    const itensDetalhe = itens.map(it=>
+      `<div style="font-size:12px;color:var(--muted);padding:4px 0;">${esc(it.obra_nome)} · ${esc(it.tamanho_label||'')} · ${esc(nomesMoldura[it.moldura]||it.moldura||'')}${it.quantidade>1?' · Qtd '+it.quantidade:''}</div>`
+    ).join('');
+
     return `
-      <div class="card" style="margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;" data-busca="${esc((p.numero+' '+(p.cliente_nome||'')+' '+(p.membro_nome||'')).toLowerCase())}">
-        <div>
-          <div style="font-family:'Cormorant Garamond',serif;font-size:18px;margin-bottom:4px;">Pedido ${esc(p.numero)}</div>
-          <div style="font-size:12px;color:var(--muted);">${data} · ${p.total_itens} obra${p.total_itens!=1?'s':''}${papel?' · '+papel:''}</div>
+      <div class="card" style="margin-bottom:12px;" data-busca="${esc((p.numero+' '+(p.cliente_nome||'')+' '+(p.membro_nome||'')+' '+obrasTexto).toLowerCase())}">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap;margin-bottom:10px;">
+          <div>
+            <div style="font-family:'Cormorant Garamond',serif;font-size:18px;margin-bottom:2px;">Pedido ${esc(p.numero)}</div>
+            <div style="font-size:12px;color:var(--muted);">${data}</div>
+          </div>
+          <div style="display:flex;align-items:center;gap:16px;">
+            <span style="font-size:12px;color:${info.cor};font-weight:600;">${info.label}</span>
+            <span style="font-family:'Cormorant Garamond',serif;font-size:20px;color:var(--gold);">R$ ${parseFloat(p.total).toLocaleString('pt-BR',{minimumFractionDigits:2})}</span>
+          </div>
         </div>
-        <div style="display:flex;align-items:center;gap:16px;">
-          <span style="font-size:12px;color:${info.cor};font-weight:600;">${info.label}</span>
-          <span style="font-family:'Cormorant Garamond',serif;font-size:20px;color:var(--gold);">R$ ${parseFloat(p.total).toLocaleString('pt-BR',{minimumFractionDigits:2})}</span>
+        <div style="border-top:1px solid var(--border);padding-top:10px;">
+          ${itensDetalhe || '<div style="font-size:12px;color:var(--muted);">Sem itens.</div>'}
         </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:12px;color:var(--muted);margin-top:10px;padding-top:10px;border-top:1px solid var(--border);">
+          <div><span style="text-transform:uppercase;letter-spacing:.05em;">Cliente:</span> ${esc(p.cliente_nome||'—')}${p.cliente_documento?' · '+esc(p.cliente_documento):''}</div>
+          <div><span style="text-transform:uppercase;letter-spacing:.05em;">Processado por:</span> ${esc(p.membro_nome||'—')}</div>
+        </div>
+        ${p.status === 'AGUARDANDO_PAGAMENTO' ? `<a href="/pedido-interno/${p.id}/pagar" class="btn btn-primary btn-full" style="margin-top:14px;">Pagar agora</a>` : ''}
       </div>`;
   }).join('');
 
@@ -2348,7 +2374,7 @@ app.get('/meus-pedidos', authMembro, async(req,res)=>{
     <h2 style="font-size:28px;margin-bottom:8px;">Meus Pedidos</h2>
     <p style="color:var(--muted);margin-bottom:24px;">Pedidos que você fez ou que foram faturados em seu nome.</p>
     <div class="field" style="margin-bottom:20px;">
-      <input type="text" id="busca-pedidos" placeholder="Buscar por número ou nome..." oninput="filtrarPedidos(this.value)">
+      <input type="text" id="busca-pedidos" placeholder="Buscar por número, cliente ou obra..." oninput="filtrarPedidos(this.value)">
     </div>
     <div id="lista-pedidos">
       ${linhas || '<div class="card" style="text-align:center;padding:48px 24px;"><p style="color:var(--muted);">Nenhum pedido ainda.</p></div>'}
@@ -2830,6 +2856,63 @@ async function montarResumoPedidoHtml(pedidoId){
 }
 
 // ─── ROTA: membro finaliza o pedido (resumo + pagamento embutido: PIX ou cartão) ──
+// ─── Retomar pagamento de um pedido específico (a partir de "Meus Pedidos") ──
+app.get('/pedido-interno/:id/pagar', authMembro, async(req,res)=>{
+  const pedidoId = parseInt(req.params.id);
+  const check = await pool.query(
+    `SELECT id, status FROM circulo_pedidos WHERE id=$1 AND (membro_id=$2 OR cliente_membro_id=$2)`,
+    [pedidoId, req.membro.id]
+  );
+  if(!check.rows.length) return res.redirect('/meus-pedidos');
+  if(check.rows[0].status === 'PAGO') return res.redirect('/meus-pedidos');
+
+  const { pedido, cliente, linhas } = await montarResumoPedidoHtml(pedidoId);
+  const uiPagamento = montarUiPagamento(
+    '/pedido-interno/'+pedidoId+'/pagamento/pix',
+    '/pedido-interno/'+pedidoId+'/pagamento/cartao',
+    { total: parseFloat(pedido.total), nome: cliente.nome, documento: cliente.documento,
+      telefone: cliente.telefone||cliente.celular, email: cliente.email, cep: cliente.cep, numero: cliente.numero }
+  );
+
+  res.send(html('Pagar pedido',`
+    <a href="/meus-pedidos" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);display:inline-block;margin-bottom:24px;">← Voltar aos pedidos</a>
+    <h2 style="font-size:28px;margin-bottom:8px;">Pedido ${esc(pedido.numero)}</h2>
+    <div class="card" style="margin-bottom:20px;">
+      <div style="font-size:10px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);margin-bottom:12px;">Faturado em nome de</div>
+      <div style="font-size:16px;margin-bottom:20px;">${esc(cliente.nome)} ${cliente.documento?'· '+esc(cliente.documento):''}</div>
+      ${linhas}
+      <div style="display:flex;justify-content:space-between;align-items:center;padding-top:20px;margin-top:8px;border-top:1px solid var(--border);">
+        <span style="font-size:14px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);">Total</span>
+        <span style="font-family:'Cormorant Garamond',serif;font-size:28px;color:var(--gold);">R$ ${parseFloat(pedido.total).toFixed(2).replace('.',',')}</span>
+      </div>
+    </div>
+    <div class="card">
+      <h3 style="font-size:18px;margin-bottom:16px;">Pagar agora</h3>
+      ${uiPagamento}
+    </div>
+  `,true));
+});
+
+app.post('/pedido-interno/:id/pagamento/pix', authMembro, async(req,res)=>{
+  try{
+    const pedidoId = parseInt(req.params.id);
+    const check = await pool.query(`SELECT id FROM circulo_pedidos WHERE id=$1 AND (membro_id=$2 OR cliente_membro_id=$2)`,[pedidoId, req.membro.id]);
+    if(!check.rows.length) return res.json({ erro:'Pedido não encontrado.' });
+    const dadosPix = await obterOuCriarPix(pedidoId);
+    res.json(dadosPix);
+  }catch(e){ res.json({ erro: e.message }); }
+});
+
+app.post('/pedido-interno/:id/pagamento/cartao', authMembro, async(req,res)=>{
+  try{
+    const pedidoId = parseInt(req.params.id);
+    const check = await pool.query(`SELECT id FROM circulo_pedidos WHERE id=$1 AND (membro_id=$2 OR cliente_membro_id=$2)`,[pedidoId, req.membro.id]);
+    if(!check.rows.length) return res.json({ erro:'Pedido não encontrado.' });
+    const resultado = await pagarComCartao(pedidoId, req.body, req.ip);
+    res.json(resultado);
+  }catch(e){ res.json({ erro: e.message }); }
+});
+
 app.get('/carrinho/finalizar', authMembro, async(req,res)=>{
   const pedidoRes = await pool.query(`SELECT * FROM circulo_pedidos WHERE membro_id=$1 AND status IN ('CARRINHO','AGUARDANDO_PAGAMENTO') ORDER BY criado_em DESC LIMIT 1`,[req.membro.id]);
   if(!pedidoRes.rows.length) return res.redirect('/carrinho');
