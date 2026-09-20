@@ -706,7 +706,7 @@ app.get('/portfolio', authMembro, async(req,res)=>{
            reg.codigo_arca, reg.token_verificacao, reg.ano
     FROM almare_exemplares e
     JOIN almare_obras o ON o.id = e.obra_id
-    LEFT JOIN arca_registros reg ON reg.exemplar_id = e.id
+    JOIN arca_registros reg ON reg.exemplar_id = e.id
     WHERE LOWER(e.cliente_email) = LOWER($1)
     ORDER BY e.data_venda DESC NULLS LAST, e.created_at DESC`, [req.membro.email]);
 
