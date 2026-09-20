@@ -174,6 +174,103 @@ async function salvarContatoBling(dados, blingId) {
 }
 
 
+// ─── BLING — sincroniza pedido de venda quando o pagamento é confirmado ──────
+const MOLDURA_NOME_BLING = { preta:'Preta', carvalho:'Carvalho', aco_escovado:'Aço Escovado' };
+
+// Garante que existe um produto no Bling pra essa combinação obra+tamanho+moldura.
+// Busca pelo código antes de criar, pra nunca duplicar produto.
+async function garantirProdutoBling(item){
+  const token = await getBlingToken();
+  const codigo = `${item.obra_codigo||'ALM'}-${String(item.tamanho_label||'').replace(/[^0-9x]/gi,'').toUpperCase()}-${(item.moldura||'preta').slice(0,3).toUpperCase()}`;
+
+  const buscaResp = await fetch('https://api.bling.com.br/Api/v3/produtos?codigo='+encodeURIComponent(codigo), {
+    headers: { 'Authorization': 'Bearer '+token }
+  });
+  const busca = await buscaResp.json();
+  if(busca?.data?.length) return busca.data[0].id;
+
+  const nome = `${item.obra_nome} — ${item.tamanho_label} — Moldura ${MOLDURA_NOME_BLING[item.moldura]||item.moldura}`;
+  const criarResp = await fetch('https://api.bling.com.br/Api/v3/produtos', {
+    method: 'POST',
+    headers: { 'Authorization': 'Bearer '+token, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ nome, codigo, tipo:'P', situacao:'A', formato:'S', unidade:'UN', preco: parseFloat(item.preco_unitario) })
+  });
+  const criar = await criarResp.json();
+  if(!criarResp.ok || criar.error) throw new Error('Erro ao criar produto no Bling: '+JSON.stringify(criar));
+  return criar.data.id;
+}
+
+// Cria o pedido de venda no Bling pra um pedido do Círculo já pago. Idempotente —
+// se já tiver sido sincronizado antes, não cria de novo.
+async function sincronizarPedidoBling(pedidoId){
+  const pedidoRes = await pool.query(`
+    SELECT p.*, c.nome as cliente_nome, c.bling_id as cliente_bling_id, c.documento, c.email,
+           c.telefone, c.celular, c.cep, c.endereco, c.numero, c.complemento, c.bairro, c.cidade, c.estado
+    FROM circulo_pedidos p LEFT JOIN circulo_membros c ON c.id = p.cliente_membro_id
+    WHERE p.id=$1`, [pedidoId]);
+  const pedido = pedidoRes.rows[0];
+  if(!pedido) throw new Error('Pedido não encontrado.');
+  if(pedido.bling_pedido_id) return pedido.bling_pedido_id; // já sincronizado, não duplica
+
+  let blingContatoId = pedido.cliente_bling_id;
+  if(!blingContatoId){
+    blingContatoId = await salvarContatoBling({
+      nome: pedido.cliente_nome, documento: pedido.documento, email: pedido.email,
+      telefone: pedido.telefone, celular: pedido.celular, cep: pedido.cep, endereco: pedido.endereco,
+      numero: pedido.numero, complemento: pedido.complemento, bairro: pedido.bairro,
+      cidade: pedido.cidade, estado: pedido.estado
+    }, null);
+    if(blingContatoId) await pool.query('UPDATE circulo_membros SET bling_id=$1 WHERE id=$2',[blingContatoId, pedido.cliente_membro_id]);
+  }
+  if(!blingContatoId) throw new Error('Não foi possível vincular o cliente ao Bling.');
+
+  const itensRes = await pool.query(`
+    SELECT pi.*, o.nome as obra_nome, o.codigo as obra_codigo
+    FROM circulo_pedido_itens pi JOIN almare_obras o ON o.id=pi.obra_id
+    WHERE pi.pedido_id=$1`, [pedidoId]);
+  if(!itensRes.rows.length) throw new Error('Pedido sem itens — nada pra sincronizar.');
+
+  const itensBling = [];
+  for(const it of itensRes.rows){
+    const produtoId = await garantirProdutoBling({
+      obra_codigo: it.obra_codigo, obra_nome: it.obra_nome, tamanho_label: it.tamanho_label,
+      moldura: it.moldura, preco_unitario: it.preco_unitario
+    });
+    itensBling.push({ produto:{ id: produtoId }, quantidade: it.quantidade, valor: parseFloat(it.preco_unitario) });
+  }
+
+  const token = await getBlingToken();
+  const hoje = new Date().toISOString().slice(0,10);
+  const resp = await fetch('https://api.bling.com.br/Api/v3/pedidos/vendas', {
+    method: 'POST',
+    headers: { 'Authorization': 'Bearer '+token, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      data: hoje, contato: { id: blingContatoId }, itens: itensBling,
+      observacoes: `Círculo ALMARE — Pedido ${pedido.numero}`
+    })
+  });
+  const resultado = await resp.json();
+  if(!resp.ok || resultado.error){
+    await pool.query('UPDATE circulo_pedidos SET bling_erro=$1 WHERE id=$2',[JSON.stringify(resultado).slice(0,500), pedidoId]);
+    throw new Error('Erro ao criar pedido de venda no Bling: '+JSON.stringify(resultado));
+  }
+  const blingPedidoId = resultado?.data?.id;
+  await pool.query('UPDATE circulo_pedidos SET bling_pedido_id=$1, bling_erro=NULL WHERE id=$2',[blingPedidoId, pedidoId]);
+  return blingPedidoId;
+}
+
+// Dispara a sincronização sem nunca travar a confirmação do pagamento — se o Bling
+// falhar (ou não estiver conectado), só registra o erro, o pedido continua PAGO.
+async function sincronizarPedidoBlingSeguro(pedidoId){
+  try{
+    await sincronizarPedidoBling(pedidoId);
+  }catch(e){
+    console.error('Sincronizar Bling pedido '+pedidoId+':', e.message);
+    await pool.query('UPDATE circulo_pedidos SET bling_erro=$1 WHERE id=$2',[String(e.message).slice(0,500), pedidoId]).catch(()=>{});
+  }
+}
+
+
 // ─── CSS ──────────────────────────────────────────────────────────────────────
 const CSS = `
   @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400;500;600&family=Inter:wght@300;400;500&display=swap');
@@ -2750,6 +2847,7 @@ async function pagarComCartao(pedidoId, dados, remoteIp){
   const novoStatus = (resultado.status==='CONFIRMED' || resultado.status==='RECEIVED') ? 'PAGO' : 'AGUARDANDO_PAGAMENTO';
   await pool.query(`UPDATE circulo_pedidos SET asaas_cliente_id=$1, asaas_cobranca_id=$2, status=$3 WHERE id=$4`,
     [asaasClienteId, resultado.id, novoStatus, p.id]);
+  if(novoStatus === 'PAGO') sincronizarPedidoBlingSeguro(p.id); // não bloqueia a resposta do pagamento
   return { status: resultado.status, pago: novoStatus==='PAGO' };
 }
 
@@ -3129,7 +3227,10 @@ app.post('/webhook/asaas', async(req,res)=>{
           `UPDATE circulo_pedidos SET status='PAGO' WHERE id=$1 AND status<>'PAGO' RETURNING id`,
           [pedidoId]
         );
-        if(upd.rows.length) console.log(`Webhook Asaas: pedido ${pedidoId} marcado como PAGO (evento ${event})`);
+        if(upd.rows.length){
+          console.log(`Webhook Asaas: pedido ${pedidoId} marcado como PAGO (evento ${event})`);
+          sincronizarPedidoBlingSeguro(pedidoId); // não bloqueia a resposta ao Asaas
+        }
       }
     }
     res.json({ received:true });
