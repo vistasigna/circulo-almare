@@ -4024,7 +4024,7 @@ app.get('/admin',authAdmin,async(req,res)=>{
       <td style="color:var(--gold)">R$ ${parseFloat(m.credito_disponivel).toFixed(2).replace('.',',')}</td>
       <td>${m.obras_que_encontraram_lar}</td>
       <td>${m.total_indicacoes}</td>
-      <td><a href="/admin/membros/${m.id}/editar-email" class="btn btn-outline" style="padding:5px 12px;font-size:10px;">Editar e-mail</a></td>
+      <td><a href="/admin/membros/${m.id}/editar" class="btn btn-outline" style="padding:5px 12px;font-size:10px;">Editar</a></td>
     </tr>`).join('');
 
   res.send(html('Admin',`
@@ -4077,35 +4077,75 @@ app.get('/admin',authAdmin,async(req,res)=>{
 
 // ─── APROVAR / RECUSAR FUNÇÃO ─────────────────────────────────────────────────
 // Admin edita o e-mail de um membro (para quando o cliente pede correção diretamente)
-app.get('/admin/membros/:id/editar-email', authAdmin, async(req,res)=>{
-  const r = await pool.query('SELECT id,nome,email FROM circulo_membros WHERE id=$1',[req.params.id]);
+app.get('/admin/membros/:id/editar', authAdmin, async(req,res)=>{
+  const r = await pool.query('SELECT * FROM circulo_membros WHERE id=$1',[req.params.id]);
   if(!r.rows.length) return res.redirect('/admin');
   const m = r.rows[0];
-  res.send(html('Editar e-mail',`
+  res.send(html('Editar membro',`
     <div class="container-sm">
       <a href="/admin" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);display:inline-block;margin-bottom:24px;">← Voltar</a>
-      <h2 style="font-size:24px;margin-bottom:24px;">Editar e-mail de ${esc(m.nome)}</h2>
+      <h2 style="font-size:24px;margin-bottom:8px;">Editar ${esc(m.nome)}</h2>
+      <p style="color:var(--muted);font-size:12px;margin-bottom:24px;">Como administrador, você pode alterar qualquer dado deste membro, inclusive a senha.</p>
       ${req.query.erro?`<div class="msg-erro">${esc(req.query.erro)}</div>`:''}
+      ${req.query.ok?`<div class="msg-ok">Dados atualizados com sucesso.</div>`:''}
       <div class="card">
-        <form method="POST" action="/admin/membros/${m.id}/editar-email">
-          <div class="field"><label>Novo e-mail</label><input type="email" name="email" required value="${esc(m.email)}"></div>
-          <button type="submit" class="btn btn-primary btn-full">Salvar</button>
+        <form method="POST" action="/admin/membros/${m.id}/editar">
+          <div class="field"><label>Nome</label><input name="nome" required value="${esc(m.nome)}"></div>
+          <div class="field"><label>E-mail</label><input type="email" name="email" required value="${esc(m.email)}"></div>
+          <div class="grid-2">
+            <div class="field"><label>CPF/CNPJ</label><input name="documento" value="${esc(m.documento||'')}"></div>
+            <div class="field"><label>RG/IE</label><input name="ie" value="${esc(m.ie||'')}"></div>
+          </div>
+          <div class="grid-2">
+            <div class="field"><label>Telefone</label><input name="telefone" value="${esc(m.telefone||'')}"></div>
+            <div class="field"><label>Celular</label><input name="celular" value="${esc(m.celular||'')}"></div>
+          </div>
+          <hr class="divider">
+          <h3 style="font-size:16px;margin-bottom:16px;">Endereço</h3>
+          <div class="grid-2">
+            <div class="field"><label>CEP</label><input name="cep" value="${esc(m.cep||'')}"></div>
+            <div class="field"><label>Estado</label><input name="estado" maxlength="2" value="${esc(m.estado||'')}"></div>
+          </div>
+          <div class="field"><label>Endereço</label><input name="endereco" value="${esc(m.endereco||'')}"></div>
+          <div class="grid-2">
+            <div class="field"><label>Número</label><input name="numero" value="${esc(m.numero||'')}"></div>
+            <div class="field"><label>Complemento</label><input name="complemento" value="${esc(m.complemento||'')}"></div>
+          </div>
+          <div class="field"><label>Bairro</label><input name="bairro" value="${esc(m.bairro||'')}"></div>
+          <div class="field"><label>Cidade</label><input name="cidade" value="${esc(m.cidade||'')}"></div>
+          <hr class="divider">
+          <h3 style="font-size:16px;margin-bottom:8px;">Senha</h3>
+          <p style="font-size:12px;color:var(--muted);margin-bottom:16px;">Deixe em branco para manter a senha atual.</p>
+          <div class="field"><label>Nova senha</label><input type="password" name="senha" placeholder="Mínimo 8 caracteres" minlength="8"></div>
+          <button type="submit" class="btn btn-primary btn-full" style="margin-top:8px;">Salvar</button>
         </form>
       </div>
     </div>
   `));
 });
 
-app.post('/admin/membros/:id/editar-email', authAdmin, async(req,res)=>{
-  const { email } = req.body;
+app.post('/admin/membros/:id/editar', authAdmin, async(req,res)=>{
+  const { nome, email, documento, ie, telefone, celular, cep, endereco, numero, complemento, bairro, cidade, estado, senha } = req.body;
   try{
-    if(!email || !email.trim()) return res.redirect(`/admin/membros/${req.params.id}/editar-email?erro=E-mail+obrigatório`);
+    if(!nome || !nome.trim()) return res.redirect(`/admin/membros/${req.params.id}/editar?erro=Nome+obrigatório`);
+    if(!email || !email.trim()) return res.redirect(`/admin/membros/${req.params.id}/editar?erro=E-mail+obrigatório`);
     const dup = await pool.query('SELECT id FROM circulo_membros WHERE email=$1 AND id<>$2',[email.trim(), req.params.id]);
-    if(dup.rows.length) return res.redirect(`/admin/membros/${req.params.id}/editar-email?erro=Este+e-mail+já+está+em+uso`);
-    await pool.query('UPDATE circulo_membros SET email=$1 WHERE id=$2',[email.trim(), req.params.id]);
-    res.redirect('/admin');
+    if(dup.rows.length) return res.redirect(`/admin/membros/${req.params.id}/editar?erro=Este+e-mail+já+está+em+uso`);
+    if(senha && senha.trim() && senha.trim().length < 8) return res.redirect(`/admin/membros/${req.params.id}/editar?erro=Senha+precisa+ter+pelo+menos+8+caracteres`);
+
+    await pool.query(
+      `UPDATE circulo_membros SET nome=$1,email=$2,documento=$3,ie=$4,telefone=$5,celular=$6,cep=$7,endereco=$8,numero=$9,complemento=$10,bairro=$11,cidade=$12,estado=$13 WHERE id=$14`,
+      [nome.trim(), email.trim(), documento||null, ie||null, telefone||null, celular||null, cep||null, endereco||null, numero||null, complemento||null, bairro||null, cidade||null, estado||null, req.params.id]
+    );
+
+    if(senha && senha.trim()){
+      const hash = await bcrypt.hash(senha.trim(), 12);
+      await pool.query('UPDATE circulo_membros SET senha_hash=$1 WHERE id=$2',[hash, req.params.id]);
+    }
+
+    res.redirect(`/admin/membros/${req.params.id}/editar?ok=1`);
   }catch(e){
-    res.redirect(`/admin/membros/${req.params.id}/editar-email?erro=${encodeURIComponent(e.message)}`);
+    res.redirect(`/admin/membros/${req.params.id}/editar?erro=${encodeURIComponent(e.message)}`);
   }
 });
 
