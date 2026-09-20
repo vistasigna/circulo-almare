@@ -302,9 +302,9 @@ async function concederBonusPedido(pedidoId){
     for(const item of itensRes.rows){
       const valorBeneficio = Math.round(parseFloat(item.subtotal) * taxa * 100) / 100;
       await pool.query(
-        `INSERT INTO circulo_transacoes (membro_id, obra_id, pedido_id, valor_obra, modalidade, valor_beneficio, status, disponivel_em)
-         VALUES ($1,$2,$3,$4,'cashback',$5,'pendente',$6)`,
-        [pedido.membro_id, item.obra_id, pedidoId, item.subtotal, valorBeneficio, disponivelEm]
+        `INSERT INTO circulo_transacoes (membro_id, obra_id, pedido_id, valor_obra, modalidade, percentual, valor_beneficio, status, disponivel_em)
+         VALUES ($1,$2,$3,$4,'cashback',$5,$6,'pendente',$7)`,
+        [pedido.membro_id, item.obra_id, pedidoId, item.subtotal, taxa, valorBeneficio, disponivelEm]
       );
       await pool.query(
         'UPDATE circulo_saldo_credito SET saldo_total = saldo_total + $1 WHERE membro_id=$2',
