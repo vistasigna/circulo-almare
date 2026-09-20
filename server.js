@@ -2531,6 +2531,7 @@ app.get('/meus-pedidos', authMembro, async(req,res)=>{
         ${p.status === 'AGUARDANDO_PAGAMENTO' ? `
           <div style="display:flex;gap:8px;margin-top:14px;">
             <a href="/pedido-interno/${p.id}/pagar" class="btn btn-primary" style="flex:1;">Pagar agora</a>
+            <button type="button" onclick="editarPedido(${p.id})" class="btn btn-outline">Editar</button>
             <button type="button" onclick="cancelarPedido(${p.id})" class="btn btn-outline" style="color:#e77;border-color:#e77;">Cancelar</button>
           </div>` : ''}
       </div>`;
@@ -2581,6 +2582,15 @@ app.get('/meus-pedidos', authMembro, async(req,res)=>{
           if(d.erro){ alert(d.erro); return; }
           location.reload();
         }catch(e){ alert('Erro ao cancelar pedido.'); }
+      }
+      async function editarPedido(id){
+        if(!confirm('Reabrir este pedido para edição? A cobrança pendente será descartada e uma nova será gerada quando você finalizar de novo.')) return;
+        try{
+          const r = await fetch('/pedido-interno/'+id+'/reabrir', { method:'POST' });
+          const d = await r.json();
+          if(d.erro){ alert(d.erro); return; }
+          window.location.href = '/carrinho';
+        }catch(e){ alert('Erro ao reabrir pedido.'); }
       }
     </script>
   `,true));
@@ -3105,6 +3115,22 @@ app.post('/pedido-interno/:id/cancelar', authMembro, async(req,res)=>{
       [pedidoId, req.membro.id]
     );
     if(!r.rows.length) return res.json({ erro:'Não foi possível cancelar este pedido.' });
+    res.json({ ok:true });
+  }catch(e){ res.json({ erro: e.message }); }
+});
+
+// Reabre um pedido AGUARDANDO_PAGAMENTO pra edição — nunca mexe em pedido já PAGO.
+// Limpa a cobrança pendente (senão ficaria órfã, vinculada a um pedido que vai mudar)
+// e devolve pro estado de carrinho, onde a edição normal já existe.
+app.post('/pedido-interno/:id/reabrir', authMembro, async(req,res)=>{
+  try{
+    const pedidoId = parseInt(req.params.id);
+    const r = await pool.query(
+      `UPDATE circulo_pedidos SET status='CARRINHO', asaas_cliente_id=NULL, asaas_cobranca_id=NULL, invoice_url=NULL, link_publico=NULL
+       WHERE id=$1 AND (membro_id=$2 OR cliente_membro_id=$2) AND status='AGUARDANDO_PAGAMENTO' RETURNING id`,
+      [pedidoId, req.membro.id]
+    );
+    if(!r.rows.length) return res.json({ erro:'Não foi possível reabrir este pedido.' });
     res.json({ ok:true });
   }catch(e){ res.json({ erro: e.message }); }
 });
