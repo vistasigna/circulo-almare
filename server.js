@@ -2853,7 +2853,7 @@ async function pagarComCartao(pedidoId, dados, remoteIp){
 
 // Monta o formulário/UI de pagamento (PIX + Cartão) — reaproveitado na tela do membro
 // e na página pública do cliente. urlBasePix/urlBaseCartao são os endpoints a chamar.
-function montarUiPagamento(urlBasePix, urlBaseCartao, dadosPreenchidos){
+function montarUiPagamento(urlBasePix, urlBaseCartao, urlStatus, urlConfirmacao, dadosPreenchidos){
   const d = dadosPreenchidos || {};
   return `
     <div style="display:flex;gap:8px;margin-bottom:20px;">
@@ -2901,6 +2901,8 @@ function montarUiPagamento(urlBasePix, urlBaseCartao, dadosPreenchidos){
       const PG_TOTAL = ${dadosPreenchidos.total || 0};
       const PG_URL_PIX = '${urlBasePix}';
       const PG_URL_CARTAO = '${urlBaseCartao}';
+      const PG_URL_STATUS = '${urlStatus}';
+      const PG_URL_CONFIRMACAO = '${urlConfirmacao}';
 
       function mostrarAba(aba){
         document.getElementById('painel-pix').style.display = aba==='pix' ? 'block' : 'none';
@@ -2932,9 +2934,22 @@ function montarUiPagamento(urlBasePix, urlBaseCartao, dadosPreenchidos){
             '<img src="data:image/png;base64,'+d.encodedImage+'" style="width:220px;height:220px;background:#fff;padding:10px;border-radius:6px;">'+
             '<p style="font-size:12px;color:var(--muted);margin-top:12px;">Ou copie o código:</p>'+
             '<div style="background:#0d0d0d;border:1px solid var(--border);border-radius:3px;padding:12px;font-size:11px;word-break:break-all;margin:8px 0;">'+d.payload+'</div>'+
-            '<button onclick="navigator.clipboard.writeText(this.dataset.payload);this.textContent=\\'Copiado ✓\\'" data-payload="'+d.payload+'" class="btn btn-outline">Copiar código PIX</button>'+
+            '<button onclick="navigator.clipboard.writeText(this.dataset.payload);this.textContent=\\'Copiado ✓\\'" data-payload="'+d.payload+'" class="btn btn-outline" style="margin-bottom:14px;">Copiar código PIX</button>'+
+            '<button onclick="verificarPix(this)" class="btn btn-primary btn-full">Já paguei — verificar</button>'+
+            '<div id="status-pix" style="margin-top:10px;"></div>'+
             '</div>';
         }catch(e){ btn.disabled=false; btn.textContent='Gerar QR Code PIX'; areaR.innerHTML='<div class="msg-erro">Erro ao gerar PIX.</div>'; }
+      }
+      async function verificarPix(btn){
+        btn.disabled=true; btn.textContent='Verificando...';
+        const areaStatus = document.getElementById('status-pix');
+        try{
+          const r = await fetch(PG_URL_STATUS);
+          const d = await r.json();
+          btn.disabled=false; btn.textContent='Já paguei — verificar';
+          if(d.pago){ window.location.href = PG_URL_CONFIRMACAO; return; }
+          areaStatus.innerHTML = '<div class="msg-info">Ainda não identificamos o pagamento. Se já pagou, aguarde alguns segundos e tente de novo.</div>';
+        }catch(e){ btn.disabled=false; btn.textContent='Já paguei — verificar'; areaStatus.innerHTML='<div class="msg-erro">Erro ao verificar.</div>'; }
       }
       async function pagarCartao(){
         const btn = document.getElementById('btn-pagar-cartao'); btn.disabled=true; btn.textContent='Processando...';
@@ -2956,13 +2971,41 @@ function montarUiPagamento(urlBasePix, urlBaseCartao, dadosPreenchidos){
         try{
           const r = await fetch(PG_URL_CARTAO, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(corpo) });
           const d = await r.json();
+          if(d.erro){ btn.disabled=false; btn.textContent='Pagar'; areaR.innerHTML='<div class="msg-erro">'+d.erro+'</div>'; return; }
+          if(d.pago){ window.location.href = PG_URL_CONFIRMACAO; return; }
           btn.disabled=false; btn.textContent='Pagar';
-          if(d.erro){ areaR.innerHTML='<div class="msg-erro">'+d.erro+'</div>'; return; }
-          if(d.pago){ areaR.innerHTML='<div class="msg-ok">Pagamento aprovado! Obrigado.</div>'; }
-          else { areaR.innerHTML='<div class="msg-info">Pagamento em análise (status: '+d.status+').</div>'; }
+          areaR.innerHTML='<div class="msg-info">Pagamento em análise (status: '+d.status+').</div>';
         }catch(e){ btn.disabled=false; btn.textContent='Pagar'; areaR.innerHTML='<div class="msg-erro">Erro ao processar pagamento.</div>'; }
       }
     </script>
+  `;
+}
+
+// Tela de confirmação — celebra a compra, mostra número do pedido e resumo, com
+// botão de baixar (imprimir/salvar) e um botão de fechar que volta pro Círculo.
+function montarTelaConfirmacaoHtml(pedido, linhas, linkFechar, textoFechar){
+  return `
+    <div style="text-align:center;padding:20px 0 32px;">
+      <div style="font-size:48px;margin-bottom:16px;">🎉</div>
+      <h1 style="font-family:'Cormorant Garamond',serif;font-size:32px;margin-bottom:8px;">Parabéns!</h1>
+      <p style="color:var(--gold);font-size:16px;margin-bottom:4px;">Você fez uma ótima compra.</p>
+      <p style="color:var(--muted);font-size:13px;">Seu pedido está confirmado.</p>
+    </div>
+    <div class="card" style="margin-bottom:20px;">
+      <div style="text-align:center;margin-bottom:20px;">
+        <div style="font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;">Número do pedido</div>
+        <div style="font-family:'Cormorant Garamond',serif;font-size:26px;color:var(--gold);">${esc(pedido.numero)}</div>
+      </div>
+      ${linhas}
+      <div style="display:flex;justify-content:space-between;align-items:center;padding-top:20px;margin-top:8px;border-top:1px solid var(--border);">
+        <span style="font-size:14px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);">Total pago</span>
+        <span style="font-family:'Cormorant Garamond',serif;font-size:28px;color:var(--gold);">R$ ${parseFloat(pedido.total).toFixed(2).replace('.',',')}</span>
+      </div>
+    </div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;">
+      <button onclick="window.print()" class="btn btn-outline" style="flex:1;min-width:160px;">Baixar confirmação</button>
+      ${linkFechar ? `<a href="${linkFechar}" class="btn btn-primary" style="flex:1;min-width:160px;text-align:center;">${esc(textoFechar)}</a>` : `<div style="flex:1;min-width:160px;text-align:center;color:var(--muted);font-size:12px;padding:13px 0;">Você já pode fechar esta janela.</div>`}
+    </div>
   `;
 }
 
@@ -3018,6 +3061,8 @@ app.get('/pedido-interno/:id/pagar', authMembro, async(req,res)=>{
   const uiPagamento = montarUiPagamento(
     '/pedido-interno/'+pedidoId+'/pagamento/pix',
     '/pedido-interno/'+pedidoId+'/pagamento/cartao',
+    '/pedido-interno/'+pedidoId+'/status',
+    '/pedido-interno/'+pedidoId+'/confirmado',
     { total: parseFloat(pedido.total), nome: cliente.nome, documento: cliente.documento,
       telefone: cliente.telefone||cliente.celular, email: cliente.email, cep: cliente.cep, numero: cliente.numero }
   );
@@ -3061,6 +3106,21 @@ app.post('/pedido-interno/:id/pagamento/cartao', authMembro, async(req,res)=>{
   }catch(e){ res.json({ erro: e.message }); }
 });
 
+app.get('/pedido-interno/:id/status', authMembro, async(req,res)=>{
+  const pedidoId = parseInt(req.params.id);
+  const r = await pool.query(`SELECT status FROM circulo_pedidos WHERE id=$1 AND (membro_id=$2 OR cliente_membro_id=$2)`,[pedidoId, req.membro.id]);
+  if(!r.rows.length) return res.json({ erro:'Pedido não encontrado.' });
+  res.json({ pago: r.rows[0].status === 'PAGO' });
+});
+
+app.get('/pedido-interno/:id/confirmado', authMembro, async(req,res)=>{
+  const pedidoId = parseInt(req.params.id);
+  const check = await pool.query(`SELECT id FROM circulo_pedidos WHERE id=$1 AND (membro_id=$2 OR cliente_membro_id=$2)`,[pedidoId, req.membro.id]);
+  if(!check.rows.length) return res.redirect('/meus-pedidos');
+  const { pedido, linhas } = await montarResumoPedidoHtml(pedidoId);
+  res.send(html('Pedido confirmado', montarTelaConfirmacaoHtml(pedido, linhas, '/portal', 'Fechar'), true));
+});
+
 app.get('/carrinho/finalizar', authMembro, async(req,res)=>{
   const pedidoRes = await pool.query(`SELECT * FROM circulo_pedidos WHERE membro_id=$1 AND status IN ('CARRINHO','AGUARDANDO_PAGAMENTO') ORDER BY criado_em DESC LIMIT 1`,[req.membro.id]);
   if(!pedidoRes.rows.length) return res.redirect('/carrinho');
@@ -3068,11 +3128,13 @@ app.get('/carrinho/finalizar', authMembro, async(req,res)=>{
   if(!pedido.cliente_membro_id) return res.redirect('/carrinho');
 
   const { cliente, linhas } = await montarResumoPedidoHtml(pedido.id);
-  const uiPagamento = montarUiPagamento('/carrinho/pagamento/pix', '/carrinho/pagamento/cartao', {
-    total: parseFloat(pedido.total),
-    nome: cliente.nome, documento: cliente.documento, telefone: cliente.telefone||cliente.celular,
-    email: cliente.email, cep: cliente.cep, numero: cliente.numero
-  });
+  const uiPagamento = montarUiPagamento(
+    '/carrinho/pagamento/pix', '/carrinho/pagamento/cartao',
+    '/pedido-interno/'+pedido.id+'/status', '/pedido-interno/'+pedido.id+'/confirmado',
+    { total: parseFloat(pedido.total),
+      nome: cliente.nome, documento: cliente.documento, telefone: cliente.telefone||cliente.celular,
+      email: cliente.email, cep: cliente.cep, numero: cliente.numero }
+  );
 
   res.send(html('Finalizar pedido',`
     <a href="/carrinho" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);display:inline-block;margin-bottom:24px;">← Voltar ao carrinho</a>
@@ -3146,11 +3208,13 @@ app.get('/pedido/:token', async(req,res)=>{
   if(!r.rows.length) return res.status(404).send(html('Pedido',`<div class="container-sm"><div class="msg-erro">Este link não existe mais.</div></div>`));
   const { pedido, cliente, linhas } = await montarResumoPedidoHtml(r.rows[0].id);
   const tokenEsc = esc(req.params.token);
-  const uiPagamento = montarUiPagamento('/pedido/'+tokenEsc+'/pagamento/pix', '/pedido/'+tokenEsc+'/pagamento/cartao', {
-    total: parseFloat(pedido.total),
-    nome: cliente.nome, documento: cliente.documento, telefone: cliente.telefone||cliente.celular,
-    email: cliente.email, cep: cliente.cep, numero: cliente.numero
-  });
+  const uiPagamento = montarUiPagamento(
+    '/pedido/'+tokenEsc+'/pagamento/pix', '/pedido/'+tokenEsc+'/pagamento/cartao',
+    '/pedido/'+tokenEsc+'/status', '/pedido/'+tokenEsc+'/confirmado',
+    { total: parseFloat(pedido.total),
+      nome: cliente.nome, documento: cliente.documento, telefone: cliente.telefone||cliente.celular,
+      email: cliente.email, cep: cliente.cep, numero: cliente.numero }
+  );
 
   res.send(`<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
     <title>Seu pedido — ALMARE</title><style>${CSS}</style></head>
@@ -3191,6 +3255,24 @@ app.post('/pedido/:token/pagamento/cartao', async(req,res)=>{
     const resultado = await pagarComCartao(r.rows[0].id, req.body, req.ip);
     res.json(resultado);
   }catch(e){ res.json({ erro: e.message }); }
+});
+
+app.get('/pedido/:token/status', async(req,res)=>{
+  const r = await pool.query('SELECT status FROM circulo_pedidos WHERE link_publico=$1',[req.params.token]);
+  if(!r.rows.length) return res.json({ erro:'Pedido não encontrado.' });
+  res.json({ pago: r.rows[0].status === 'PAGO' });
+});
+
+app.get('/pedido/:token/confirmado', async(req,res)=>{
+  const r = await pool.query('SELECT id FROM circulo_pedidos WHERE link_publico=$1',[req.params.token]);
+  if(!r.rows.length) return res.status(404).send(html('Pedido',`<div class="container-sm"><div class="msg-erro">Este link não existe mais.</div></div>`));
+  const { pedido, linhas } = await montarResumoPedidoHtml(r.rows[0].id);
+  res.send(`<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Pedido confirmado — ALMARE</title><style>${CSS}</style></head>
+    <body><div class="container" style="max-width:640px;padding-top:48px;">
+      <div class="logo" style="margin-bottom:32px;">ALMARE</div>
+      ${montarTelaConfirmacaoHtml(pedido, linhas, null, 'Fechar')}
+    </div></body></html>`);
 });
 
 // ─── WEBHOOK ASAAS — confirma pagamento automaticamente ──────────────────────
