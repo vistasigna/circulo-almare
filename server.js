@@ -271,6 +271,67 @@ async function sincronizarPedidoBlingSeguro(pedidoId){
 }
 
 
+// ─── IMPACTO — cashback pro Embaixador/Especificador quando o pedido é confirmado ──
+// Embaixador: 5% cashback. Especificador: 10% cashback. Um lançamento por obra vendida
+// (não por pedido inteiro), com carência de 10 dias antes de virar saldo sacável.
+async function concederBonusPedido(pedidoId){
+  try{
+    const pedidoRes = await pool.query('SELECT * FROM circulo_pedidos WHERE id=$1',[pedidoId]);
+    const pedido = pedidoRes.rows[0];
+    if(!pedido) return;
+
+    // Já concedeu bônus pra esse pedido? Nunca concede duas vezes.
+    const jaExiste = await pool.query('SELECT 1 FROM circulo_transacoes WHERE pedido_id=$1 LIMIT 1',[pedidoId]);
+    if(jaExiste.rows.length) return;
+
+    const funcoes = await pool.query(
+      `SELECT f.slug FROM circulo_membro_funcoes mf JOIN circulo_funcoes f ON f.id=mf.funcao_id WHERE mf.membro_id=$1 AND mf.ativo=true`,
+      [pedido.membro_id]
+    );
+    const slugs = funcoes.rows.map(r=>r.slug);
+    let taxa = null;
+    if(slugs.includes('especificador')) taxa = 0.10;
+    else if(slugs.includes('embaixador')) taxa = 0.05;
+    if(!taxa) return; // quem processou não tem função que gera cashback
+
+    const itensRes = await pool.query('SELECT * FROM circulo_pedido_itens WHERE pedido_id=$1',[pedidoId]);
+    if(!itensRes.rows.length) return;
+
+    const disponivelEm = new Date(Date.now() + 10*24*60*60*1000);
+
+    for(const item of itensRes.rows){
+      const valorBeneficio = Math.round(parseFloat(item.subtotal) * taxa * 100) / 100;
+      await pool.query(
+        `INSERT INTO circulo_transacoes (membro_id, obra_id, pedido_id, valor_obra, modalidade, valor_beneficio, status, disponivel_em)
+         VALUES ($1,$2,$3,$4,'cashback',$5,'pendente',$6)`,
+        [pedido.membro_id, item.obra_id, pedidoId, item.subtotal, valorBeneficio, disponivelEm]
+      );
+      await pool.query(
+        'UPDATE circulo_saldo_credito SET saldo_total = saldo_total + $1 WHERE membro_id=$2',
+        [valorBeneficio, pedido.membro_id]
+      );
+    }
+  }catch(e){
+    console.error('Conceder bônus pedido '+pedidoId+':', e.message);
+  }
+}
+
+// Solta pro saldo disponível qualquer bônus que já passou dos 10 dias de carência.
+// Chamado sempre que o membro abre a tela de Impacto — sem depender de cron.
+async function liberarBonusVencidos(membroId){
+  try{
+    const vencidos = await pool.query(
+      `UPDATE circulo_transacoes SET status='pago' WHERE membro_id=$1 AND status='pendente' AND disponivel_em <= NOW() RETURNING valor_beneficio`,
+      [membroId]
+    );
+    if(vencidos.rows.length){
+      const soma = vencidos.rows.reduce((s,r)=>s+parseFloat(r.valor_beneficio),0);
+      await pool.query('UPDATE circulo_saldo_credito SET saldo_disponivel = saldo_disponivel + $1 WHERE membro_id=$2',[soma, membroId]);
+    }
+  }catch(e){ console.error('Liberar bonus vencidos:', e.message); }
+}
+
+
 // ─── CSS ──────────────────────────────────────────────────────────────────────
 const CSS = `
   @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400;500;600&family=Inter:wght@300;400;500&display=swap');
@@ -2847,7 +2908,7 @@ async function pagarComCartao(pedidoId, dados, remoteIp){
   const novoStatus = (resultado.status==='CONFIRMED' || resultado.status==='RECEIVED') ? 'PAGO' : 'AGUARDANDO_PAGAMENTO';
   await pool.query(`UPDATE circulo_pedidos SET asaas_cliente_id=$1, asaas_cobranca_id=$2, status=$3 WHERE id=$4`,
     [asaasClienteId, resultado.id, novoStatus, p.id]);
-  if(novoStatus === 'PAGO') sincronizarPedidoBlingSeguro(p.id); // não bloqueia a resposta do pagamento
+  if(novoStatus === 'PAGO'){ sincronizarPedidoBlingSeguro(p.id); concederBonusPedido(p.id); } // não bloqueia a resposta do pagamento
   return { status: resultado.status, pago: novoStatus==='PAGO' };
 }
 
@@ -3312,6 +3373,7 @@ app.post('/webhook/asaas', async(req,res)=>{
         if(upd.rows.length){
           console.log(`Webhook Asaas: pedido ${pedidoId} marcado como PAGO (evento ${event})`);
           sincronizarPedidoBlingSeguro(pedidoId); // não bloqueia a resposta ao Asaas
+          concederBonusPedido(pedidoId);
         }
       }
     }
@@ -3792,6 +3854,7 @@ app.get('/catalogo',authMembro,async(req,res)=>{
 // ─── IMPACTO ──────────────────────────────────────────────────────────────────
 app.get('/meu-impacto',authMembro,async(req,res)=>{
   try{
+    await liberarBonusVencidos(req.membro.id); // solta pro saldo qualquer bônus que já passou da carência de 10 dias
     const trans=await pool.query('SELECT * FROM circulo_transacoes WHERE membro_id=$1 ORDER BY criado_em DESC',[req.membro.id]);
     const saldo=await pool.query('SELECT * FROM circulo_saldo_credito WHERE membro_id=$1',[req.membro.id]);
     const s=saldo.rows[0]||{saldo_disponivel:0,saldo_total:0};
@@ -4090,6 +4153,7 @@ async function garantirTabelas(){
       );`);
     // Carência de 10 dias antes do crédito/cashback ficar disponível (dá tempo da venda confirmar)
     await pool.query(`ALTER TABLE circulo_transacoes ADD COLUMN IF NOT EXISTS disponivel_em TIMESTAMP;`).catch(()=>{});
+    await pool.query(`ALTER TABLE circulo_transacoes ADD COLUMN IF NOT EXISTS pedido_id INTEGER;`).catch(()=>{});
     // Dados do membro reaproveitados no faturamento
     await pool.query(`ALTER TABLE circulo_membros ADD COLUMN IF NOT EXISTS bling_id VARCHAR(50);`).catch(()=>{});
     await pool.query(`ALTER TABLE circulo_membros ADD COLUMN IF NOT EXISTS documento VARCHAR(20);`).catch(()=>{});
