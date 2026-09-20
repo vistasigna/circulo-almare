@@ -2321,7 +2321,7 @@ app.get('/meus-pedidos', authMembro, async(req,res)=>{
   let itensPorPedido = {};
   if(idsPedidos.length){
     const itensRes = await pool.query(`
-      SELECT pi.pedido_id, o.nome as obra_nome, pi.tamanho_label, pi.moldura, pi.quantidade
+      SELECT pi.pedido_id, o.nome as obra_nome, o.imagem_preview, pi.tamanho_label, pi.moldura, pi.quantidade
       FROM circulo_pedido_itens pi JOIN almare_obras o ON o.id = pi.obra_id
       WHERE pi.pedido_id = ANY($1) ORDER BY pi.criado_em`, [idsPedidos]);
     itensRes.rows.forEach(it=>{
@@ -2343,11 +2343,16 @@ app.get('/meus-pedidos', authMembro, async(req,res)=>{
     const itens = itensPorPedido[p.id] || [];
     const obrasTexto = itens.map(it=>it.obra_nome).join(', ');
     const itensDetalhe = itens.map(it=>
-      `<div style="font-size:12px;color:var(--muted);padding:4px 0;">${esc(it.obra_nome)} · ${esc(it.tamanho_label||'')} · ${esc(nomesMoldura[it.moldura]||it.moldura||'')}${it.quantidade>1?' · Qtd '+it.quantidade:''}</div>`
+      `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;">
+        <div style="width:26px;height:26px;border-radius:3px;overflow:hidden;background:#0d0d0d;flex-shrink:0;">
+          ${it.imagem_preview?`<img src="${esc(it.imagem_preview)}" style="width:100%;height:100%;object-fit:cover;">`:''}
+        </div>
+        <div style="font-size:12px;color:var(--muted);">${esc(it.obra_nome)} · ${esc(it.tamanho_label||'')} · ${esc(nomesMoldura[it.moldura]||it.moldura||'')}${it.quantidade>1?' · Qtd '+it.quantidade:''}</div>
+      </div>`
     ).join('');
 
     return `
-      <div class="card" style="margin-bottom:12px;" data-busca="${esc((p.numero+' '+(p.cliente_nome||'')+' '+(p.membro_nome||'')+' '+obrasTexto).toLowerCase())}">
+      <div class="card" style="margin-bottom:12px;" data-busca="${esc((p.numero+' '+(p.cliente_nome||'')+' '+(p.membro_nome||'')+' '+obrasTexto).toLowerCase())}" data-status="${esc(p.status)}">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap;margin-bottom:10px;">
           <div>
             <div style="font-family:'Cormorant Garamond',serif;font-size:18px;margin-bottom:2px;">Pedido ${esc(p.numero)}</div>
@@ -2373,17 +2378,32 @@ app.get('/meus-pedidos', authMembro, async(req,res)=>{
     ${navBar('pedidos', temImpacto, ehEspec)}
     <h2 style="font-size:28px;margin-bottom:8px;">Meus Pedidos</h2>
     <p style="color:var(--muted);margin-bottom:24px;">Pedidos que você fez ou que foram faturados em seu nome.</p>
-    <div class="field" style="margin-bottom:20px;">
-      <input type="text" id="busca-pedidos" placeholder="Buscar por número, cliente ou obra..." oninput="filtrarPedidos(this.value)">
+    <div class="field" style="margin-bottom:14px;">
+      <input type="text" id="busca-pedidos" placeholder="Buscar por número, cliente ou obra..." oninput="filtrarPedidos()">
+    </div>
+    <div style="display:flex;gap:8px;margin-bottom:24px;flex-wrap:wrap;">
+      <button type="button" onclick="filtrarStatus('', this)" class="btn btn-outline filtro-status ativo" style="padding:8px 16px;font-size:11px;">Todos</button>
+      <button type="button" onclick="filtrarStatus('AGUARDANDO_PAGAMENTO', this)" class="btn btn-outline filtro-status" style="padding:8px 16px;font-size:11px;">Aguardando pagamento</button>
+      <button type="button" onclick="filtrarStatus('PAGO', this)" class="btn btn-outline filtro-status" style="padding:8px 16px;font-size:11px;">Pagos</button>
+      <button type="button" onclick="filtrarStatus('CANCELADO', this)" class="btn btn-outline filtro-status" style="padding:8px 16px;font-size:11px;">Cancelados</button>
     </div>
     <div id="lista-pedidos">
       ${linhas || '<div class="card" style="text-align:center;padding:48px 24px;"><p style="color:var(--muted);">Nenhum pedido ainda.</p></div>'}
     </div>
     <script>
-      function filtrarPedidos(termo){
-        const t = termo.toLowerCase();
+      let STATUS_ATIVO = '';
+      function filtrarStatus(status, btn){
+        STATUS_ATIVO = status;
+        document.querySelectorAll('.filtro-status').forEach(b=>{ b.style.borderColor='var(--border)'; b.style.color='var(--text)'; });
+        btn.style.borderColor = 'var(--gold)'; btn.style.color = 'var(--gold)';
+        filtrarPedidos();
+      }
+      function filtrarPedidos(){
+        const termo = document.getElementById('busca-pedidos').value.toLowerCase();
         document.querySelectorAll('#lista-pedidos [data-busca]').forEach(el=>{
-          el.style.display = el.dataset.busca.includes(t) ? '' : 'none';
+          const bateBusca = el.dataset.busca.includes(termo);
+          const bateStatus = !STATUS_ATIVO || el.dataset.status === STATUS_ATIVO;
+          el.style.display = (bateBusca && bateStatus) ? '' : 'none';
         });
       }
     </script>
