@@ -9,6 +9,7 @@ const crypto = require('crypto');
 const multer = require('multer');
 const sharp = require('sharp');
 const AdmZip = require('adm-zip');
+const nodemailer = require('nodemailer');
 const uploadFoto = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
 const app = express();
@@ -18,6 +19,17 @@ app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
+
+// ─── E-MAIL — recuperação de senha via Gmail SMTP ─────────────────────────────
+const emailTransporter = (process.env.EMAIL_USER && process.env.EMAIL_APP_PASSWORD)
+  ? nodemailer.createTransport({ service: 'gmail', auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_APP_PASSWORD } })
+  : null;
+
+async function enviarEmail(destinatario, assunto, corpoHtml){
+  if(!emailTransporter) throw new Error('E-mail não configurado (faltam as variáveis EMAIL_USER e EMAIL_APP_PASSWORD no Railway).');
+  await emailTransporter.sendMail({ from: '"Círculo ALMARE" <'+process.env.EMAIL_USER+'>', to: destinatario, subject: assunto, html: corpoHtml });
+}
+
 const JWT_SECRET = process.env.JWT_SECRET || 'circulo-almare-secret-2026';
 const ADMIN_SENHA = process.env.ADMIN_SENHA || 'admin123';
 const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
@@ -767,16 +779,98 @@ app.post('/cadastro-passo2', async (req,res) => {
 app.get('/login',(req,res)=>res.send(html('Entrar',`
   <div class="container-sm">
     <h2 style="font-size:28px;margin-bottom:32px;">Círculo ALMARE</h2>
-    ${req.query.erro?`<div class="msg-erro">${req.query.erro}</div>`:''}
+    ${req.query.erro?`<div class="msg-erro">${esc(req.query.erro)}</div>`:''}
+    ${req.query.ok?`<div class="msg-ok">${esc(req.query.ok)}</div>`:''}
     <a href="/convite" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);display:inline-block;margin-bottom:24px;">← Voltar</a>
     <form method="POST" action="/login">
       <div class="field"><label>E-mail</label><input name="email" type="email" required></div>
       <div class="field"><label>Senha</label><input name="senha" type="password" required></div>
       <button type="submit" class="btn btn-primary btn-full">Entrar</button>
     </form>
-    <p style="margin-top:24px;text-align:center;font-size:12px;color:var(--muted);">Ainda não é membro? <a href="/convite">Quero entrar no Círculo</a></p>
+    <p style="margin-top:16px;text-align:center;font-size:12px;"><a href="/esqueci-senha">Esqueci minha senha</a></p>
+    <p style="margin-top:8px;text-align:center;font-size:12px;color:var(--muted);">Ainda não é membro? <a href="/convite">Quero entrar no Círculo</a></p>
   </div>
 `)));
+
+app.get('/esqueci-senha', (req,res)=>{
+  res.send(html('Esqueci minha senha',`
+    <div class="container-sm">
+      <a href="/login" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);display:inline-block;margin-bottom:24px;">← Voltar ao login</a>
+      <h2 style="font-size:26px;margin-bottom:8px;">Esqueci minha senha</h2>
+      <p style="color:var(--muted);margin-bottom:28px;">Informe seu e-mail. Se ele estiver cadastrado, enviaremos um link para redefinir sua senha.</p>
+      ${req.query.enviado?'<div class="msg-ok">Se esse e-mail estiver cadastrado, você vai receber um link em instantes. Confira também o spam.</div>':''}
+      ${req.query.erro?`<div class="msg-erro">${esc(req.query.erro)}</div>`:''}
+      <div class="card">
+        <form method="POST" action="/esqueci-senha">
+          <div class="field"><label>E-mail</label><input name="email" type="email" required></div>
+          <button type="submit" class="btn btn-primary btn-full">Enviar link de recuperação</button>
+        </form>
+      </div>
+    </div>
+  `));
+});
+
+app.post('/esqueci-senha', async(req,res)=>{
+  const { email } = req.body;
+  try{
+    if(email && email.trim()){
+      const r = await pool.query('SELECT id, nome FROM circulo_membros WHERE email=$1',[email.trim()]);
+      if(r.rows.length){
+        const token = crypto.randomBytes(32).toString('hex');
+        const expiraEm = new Date(Date.now() + 60*60*1000); // 1 hora
+        await pool.query('INSERT INTO circulo_reset_senha (membro_id, token, expira_em) VALUES ($1,$2,$3)',[r.rows[0].id, token, expiraEm]);
+        const link = BASE_URL+'/redefinir-senha/'+token;
+        try{
+          await enviarEmail(email.trim(), 'Redefinir sua senha — Círculo ALMARE', `
+            <div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;padding:24px;">
+              <h2 style="color:#c9a96e;letter-spacing:.1em;">CÍRCULO ALMARE</h2>
+              <p>Olá, ${esc(r.rows[0].nome)}.</p>
+              <p>Recebemos um pedido para redefinir sua senha. Clique no botão abaixo — o link vale por 1 hora:</p>
+              <p style="margin:28px 0;"><a href="${link}" style="background:#c9a96e;color:#000;padding:14px 28px;text-decoration:none;border-radius:4px;display:inline-block;font-weight:bold;">Redefinir minha senha</a></p>
+              <p style="color:#888;font-size:12px;">Se você não pediu isso, pode ignorar este e-mail — sua senha continua a mesma.</p>
+            </div>`);
+        }catch(e){ console.error('Erro ao enviar e-mail de recuperação:', e.message); }
+      }
+      // Sempre mostra a mesma mensagem, exista ou não o e-mail — evita revelar quem é cadastrado
+    }
+    res.redirect('/esqueci-senha?enviado=1');
+  }catch(e){
+    res.redirect('/esqueci-senha?erro='+encodeURIComponent(e.message));
+  }
+});
+
+app.get('/redefinir-senha/:token', async(req,res)=>{
+  const r = await pool.query('SELECT * FROM circulo_reset_senha WHERE token=$1 AND usado=false AND expira_em > NOW()',[req.params.token]);
+  if(!r.rows.length) return res.send(html('Link inválido',`<div class="container-sm"><div class="msg-erro">Este link expirou ou já foi usado.</div><p style="margin-top:16px;"><a href="/esqueci-senha">Solicitar um novo link</a></p></div>`));
+  res.send(html('Redefinir senha',`
+    <div class="container-sm">
+      <h2 style="font-size:26px;margin-bottom:28px;">Defina sua nova senha</h2>
+      ${req.query.erro?`<div class="msg-erro">${esc(req.query.erro)}</div>`:''}
+      <form method="POST" action="/redefinir-senha/${esc(req.params.token)}">
+        <div class="field"><label>Nova senha</label><input type="password" name="senha" required minlength="8" placeholder="Mínimo 8 caracteres"></div>
+        <div class="field"><label>Confirme a senha</label><input type="password" name="senha2" required minlength="8"></div>
+        <button type="submit" class="btn btn-primary btn-full">Redefinir senha</button>
+      </form>
+    </div>
+  `));
+});
+
+app.post('/redefinir-senha/:token', async(req,res)=>{
+  const { senha, senha2 } = req.body;
+  try{
+    const r = await pool.query('SELECT * FROM circulo_reset_senha WHERE token=$1 AND usado=false AND expira_em > NOW()',[req.params.token]);
+    if(!r.rows.length) return res.send(html('Link inválido',`<div class="container-sm"><div class="msg-erro">Este link expirou ou já foi usado.</div><p style="margin-top:16px;"><a href="/esqueci-senha">Solicitar um novo link</a></p></div>`));
+    if(senha !== senha2) return res.redirect(`/redefinir-senha/${req.params.token}?erro=As+senhas+não+coincidem`);
+    if(!senha || senha.length < 8) return res.redirect(`/redefinir-senha/${req.params.token}?erro=A+senha+precisa+ter+pelo+menos+8+caracteres`);
+
+    const hash = await bcrypt.hash(senha, 12);
+    await pool.query('UPDATE circulo_membros SET senha_hash=$1 WHERE id=$2',[hash, r.rows[0].membro_id]);
+    await pool.query('UPDATE circulo_reset_senha SET usado=true WHERE id=$1',[r.rows[0].id]);
+    res.redirect('/login?ok=Senha+redefinida+com+sucesso.+Faça+login.');
+  }catch(e){
+    res.redirect(`/redefinir-senha/${req.params.token}?erro=${encodeURIComponent(e.message)}`);
+  }
+});
 
 app.post('/login',async(req,res)=>{
   try{
@@ -4224,6 +4318,15 @@ async function garantirTabelas(){
     // Carência de 10 dias antes do crédito/cashback ficar disponível (dá tempo da venda confirmar)
     await pool.query(`ALTER TABLE circulo_transacoes ADD COLUMN IF NOT EXISTS disponivel_em TIMESTAMP;`).catch(()=>{});
     await pool.query(`ALTER TABLE circulo_transacoes ADD COLUMN IF NOT EXISTS pedido_id INTEGER;`).catch(()=>{});
+    // Tokens de recuperação de senha — expiram em 1h, uso único
+    await pool.query(`CREATE TABLE IF NOT EXISTS circulo_reset_senha (
+      id SERIAL PRIMARY KEY,
+      membro_id INTEGER NOT NULL REFERENCES circulo_membros(id),
+      token VARCHAR(80) UNIQUE NOT NULL,
+      usado BOOLEAN DEFAULT false,
+      expira_em TIMESTAMP NOT NULL,
+      criado_em TIMESTAMP DEFAULT NOW()
+    );`).catch(()=>{});
     // Dados do membro reaproveitados no faturamento
     await pool.query(`ALTER TABLE circulo_membros ADD COLUMN IF NOT EXISTS bling_id VARCHAR(50);`).catch(()=>{});
     await pool.query(`ALTER TABLE circulo_membros ADD COLUMN IF NOT EXISTS documento VARCHAR(20);`).catch(()=>{});
