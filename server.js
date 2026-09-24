@@ -4260,6 +4260,18 @@ async function garantirTabelas(){
   }
 }
 
+// ─── ROTA TEMPORÁRIA DE VERIFICAÇÃO — só leitura, remover depois de usar ──────
+app.get('/admin/debug/verificar-portfolio', async(req,res)=>{
+  const email = req.query.email || 'daniellbfreitas@icloud.com';
+  const exemplar = await pool.query(`
+    SELECT o.codigo, e.id as exemplar_id, e.numero, e.status, e.cliente, e.cliente_email, e.arca_codigo
+    FROM almare_exemplares e JOIN almare_obras o ON o.id=e.obra_id
+    WHERE o.codigo=$1 AND e.numero=$2`, [req.query.codigo||'ALM-026', req.query.numero||1]);
+  const membro = await pool.query(`SELECT id, nome, email FROM circulo_membros WHERE LOWER(email)=LOWER($1)`,[email]);
+  const arca = exemplar.rows.length ? await pool.query(`SELECT * FROM arca_registros WHERE exemplar_id=$1`,[exemplar.rows[0].exemplar_id]) : {rows:[]};
+  res.json({ exemplar: exemplar.rows, membro_circulo: membro.rows, registro_arca: arca.rows });
+});
+
 const PORT=process.env.PORT||3000;
 app.listen(PORT,()=>{
   console.log(`Círculo ALMARE rodando na porta ${PORT}`);
