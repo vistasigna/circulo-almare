@@ -2151,6 +2151,18 @@ app.get('/simulador', authMembro, async(req,res)=>{
         document.getElementById('galeria-grid').innerHTML = html || '<p style="color:var(--muted);text-align:center;padding:40px;grid-column:1/-1;">Nenhuma obra encontrada.</p>';
       }
 
+      // Escolhe, dentro dos tamanhos disponíveis de uma obra, o mais parecido com um
+      // tamanho-alvo — usado tanto pra "trocar obra" quanto pra "incluir mais uma" numa
+      // composição, sempre tentando MANTER o tamanho que já estava, só mudando se a
+      // proporção da obra nova for incompatível (aí pega o mais próximo em largura).
+      function escolherTamanhoIgual(tamanhos, alvo){
+        if(!tamanhos || !tamanhos.length) return null;
+        if(!alvo) return tamanhos[0];
+        const exato = tamanhos.find(t => t.largura===alvo.largura && t.altura===alvo.altura);
+        if(exato) return exato;
+        return tamanhos.slice().sort((a,b)=>Math.abs(a.largura-alvo.largura)-Math.abs(b.largura-alvo.largura))[0];
+      }
+
       function escolherObra(id){
         const nova = GALERIA.obras.find(o=>o.id===id);
         if(!nova) return;
@@ -2160,17 +2172,24 @@ app.get('/simulador', authMembro, async(req,res)=>{
           _tamanhosDisponiveis: nova.tamanhos,
           _motivos: ['escolha do cliente']
         };
-        const tamanhoInicial = nova.tamanhos && nova.tamanhos.length ? nova.tamanhos[0] : null;
 
         if(GALERIA.modo === 'adicionar'){
           const i = GALERIA.alvo.i;
-          SIM.cards[i].pecas.push({ obra: objObra, tamanho: tamanhoInicial, moldura: (SIM.data.analise.moldura_recomendada || 'preta') });
+          // Mantém o mesmo tamanho das peças que já existem nessa composição (todas do
+          // mesmo tamanho é a regra) — se não houver nenhuma ainda, usa a menor opção.
+          const alvoTamanho = (SIM.cards[i].pecas[0] && SIM.cards[i].pecas[0].tamanho) || null;
+          const tamanhoEscolhido = escolherTamanhoIgual(nova.tamanhos, alvoTamanho);
+          SIM.cards[i].pecas.push({ obra: objObra, tamanho: tamanhoEscolhido, moldura: (SIM.data.analise.moldura_recomendada || 'preta') });
           fecharGaleria();
           montarCard(i);
         } else {
           const i = GALERIA.alvo.i, j = GALERIA.alvo.j;
+          // Mantém o tamanho que a peça JÁ TINHA antes da troca — só muda se a obra nova
+          // não tiver essa opção (proporção diferente), aí pega o mais próximo.
+          const tamanhoAntigo = SIM.cards[i].pecas[j].tamanho;
+          const tamanhoEscolhido = escolherTamanhoIgual(nova.tamanhos, tamanhoAntigo);
           SIM.cards[i].pecas[j].obra = objObra;
-          SIM.cards[i].pecas[j].tamanho = tamanhoInicial;
+          SIM.cards[i].pecas[j].tamanho = tamanhoEscolhido;
           fecharGaleria();
           montarCard(i);
         }
@@ -2218,36 +2237,51 @@ app.post('/simulador/analisar', authMembro, async(req,res)=>{
 
     const sugestoes = rankeadas.slice(0, 4);
 
-    // ── Composição (2 obras) ──
+    // ── Composição (2 obras, sempre do MESMO tamanho) ──
     // Regra 1: NUNCA duas obras horizontais lado a lado — fica desproporcional. Composição
     // só entra com obras verticais, quadradas, ou sem orientação cadastrada.
     // Regra 2: a largura TOTAL da composição (as duas obras + o vão de 8cm entre elas) nunca
-    // pode passar do mesmo alvo curatorial que uma obra sozinha usaria (55% da parede) — cada
-    // obra da dupla precisa de um tamanho MENOR do que teria se estivesse sozinha na parede.
+    // pode passar do mesmo alvo curatorial que uma obra sozinha usaria (55% da parede).
+    // Regra 3: as duas obras da composição usam exatamente o MESMO tamanho — nunca um
+    // tamanho por obra. Só obras do mesmo formato/proporção compartilham a mesma tabela
+    // oficial de tamanhos, então a busca é por par de obras de mesmo formato cuja
+    // interseção de tamanhos disponíveis tenha uma opção que caiba no alvo.
     const GAP_CM = 8;
     const paredeLnum = parseInt(parede_largura) || 0;
     const larguraAlvoComposicao = paredeLnum * 0.55;
     const alvoPorPeca = Math.max(20, (larguraAlvoComposicao - GAP_CM) / 2);
 
-    const candidatosComposicao = rankeadas.filter(o => {
+    const poolComposicao = rankeadas.filter(o => {
       const or = String(o.orientacao||'').toLowerCase();
       return !/horizontal|paisagem/.test(or);
-    }).slice(0, 2);
+    });
+    const porFormato = {};
+    poolComposicao.forEach(o => {
+      const key = String(o.formato_recomendado||'').trim() || '?';
+      (porFormato[key] = porFormato[key] || []).push(o);
+    });
 
     let composicao = [];
-    if(candidatosComposicao.length === 2){
-      composicao = candidatosComposicao.map(o => {
-        const opcoes = o._tamanhosDisponiveis.length ? o._tamanhosDisponiveis : (o._melhorTamanho ? [o._melhorTamanho] : []);
-        const tamanhoAjustado = opcoes.length
-          ? opcoes.slice().sort((a,b) => Math.abs(a.largura-alvoPorPeca) - Math.abs(b.largura-alvoPorPeca))[0]
-          : o._melhorTamanho;
-        return { ...o, _melhorTamanho: tamanhoAjustado };
-      });
-      // Confere que a soma real não estourou o alvo (com folga de 15%) — se estourou mesmo
-      // assim (obra sem tamanho pequeno o bastante disponível), desiste da composição pra
-      // não entregar uma bizarrice; o front usa uma 3ª sugestão solo no lugar.
-      const larguraTotalReal = composicao.reduce((s,o)=>s+o._melhorTamanho.largura, 0) + GAP_CM;
-      if(larguraTotalReal > larguraAlvoComposicao * 1.15) composicao = [];
+    let melhorScoreGrupo = -1;
+    for(const key in porFormato){
+      const grupo = porFormato[key];
+      if(grupo.length < 2) continue;
+      const [a1, a2] = grupo; // rankeadas já vem em ordem de score, então são as 2 melhores desse formato
+      const tamsA = a1._tamanhosDisponiveis || [];
+      const tamsB = a2._tamanhosDisponiveis || [];
+      const comuns = tamsA.filter(ta => tamsB.some(tb => tb.largura===ta.largura && tb.altura===ta.altura));
+      if(!comuns.length) continue;
+      const tamanhoEscolhido = comuns.slice().sort((x,y) => Math.abs(x.largura-alvoPorPeca) - Math.abs(y.largura-alvoPorPeca))[0];
+      const larguraTotalReal = tamanhoEscolhido.largura*2 + GAP_CM;
+      if(larguraTotalReal > larguraAlvoComposicao * 1.15) continue;
+      const scoreSoma = a1._score + a2._score;
+      if(scoreSoma > melhorScoreGrupo){
+        melhorScoreGrupo = scoreSoma;
+        composicao = [
+          { ...a1, _melhorTamanho: tamanhoEscolhido },
+          { ...a2, _melhorTamanho: tamanhoEscolhido }
+        ];
+      }
     }
 
     // Marca d'água genérica (uma só, o código muda visualmente por obra no front se quiser evoluir depois)
