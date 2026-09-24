@@ -282,6 +282,79 @@ async function sincronizarPedidoBlingSeguro(pedidoId){
   }
 }
 
+// ─── CERTIFICADO ARCA — emite automaticamente quando o pedido é pago ──────────
+// Replica exatamente a lógica do painel curatorial (mesmo banco compartilhado):
+// pega um exemplar "disponivel" da obra, marca como "vendido" com os dados do
+// cliente, e gera o registro ARCA (código + token de verificação) do mesmo jeito
+// que a emissão manual faz. Isso é o que faz a obra aparecer no Portfólio.
+async function gerarCodigoArcaCirculo(){
+  const ano = new Date().getFullYear();
+  const CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // sem 0/O/1/I, igual ao painel curatorial
+  for(let tentativa=0; tentativa<10; tentativa++){
+    let hash='';
+    for(let i=0;i<8;i++) hash += CHARS[crypto.randomInt(CHARS.length)];
+    const codigo = `ARCA-${ano}-${hash}`;
+    const existe = await pool.query('SELECT 1 FROM arca_registros WHERE codigo_arca=$1',[codigo]);
+    if(!existe.rows.length) return { codigo, ano };
+  }
+  throw new Error('Falha ao gerar código ARCA único após 10 tentativas.');
+}
+
+async function registrarExemplarArcaCirculo(exemplarId, obraId){
+  const ja = await pool.query('SELECT arca_codigo FROM almare_exemplares WHERE id=$1',[exemplarId]);
+  if(ja.rows[0]?.arca_codigo) return ja.rows[0].arca_codigo;
+
+  const { codigo, ano } = await gerarCodigoArcaCirculo();
+  const token = crypto.randomBytes(16).toString('hex');
+  await pool.query(
+    `INSERT INTO arca_registros (codigo_arca, sigla_colecao, obra_id, exemplar_id, ano, token_verificacao) VALUES ($1,'ALM',$2,$3,$4,$5)`,
+    [codigo, obraId, exemplarId, ano, token]
+  );
+  await pool.query('UPDATE almare_exemplares SET arca_codigo=$1 WHERE id=$2',[codigo, exemplarId]);
+  return codigo;
+}
+
+async function emitirCertificadosPedido(pedidoId){
+  try{
+    const pedidoRes = await pool.query(
+      `SELECT p.*, c.nome as cliente_nome, c.email as cliente_email
+       FROM circulo_pedidos p LEFT JOIN circulo_membros c ON c.id = p.cliente_membro_id
+       WHERE p.id=$1`, [pedidoId]
+    );
+    const pedido = pedidoRes.rows[0];
+    if(!pedido || !pedido.cliente_email) return;
+
+    const itensRes = await pool.query('SELECT * FROM circulo_pedido_itens WHERE pedido_id=$1',[pedidoId]);
+
+    for(const item of itensRes.rows){
+      // Já emitiu certificado pra este item? Nunca emite de novo.
+      const jaEmitiu = await pool.query(
+        `SELECT 1 FROM almare_exemplares WHERE obra_id=$1 AND status='vendido' AND observacao=$2 LIMIT 1`,
+        [item.obra_id, 'circulo-pedido-'+pedidoId+'-item-'+item.id]
+      );
+      if(jaEmitiu.rows.length) continue;
+
+      const disp = await pool.query(
+        `SELECT id FROM almare_exemplares WHERE obra_id=$1 AND status='disponivel' ORDER BY numero LIMIT 1`,
+        [item.obra_id]
+      );
+      if(!disp.rows.length){
+        console.error('Certificado pedido '+pedidoId+': sem exemplar disponível pra obra '+item.obra_id);
+        continue;
+      }
+      const exemplarId = disp.rows[0].id;
+
+      await pool.query(
+        `UPDATE almare_exemplares SET status='vendido', tamanho=$1, cliente=$2, cliente_email=$3, observacao=$4, data_venda=NOW() WHERE id=$5`,
+        [item.tamanho_label, pedido.cliente_nome, pedido.cliente_email, 'circulo-pedido-'+pedidoId+'-item-'+item.id, exemplarId]
+      );
+      await registrarExemplarArcaCirculo(exemplarId, item.obra_id);
+    }
+  }catch(e){
+    console.error('Emitir certificados pedido '+pedidoId+':', e.message);
+  }
+}
+
 
 // ─── IMPACTO — cashback pro Embaixador/Especificador quando o pedido é confirmado ──
 // Embaixador: 5% cashback. Especificador: 10% cashback. Um lançamento por obra vendida
@@ -2838,7 +2911,7 @@ async function pagarComCartao(pedidoId, dados, remoteIp){
   const novoStatus = (resultado.status==='CONFIRMED' || resultado.status==='RECEIVED') ? 'PAGO' : 'AGUARDANDO_PAGAMENTO';
   await pool.query(`UPDATE circulo_pedidos SET asaas_cliente_id=$1, asaas_cobranca_id=$2, status=$3 WHERE id=$4`,
     [asaasClienteId, resultado.id, novoStatus, p.id]);
-  if(novoStatus === 'PAGO'){ sincronizarPedidoBlingSeguro(p.id); concederBonusPedido(p.id); } // não bloqueia a resposta do pagamento
+  if(novoStatus === 'PAGO'){ sincronizarPedidoBlingSeguro(p.id); concederBonusPedido(p.id); emitirCertificadosPedido(p.id); } // não bloqueia a resposta do pagamento
   return { status: resultado.status, pago: novoStatus==='PAGO' };
 }
 
@@ -3320,6 +3393,7 @@ app.post('/webhook/asaas', async(req,res)=>{
           console.log(`Webhook Asaas: pedido ${pedidoId} marcado como PAGO (evento ${event})`);
           sincronizarPedidoBlingSeguro(pedidoId); // não bloqueia a resposta ao Asaas
           concederBonusPedido(pedidoId);
+          emitirCertificadosPedido(pedidoId);
         }
       }
     }
