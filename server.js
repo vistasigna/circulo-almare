@@ -451,16 +451,18 @@ function navBar(ativo, temImpacto=false, ehEspec=false) {
 }
 
 // Funções que o membro pode pedir no cadastro
+// Funções concedidas apenas pelo admin (Embaixador e Especificador geram cashback,
+// nunca ficam abertas pra autosserviço; Artista/Colaborador reservadas pro mesmo caminho).
 const FUNCOES_CADASTRO = [
-  {slug:'embaixador',nome:'Embaixador',desc:'Apresenta a ALMARE para outras pessoas.'},
-  {slug:'especificador',nome:'Especificador',desc:'Arquiteto ou designer que incorpora obras em projetos.'},
   {slug:'artista',nome:'Artista',desc:'Submete obras originais para o catálogo ALMARE.'},
   {slug:'colaborador',nome:'Colaborador',desc:'Contribui para o ecossistema ALMARE.'},
 ];
 
-// Todas as funções (incluindo curador — só admin atribui)
+// Todas as funções (Embaixador, Especificador, Curador, Guardião — só admin atribui)
 const TODAS_FUNCOES = [
   ...FUNCOES_CADASTRO,
+  {slug:'embaixador',nome:'Embaixador',desc:'Apresenta a ALMARE para outras pessoas.'},
+  {slug:'especificador',nome:'Especificador',desc:'Arquiteto ou designer que incorpora obras em projetos.'},
   {slug:'curador',nome:'Curador',desc:'Participa de decisões curatoriais.'},
   {slug:'guardiao',nome:'Guardião',desc:'Possui obra ou matriz especial da ALMARE.'},
 ];
@@ -627,18 +629,7 @@ app.get('/cadastro-passo2', (req,res) => {
           </div>
 
           <hr class="divider">
-          <h3 style="font-size:18px;margin-bottom:8px;">Como quer participar?</h3>
-          <p style="color:var(--muted);font-size:12px;margin-bottom:16px;">Você já entra como Membro. Marque se quiser solicitar funções adicionais.</p>
-          <div class="funcao-item fixo" style="margin-bottom:8px;">
-            <div class="chk" style="background:rgba(201,169,110,.2);border-color:var(--gold)">✓</div>
-            <div><div class="fn">Membro</div><div class="fd">Acesso ao Círculo. Automático para todos.</div></div>
-          </div>
-          ${FUNCOES_CADASTRO.map(f=>`
-          <div class="funcao-item" id="card-${f.slug}" onclick="toggle('${f.slug}')">
-            <div class="chk" id="chk-${f.slug}"></div>
-            <div><div class="fn">${f.nome}</div><div class="fd">${f.desc}</div></div>
-            <input type="checkbox" name="funcoes" value="${f.slug}" id="cb-${f.slug}" style="display:none">
-          </div>`).join('')}
+          <div class="msg-info">Você está entrando no Círculo como <strong>Membro</strong>. Funções adicionais (Embaixador, Especificador etc.) podem ser solicitadas depois em "Minhas Funções", ou concedidas pela ALMARE.</div>
 
           <hr class="divider">
           <h3 style="font-size:18px;margin-bottom:8px;">Criar senha</h3>
@@ -697,14 +688,6 @@ app.get('/cadastro-passo2', (req,res) => {
           document.getElementById('numero').focus();
         }catch{}
       }
-      function toggle(slug){
-        const cb=document.getElementById('cb-'+slug);
-        const card=document.getElementById('card-'+slug);
-        const chk=document.getElementById('chk-'+slug);
-        cb.checked=!cb.checked;
-        card.classList.toggle('sel',cb.checked);
-        chk.textContent=cb.checked?'✓':'';
-      }
     </script>
   `));
 });
@@ -719,9 +702,6 @@ app.post('/cadastro-passo2', async (req,res) => {
     const existe = await pool.query('SELECT id FROM circulo_membros WHERE email=$1',[email]);
     if (existe.rows.length) return res.redirect(`/cadastro-passo2?convite=${convite_id||''}&erro=Este+e-mail+já+está+cadastrado`);
   } catch {}
-
-  let funcoes = req.body.funcoes || [];
-  if (!Array.isArray(funcoes)) funcoes = [funcoes];
 
   try {
     // Cria ou atualiza no Bling
@@ -750,16 +730,9 @@ app.post('/cadastro-passo2', async (req,res) => {
     // Registra convite
     if (convite_id) await pool.query('UPDATE circulo_convites SET usos=usos+1 WHERE id=$1',[convite_id]);
 
-    // Funções extras ficam PENDENTES de aprovação
-    for (const slug of funcoes) {
-      const fr = await pool.query('SELECT id FROM circulo_funcoes WHERE slug=$1',[slug]);
-      if (fr.rows.length) {
-        await pool.query(
-          `INSERT INTO circulo_membro_funcoes (membro_id,funcao_id,ativo) VALUES ($1,$2,false) ON CONFLICT DO NOTHING`,
-          [mid, fr.rows[0].id]
-        );
-      }
-    }
+    // Membro entra direto, sem nenhuma função extra — só como Membro. Funções
+    // adicionais (Embaixador, Especificador etc.) agora só via "Minhas Funções"
+    // (autosserviço, quando aplicável) ou concedidas diretamente pelo admin.
 
     // Login automático
     const token = gerarToken({id:mid, nome, email});
@@ -4027,6 +4000,28 @@ app.get('/admin/membros/:id/editar', authAdmin, async(req,res)=>{
   const r = await pool.query('SELECT * FROM circulo_membros WHERE id=$1',[req.params.id]);
   if(!r.rows.length) return res.redirect('/admin');
   const m = r.rows[0];
+
+  const funcoesMembro = await pool.query(
+    `SELECT f.slug, mf.ativo FROM circulo_membro_funcoes mf JOIN circulo_funcoes f ON f.id=mf.funcao_id WHERE mf.membro_id=$1`,
+    [req.params.id]
+  );
+  const statusPorSlug = {};
+  funcoesMembro.rows.forEach(f=>{ statusPorSlug[f.slug] = f.ativo; });
+
+  const funcoesHtml = TODAS_FUNCOES.map(f=>{
+    const ativa = statusPorSlug[f.slug] === true;
+    return `
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:14px 0;border-bottom:1px solid var(--border);">
+        <div>
+          <div style="font-family:'Cormorant Garamond',serif;font-size:16px;">${esc(f.nome)}</div>
+          <div style="font-size:11px;color:var(--muted);">${esc(f.desc)}</div>
+        </div>
+        ${ativa
+          ? `<form method="POST" action="/admin/membros/${m.id}/funcoes/${f.slug}/remover"><button class="btn btn-outline" style="padding:6px 14px;font-size:10px;color:#e77;border-color:#e77;">Remover</button></form>`
+          : `<form method="POST" action="/admin/membros/${m.id}/funcoes/${f.slug}/conceder"><button class="btn btn-primary" style="padding:6px 14px;font-size:10px;">Conceder</button></form>`}
+      </div>`;
+  }).join('');
+
   res.send(html('Editar membro',`
     <div class="container-sm">
       <a href="/admin" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);display:inline-block;margin-bottom:24px;">← Voltar</a>
@@ -4034,6 +4029,11 @@ app.get('/admin/membros/:id/editar', authAdmin, async(req,res)=>{
       <p style="color:var(--muted);font-size:12px;margin-bottom:24px;">Como administrador, você pode alterar qualquer dado deste membro, inclusive a senha.</p>
       ${req.query.erro?`<div class="msg-erro">${esc(req.query.erro)}</div>`:''}
       ${req.query.ok?`<div class="msg-ok">Dados atualizados com sucesso.</div>`:''}
+      <div class="card" style="margin-bottom:20px;">
+        <h3 style="font-size:16px;margin-bottom:8px;">Funções</h3>
+        <p style="font-size:12px;color:var(--muted);margin-bottom:8px;">Conceda ou remova funções diretamente — inclusive Embaixador e Especificador, que não podem mais ser solicitadas pelo próprio membro.</p>
+        ${funcoesHtml}
+      </div>
       <div class="card">
         <form method="POST" action="/admin/membros/${m.id}/editar">
           <div class="field"><label>Nome</label><input name="nome" required value="${esc(m.nome)}"></div>
@@ -4068,6 +4068,27 @@ app.get('/admin/membros/:id/editar', authAdmin, async(req,res)=>{
       </div>
     </div>
   `));
+});
+
+app.post('/admin/membros/:id/funcoes/:slug/conceder', authAdmin, async(req,res)=>{
+  const fr = await pool.query('SELECT id FROM circulo_funcoes WHERE slug=$1',[req.params.slug]);
+  if(fr.rows.length){
+    const existe = await pool.query('SELECT id FROM circulo_membro_funcoes WHERE membro_id=$1 AND funcao_id=$2',[req.params.id, fr.rows[0].id]);
+    if(existe.rows.length){
+      await pool.query('UPDATE circulo_membro_funcoes SET ativo=true WHERE id=$1',[existe.rows[0].id]);
+    } else {
+      await pool.query('INSERT INTO circulo_membro_funcoes (membro_id,funcao_id,ativo) VALUES ($1,$2,true)',[req.params.id, fr.rows[0].id]);
+    }
+  }
+  res.redirect(`/admin/membros/${req.params.id}/editar`);
+});
+
+app.post('/admin/membros/:id/funcoes/:slug/remover', authAdmin, async(req,res)=>{
+  await pool.query(
+    `UPDATE circulo_membro_funcoes SET ativo=false WHERE membro_id=$1 AND funcao_id=(SELECT id FROM circulo_funcoes WHERE slug=$2)`,
+    [req.params.id, req.params.slug]
+  );
+  res.redirect(`/admin/membros/${req.params.id}/editar`);
 });
 
 app.post('/admin/membros/:id/editar', authAdmin, async(req,res)=>{
