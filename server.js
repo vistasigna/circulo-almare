@@ -1737,17 +1737,23 @@ app.get('/simulador', authMembro, async(req,res)=>{
         document.getElementById('resultado').innerHTML = '';
         SIM.data = data;
         const a = data.analise;
-        const sugestoes = (data.sugestoes || []).slice(0, 3);
+        // Monta 3 sugestões finais a partir de até 4 candidatas. A 2ª sugestão nasce
+        // obrigatoriamente como composição (2 obras) — não fica a critério da IA nem
+        // exige ação manual da pessoa. Cada sugestão guarda uma LISTA de peças.
+        const candidatas = (data.sugestoes || []).slice(0, 4);
+        const grupos = [
+          candidatas[0] ? [candidatas[0]] : [],
+          [candidatas[1], candidatas[2]].filter(Boolean),
+          candidatas[3] ? [candidatas[3]] : (candidatas[1] ? [candidatas[1]] : [])
+        ].filter(g => g.length);
 
-        // Cada sugestão agora guarda uma LISTA de peças (uma ou várias obras compondo a
-        // mesma parede/foto). Por padrão começa com 1 peça (a sugestão da curadoria).
-        SIM.cards = sugestoes.map((o,idx) => {
+        SIM.cards = grupos.map((grupo, idx) => {
           const restore = (data._cardsRestore && data._cardsRestore[idx]) ? data._cardsRestore[idx] : null;
           if(restore && restore.pecas && restore.pecas.length){
             return { pecas: restore.pecas };
           }
           return {
-            pecas: [{ obra:o, tamanho:o._melhorTamanho, moldura: a.moldura_recomendada || 'preta' }]
+            pecas: grupo.map(o => ({ obra:o, tamanho:o._melhorTamanho, moldura: a.moldura_recomendada || 'preta' }))
           };
         });
 
@@ -1836,11 +1842,23 @@ app.get('/simulador', authMembro, async(req,res)=>{
 
         let html = '<div class="card" style="margin-bottom:24px;">';
         const scoreRef = c.pecas[0] && c.pecas[0].obra ? c.pecas[0].obra._score : null;
-        html += '<div style="display:flex;gap:8px;align-items:center;margin-bottom:16px;"><span class="badge badge-gold">'+(i+1)+'ª sugestão</span>'+(scoreRef?'<span style="font-size:11px;color:var(--muted);">'+Math.round(scoreRef)+' pontos de compatibilidade</span>':'')+'</div>';
+        html += '<div style="display:flex;gap:8px;align-items:center;margin-bottom:16px;"><span class="badge badge-gold">'+(i+1)+'ª sugestão</span>'+(numPecas>1?'<span style="font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--gold);border:1px solid var(--gold);border-radius:20px;padding:3px 10px;">Composição</span>':'')+(scoreRef?'<span style="font-size:11px;color:var(--muted);">'+Math.round(scoreRef)+' pontos de compatibilidade</span>':'')+'</div>';
 
         // ── Uma única foto, com TODAS as peças desta composição sobrepostas ──
         html += '<div id="sim-container-'+i+'" style="position:relative;background:#0d0d0d;border-radius:4px;overflow:hidden;margin-bottom:12px;line-height:0;">';
         html += '<img src="'+data.foto_local+'" style="width:100%;display:block;" draggable="false" onload="recalcularMolduraCard('+i+')">';
+
+        // Layout em BLOCO: as peças ficam coladas umas nas outras (vão real fixo de 8cm,
+        // nunca espalhadas pela largura toda da parede) — e é o bloco inteiro que fica
+        // centralizado no espaço disponível. Precisa saber a largura de todas as peças
+        // ANTES do loop, pra calcular onde o bloco começa.
+        const GAP_CM = 8;
+        const pctPorCm = larguraRealParede ? (bx.width_pct / larguraRealParede) : 0;
+        let larguraBlocoCm = 0;
+        c.pecas.forEach(p=>{ larguraBlocoCm += (p.tamanho ? p.tamanho.largura : larguraRealParede*0.4); });
+        larguraBlocoCm += GAP_CM * Math.max(0, numPecas-1);
+        const larguraBlocoPct = larguraBlocoCm * pctPorCm;
+        let cursorEsquerdaPct = centroXpadrao - larguraBlocoPct/2;
 
         c.pecas.forEach((p,j)=>{
           const t = p.tamanho;
@@ -1850,7 +1868,11 @@ app.get('/simulador', authMembro, async(req,res)=>{
           const molduraCor = coresMoldura[p.moldura] || '#1a1a1a';
           let posX, posY;
           if(typeof p.posX === 'number'){ posX = p.posX; posY = p.posY; }
-          else if(numPecas>1){ posX = bx.left_pct + bx.width_pct*(j+1)/(numPecas+1); posY = centroYpadrao; }
+          else if(numPecas>1){
+            posX = cursorEsquerdaPct + larguraNaFoto/2;
+            posY = centroYpadrao;
+            cursorEsquerdaPct += larguraNaFoto + GAP_CM*pctPorCm;
+          }
           else { posX = centroXpadrao; posY = centroYpadrao; }
 
           html += '<div id="quadro-wrap-'+i+'-'+j+'" style="position:absolute;top:'+posY+'%;left:'+posX+'%;transform:translate(-50%,-50%);width:'+larguraFinal+'%;aspect-ratio:'+(t?t.largura:1)+'/'+(t?t.altura:1)+';'+(c.ajustando?'cursor:move;box-shadow:0 0 0 2px var(--gold);z-index:10;':'z-index:2;')+'">';
@@ -2172,7 +2194,9 @@ app.post('/simulador/analisar', authMembro, async(req,res)=>{
              formato_recomendado, orientacao, imagem_preview
       FROM almare_obras WHERE status='aprovada' AND codigo <> 'ALM-001'`);
 
-    const sugestoes = rankearObras(obras.rows, analise, dados).slice(0, 3);
+    // Manda 4 candidatas (não 3): uma das sugestões finais é uma composição de 2 obras,
+    // então precisa de uma obra extra além das 3 que aparecem "sozinhas".
+    const sugestoes = rankearObras(obras.rows, analise, dados).slice(0, 4);
 
     if(!sugestoes.length) return res.json({ erro:'Nenhuma obra do catálogo é compatível com essas medidas. Tente uma parede maior.' });
 
