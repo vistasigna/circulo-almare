@@ -957,7 +957,7 @@ app.get('/portfolio', authMembro, async(req,res)=>{
     FROM almare_exemplares e
     JOIN almare_obras o ON o.id = e.obra_id
     JOIN arca_registros reg ON reg.exemplar_id = e.id
-    WHERE LOWER(e.cliente_email) = LOWER($1)
+    WHERE LOWER(e.cliente_email) = LOWER($1) AND e.status = 'vendido'
     ORDER BY e.data_venda DESC NULLS LAST, e.created_at DESC`, [req.membro.email]);
 
   const pecas = r.rows.map(p=>{
@@ -4238,19 +4238,6 @@ async function garantirTabelas(){
     console.error('garantirTabelas erro:', e.message);
   }
 }
-
-// ─── ROTA TEMPORÁRIA DE DIAGNÓSTICO — remover depois de usar ──────────────────
-app.get('/admin/debug/status-exemplares', async(req,res)=>{
-  if(req.query.distinct){
-    const r = await pool.query('SELECT status, COUNT(*) as qtd FROM almare_exemplares GROUP BY status ORDER BY qtd DESC');
-    return res.json({ status_com_contagem: r.rows });
-  }
-  const r = await pool.query(`
-    SELECT o.codigo, e.numero, e.status, e.cliente_email, e.observacao, e.data_venda
-    FROM almare_exemplares e JOIN almare_obras o ON o.id=e.obra_id
-    WHERE o.codigo=$1 ORDER BY e.numero`, [req.query.codigo||'ALM-084']);
-  res.json({ exemplares: r.rows });
-});
 
 const PORT=process.env.PORT||3000;
 app.listen(PORT,()=>{
