@@ -4269,7 +4269,19 @@ app.get('/admin/debug/verificar-portfolio', async(req,res)=>{
     WHERE o.codigo=$1 AND e.numero=$2`, [req.query.codigo||'ALM-026', req.query.numero||1]);
   const membro = await pool.query(`SELECT id, nome, email FROM circulo_membros WHERE LOWER(email)=LOWER($1)`,[email]);
   const arca = exemplar.rows.length ? await pool.query(`SELECT * FROM arca_registros WHERE exemplar_id=$1`,[exemplar.rows[0].exemplar_id]) : {rows:[]};
-  res.json({ exemplar: exemplar.rows, membro_circulo: membro.rows, registro_arca: arca.rows });
+
+  // Roda a query EXATA da rota /portfolio, com o e-mail informado
+  const portfolioReal = await pool.query(`
+    SELECT e.id as exemplar_id, e.numero, e.tamanho, e.tecnica_impressao, e.data_venda, e.arca_codigo,
+           o.id as obra_id, o.codigo, o.nome, o.colecao, o.imagem_preview, o.tiragem_total, o.essencia,
+           reg.codigo_arca, reg.token_verificacao, reg.ano
+    FROM almare_exemplares e
+    JOIN almare_obras o ON o.id = e.obra_id
+    JOIN arca_registros reg ON reg.exemplar_id = e.id
+    WHERE LOWER(e.cliente_email) = LOWER($1) AND e.status = 'vendido'
+    ORDER BY e.data_venda DESC NULLS LAST, e.created_at DESC`, [email]);
+
+  res.json({ exemplar: exemplar.rows, membro_circulo: membro.rows, registro_arca: arca.rows, resultado_query_portfolio: portfolioReal.rows });
 });
 
 const PORT=process.env.PORT||3000;
