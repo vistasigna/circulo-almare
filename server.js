@@ -4240,9 +4240,9 @@ async function garantirTabelas(){
 }
 
 // ─── ROTA TEMPORÁRIA DE DIAGNÓSTICO — remover depois de usar ──────────────────
-app.get('/admin/debug/status-exemplares', authAdmin, async(req,res)=>{
-  const r = await pool.query('SELECT DISTINCT status FROM almare_exemplares');
-  res.json({ status_distintos: r.rows.map(row=>row.status) });
+app.get('/admin/debug/status-exemplares', async(req,res)=>{
+  const r = await pool.query('SELECT o.codigo, e.numero, e.status, e.cliente_email FROM almare_exemplares e JOIN almare_obras o ON o.id=e.obra_id ORDER BY e.id DESC LIMIT 30');
+  res.json({ ultimos_exemplares: r.rows });
 });
 
 const PORT=process.env.PORT||3000;
