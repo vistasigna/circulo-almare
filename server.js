@@ -4239,6 +4239,12 @@ async function garantirTabelas(){
   }
 }
 
+// ─── ROTA TEMPORÁRIA DE DIAGNÓSTICO — remover depois de usar ──────────────────
+app.get('/admin/debug/status-exemplares', authAdmin, async(req,res)=>{
+  const r = await pool.query('SELECT DISTINCT status FROM almare_exemplares');
+  res.json({ status_distintos: r.rows.map(row=>row.status) });
+});
+
 const PORT=process.env.PORT||3000;
 app.listen(PORT,()=>{
   console.log(`Círculo ALMARE rodando na porta ${PORT}`);
