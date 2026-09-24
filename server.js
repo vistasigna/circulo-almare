@@ -1271,6 +1271,9 @@ async function analisarAmbiente(fotoLocalBase64, fotosAmbienteBase64, dados){
 
 A PRIMEIRA imagem é a foto exata do local/parede onde o quadro vai ficar — é nela que você deve identificar a área da parede disponível. As imagens seguintes (se houver) são fotos adicionais do ambiente só para entender o estilo geral, não para posicionamento.
 
+O cliente informou que o tipo de ambiente é: ${dados.finalidade || 'não especificado'}. Leve isso em conta na leitura do caráter do espaço — um lavabo, um corredor ou um quarto pedem uma curadoria diferente de uma sala de estar ou uma recepção corporativa, tanto em escala quanto em tom.
+${dados.observacao ? `\nO cliente deixou esta observação adicional, que deve pesar na sua análise e recomendação: "${dados.observacao}"` : ''}
+
 IMPORTANTE: o cliente foi instruído a fotografar a parede mostrando seus 4 limites reais — teto, chão, lateral esquerda e lateral direita, sem cortar nenhum. Ou seja, você pode assumir que as bordas da PRIMEIRA foto correspondem aproximadamente aos limites reais da parede informada (${dados.parede_largura}cm de largura × ${dados.parede_altura}cm de altura). Se a foto claramente NÃO seguir essa instrução (por exemplo, mostrando só um pedaço da parede, ou mostrando muito mais do ambiente do que só a parede), sinalize isso em "aviso_precisao".
 
 Na primeira imagem, procure objetos de referência de tamanho real conhecido para calibrar a escala: porta padrão (altura aproximadamente 210cm), interruptor de luz (aproximadamente 110cm do chão), tomada (aproximadamente 30cm do chão), rodapé, altura de sofá (aproximadamente 85cm), pé-direito padrão (aproximadamente 270-300cm). Use o que estiver visível.
@@ -1287,13 +1290,15 @@ Retorne SOMENTE um JSON válido, sem texto antes ou depois, com esta estrutura e
   "cor_parede": "cor da parede onde iria a obra",
   "moldura_recomendada": "preta | carvalho | aco_escovado",
   "justificativa_moldura": "1 frase curta sobre por que essa moldura combina com o ambiente",
-  "justificativa_ambiente": "2 frases sobre o caráter visual do ambiente",
+  "justificativa_ambiente": "2 frases sobre o caráter visual do ambiente, considerando o tipo de ambiente informado",
   "moveis_identificados": "liste rapidamente os móveis/objetos visíveis na parede ou na frente dela (ex: sofá baixo à esquerda, luminária de chão à direita)",
   "parede_bbox": { "top_pct": 0, "left_pct": 0, "width_pct": 0, "height_pct": 0 },
   "parede_bbox_largura_cm": 0,
   "referencia_usada": "qual objeto real você usou para calibrar a escala",
   "aviso_precisao": "aviso curto se a proporção parecer inconsistente com o que o cliente informou, ou null se estiver coerente"
 }
+
+Sobre "recomendacao_composicao" — LEIA COM ATENÇÃO: "composicao_multipla" não significa necessariamente várias obras iguais ou de uma mesma série. A curadoria contemporânea usa com frequência conjuntos de 2 ou 3 obras DIFERENTES entre si — de coleções distintas, com temas e até paletas levemente desencontradas propositalmente — dispostas juntas na mesma parede, criando uma composição eclética e autoral, não um conjunto simétrico e combinando. Considere "composicao_multipla" sempre que a parede for grande o bastante para isso (tipicamente acima de 200cm de largura) e o ambiente pedir personalidade — não reserve essa opção só para paredes enormes ou só para quando as obras "combinam" perfeitamente. Prefira "obra_unica_protagonista" apenas quando o ambiente realmente pedir um único ponto focal forte (ex: hall de entrada, recepção, espaço mais formal) ou quando a parede for pequena demais para uma composição.
 
 Sobre "parede_bbox_largura_cm": este é o campo MAIS IMPORTANTE para a simulação ficar correta. É a largura REAL em centímetros da área de parede que você marcou em "parede_bbox", calculada usando os objetos de referência que você identificou na foto — NÃO copie o número que o cliente informou, calcule você mesmo pela imagem. Se a porta na foto mede visualmente cerca de 1/3 da largura da parede disponível, e porta padrão tem 80-90cm, então a parede tem por volta de 240-270cm — é esse tipo de cálculo que você deve fazer. Seja o mais preciso possível, porque um erro aqui faz o quadro aparecer do tamanho errado na simulação.
 
@@ -1529,14 +1534,24 @@ app.get('/simulador', authMembro, async(req,res)=>{
       <div class="card" style="margin-bottom:20px;">
         <h3 style="font-size:18px;margin-bottom:8px;color:var(--gold);">Foto do local exato</h3>
         <p style="font-size:12px;color:var(--muted);margin-bottom:16px;">A foto da parede onde o quadro vai ficar. <strong style="color:var(--gold);">Importante:</strong> enquadre a parede inteira mostrando os 4 limites — teto, chão, lateral esquerda e lateral direita — sem cortar nenhum deles. Isso é essencial para o cálculo de escala ficar correto.</p>
-        <input type="file" id="foto-local" accept="image/*" required onchange="previewFotoLocal()" style="width:100%;background:#0d0d0d;border:1px solid var(--border);color:var(--text);padding:12px;border-radius:3px;font-size:13px;">
+        <div style="display:flex;gap:10px;">
+          <button type="button" class="btn btn-outline" style="flex:1;" onclick="document.getElementById('foto-local-camera').click()">📷 Tirar foto agora</button>
+          <button type="button" class="btn btn-outline" style="flex:1;" onclick="document.getElementById('foto-local-arquivo').click()">📁 Escolher arquivo</button>
+        </div>
+        <input type="file" id="foto-local-camera" accept="image/*" capture="environment" onchange="previewFotoLocal(this)" style="display:none;">
+        <input type="file" id="foto-local-arquivo" accept="image/*" onchange="previewFotoLocal(this)" style="display:none;">
         <div id="preview-local" style="margin-top:16px;"></div>
       </div>
 
       <div class="card" style="margin-bottom:20px;">
         <h3 style="font-size:18px;margin-bottom:8px;color:var(--gold);">Outras fotos do ambiente <span style="color:var(--muted);font-weight:400;">(opcional)</span></h3>
         <p style="font-size:12px;color:var(--muted);margin-bottom:16px;">Fotos adicionais do cômodo ajudam a IA a entender o estilo geral — não são usadas na simulação, só na leitura.</p>
-        <input type="file" id="fotos-ambiente" accept="image/*" multiple onchange="previewFotosAmbiente()" style="width:100%;background:#0d0d0d;border:1px solid var(--border);color:var(--text);padding:12px;border-radius:3px;font-size:13px;">
+        <div style="display:flex;gap:10px;">
+          <button type="button" class="btn btn-outline" style="flex:1;" onclick="document.getElementById('fotos-ambiente-camera').click()">📷 Tirar foto agora</button>
+          <button type="button" class="btn btn-outline" style="flex:1;" onclick="document.getElementById('fotos-ambiente-arquivo').click()">📁 Escolher arquivos</button>
+        </div>
+        <input type="file" id="fotos-ambiente-camera" accept="image/*" capture="environment" onchange="previewFotosAmbiente(this)" style="display:none;">
+        <input type="file" id="fotos-ambiente-arquivo" accept="image/*" multiple onchange="previewFotosAmbiente(this)" style="display:none;">
         <div id="preview-ambiente" style="display:flex;gap:10px;flex-wrap:wrap;margin-top:16px;"></div>
       </div>
 
@@ -1551,12 +1566,23 @@ app.get('/simulador', authMembro, async(req,res)=>{
       <div class="card" style="margin-bottom:20px;">
         <h3 style="font-size:18px;margin-bottom:20px;color:var(--gold);">Sobre o espaço</h3>
         <div class="grid-2">
-          <div class="field"><label>Finalidade *</label>
+          <div class="field"><label>Tipo de ambiente *</label>
             <select id="finalidade" required>
-              <option value="Residencial">Residencial</option>
-              <option value="Corporativo">Corporativo</option>
-              <option value="Hotelaria">Hotelaria</option>
-              <option value="Comercial">Comercial</option>
+              <option value="Sala de estar">Sala de estar</option>
+              <option value="Sala de jantar">Sala de jantar</option>
+              <option value="Quarto">Quarto</option>
+              <option value="Cozinha">Cozinha</option>
+              <option value="Lavabo">Lavabo</option>
+              <option value="Corredor / hall">Corredor / hall</option>
+              <option value="Home office">Home office</option>
+              <option value="Escritório corporativo">Escritório corporativo</option>
+              <option value="Recepção">Recepção</option>
+              <option value="Sala de reuniões">Sala de reuniões</option>
+              <option value="Varanda">Varanda</option>
+              <option value="Closet">Closet</option>
+              <option value="Quarto de hóspedes">Quarto de hóspedes</option>
+              <option value="Suíte de hotel">Suíte de hotel</option>
+              <option value="Outro">Outro</option>
             </select>
           </div>
           <div class="field"><label>A obra deve ser... *</label>
@@ -1574,6 +1600,9 @@ app.get('/simulador', authMembro, async(req,res)=>{
             <option value="neutro">Neutros</option>
             <option value="monocromatico">Monocromático (P&B)</option>
           </select>
+        </div>
+        <div class="field"><label>Observação <span style="color:var(--muted)">(opcional)</span></label>
+          <textarea id="observacao" rows="3" placeholder="Alguma informação que ajude na seleção — ex: 'ambiente de leitura, gosto de texturas', 'quero algo que converse com o quadro azul que já tenho na sala ao lado', 'prefiro um conjunto de 2 ou 3 obras pequenas em vez de uma só grande'..." style="width:100%;background:#0d0d0d;border:1px solid var(--border);color:var(--text);padding:12px 14px;border-radius:3px;font-size:14px;font-family:'Inter',sans-serif;resize:vertical;"></textarea>
         </div>
       </div>
 
@@ -1608,8 +1637,7 @@ app.get('/simulador', authMembro, async(req,res)=>{
       let fotoLocalBase64 = null;
       let fotosAmbienteBase64 = [];
 
-      function previewFotoLocal(){
-        const input = document.getElementById('foto-local');
+      function previewFotoLocal(input){
         const file = input.files[0];
         if(!file) return;
         const reader = new FileReader();
@@ -1620,8 +1648,7 @@ app.get('/simulador', authMembro, async(req,res)=>{
         reader.readAsDataURL(file);
       }
 
-      function previewFotosAmbiente(){
-        const input = document.getElementById('fotos-ambiente');
+      function previewFotosAmbiente(input){
         const files = Array.from(input.files).slice(0,3);
         fotosAmbienteBase64 = [];
         const cont = document.getElementById('preview-ambiente');
@@ -1654,7 +1681,8 @@ app.get('/simulador', authMembro, async(req,res)=>{
           parede_altura: document.getElementById('parede_altura').value,
           finalidade: document.getElementById('finalidade').value,
           destaque: document.getElementById('destaque').value,
-          pref_paleta: document.getElementById('pref_paleta').value
+          pref_paleta: document.getElementById('pref_paleta').value,
+          observacao: document.getElementById('observacao').value
         };
 
         try{
@@ -2130,11 +2158,11 @@ app.get('/simulador', authMembro, async(req,res)=>{
 // POST — processa a análise
 app.post('/simulador/analisar', authMembro, async(req,res)=>{
   try{
-    const { foto_local, fotos_ambiente, parede_largura, parede_altura, finalidade, destaque, pref_paleta } = req.body;
+    const { foto_local, fotos_ambiente, parede_largura, parede_altura, finalidade, destaque, pref_paleta, observacao } = req.body;
     if(!foto_local) return res.json({ erro:'Nenhuma foto do local recebida.' });
     if(!ANTHROPIC_API_KEY) return res.json({ erro:'API de análise não configurada. Adicione ANTHROPIC_API_KEY nas variáveis do Railway.' });
 
-    const dados = { parede_largura, parede_altura, finalidade, destaque, pref_paleta };
+    const dados = { parede_largura, parede_altura, finalidade, destaque, pref_paleta, observacao };
 
     const analise = await analisarAmbiente(foto_local, fotos_ambiente||[], dados);
 
