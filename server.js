@@ -4148,6 +4148,33 @@ app.post('/admin/sugestoes/:id/responder',authAdmin,async(req,res)=>{
 // ─── GARANTE ESTRUTURA DO BANCO (cria o que faltar ao iniciar, nunca apaga nada) ──────────
 async function garantirTabelas(){
   try{
+    // Corrige a view circulo_resumo_membro: "obras que encontraram um lar" tem que
+    // contar da fonte de verdade única (almare_exemplares.status='vendido'), a mesma
+    // que o painel curatorial usa — não do lançamento de cashback (que é outra coisa
+    // e usava um status que nunca é gravado, ficando sempre zerado).
+    await pool.query(`
+      CREATE OR REPLACE VIEW circulo_resumo_membro AS
+      SELECT m.id,
+          m.nome,
+          m.email,
+          m.codigo_membro,
+          m.profissao,
+          m.status,
+          m.membro_desde,
+          count(DISTINCT mf.funcao_id) AS total_funcoes,
+          COALESCE(sc.saldo_disponivel, 0::numeric) AS credito_disponivel,
+          COALESCE(sc.saldo_total, 0::numeric) AS credito_total_acumulado,
+          ( SELECT count(*) FROM circulo_convites c WHERE c.membro_id = m.id AND c.ativo = true) AS convites_ativos,
+          ( SELECT COALESCE(sum(c.usos), 0::bigint) FROM circulo_convites c WHERE c.membro_id = m.id) AS total_indicacoes,
+          ( SELECT count(*) FROM almare_exemplares e WHERE LOWER(e.cliente_email) = LOWER(m.email) AND e.status = 'vendido') AS obras_que_encontraram_lar,
+          ( SELECT count(*) FROM circulo_sugestoes s WHERE s.membro_id = m.id) AS total_sugestoes,
+          ( SELECT count(*) FROM circulo_sugestoes s WHERE s.membro_id = m.id AND s.status::text = 'incorporada'::text) AS sugestoes_incorporadas
+      FROM circulo_membros m
+      LEFT JOIN circulo_membro_funcoes mf ON mf.membro_id = m.id AND mf.ativo = true
+      LEFT JOIN circulo_saldo_credito sc ON sc.membro_id = m.id
+      GROUP BY m.id, m.nome, m.email, m.codigo_membro, m.profissao, m.status, m.membro_desde, sc.saldo_disponivel, sc.saldo_total;
+    `).catch(e=>console.error('Corrigir view circulo_resumo_membro:', e.message));
+
     // Conexao Bling PROPRIA do Circulo — isolada de qualquer outro sistema (nunca compartilha tabela/token com o ALMARE)
     await pool.query(`
       CREATE TABLE IF NOT EXISTS circulo_bling_config (
@@ -4259,12 +4286,6 @@ async function garantirTabelas(){
     console.error('garantirTabelas erro:', e.message);
   }
 }
-
-app.get('/admin/debug/view-resumo', async(req,res)=>{
-  const def = await pool.query(`SELECT pg_get_viewdef('circulo_resumo_membro', true) as def`).catch(e=>({rows:[{def:'ERRO: '+e.message}]}));
-  const daniel = await pool.query(`SELECT * FROM circulo_resumo_membro WHERE email=$1`,[req.query.email||'daniellbfreitas@icloud.com']).catch(e=>({rows:[{erro:e.message}]}));
-  res.json({ definicao_view: def.rows[0], linha_daniel: daniel.rows[0] || null });
-});
 
 const PORT=process.env.PORT||3000;
 app.listen(PORT,()=>{
