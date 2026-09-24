@@ -447,8 +447,7 @@ function navBar(ativo, temImpacto=false, ehEspec=false) {
     { key: 'convidar', href: '/meu-convite', label: 'Convidar' },
   ];
   const item = l => `<a href="${l.href}" class="nav-link${ativo===l.key?' ativo':''}">${l.label}</a>`;
-  const funcoesDestaque = `<a href="/minhas-funcoes" class="nav-link nav-link-destaque${ativo==='funcoes'?' ativo':''}">Funções</a>`;
-  return `<div class="nav-bar">${base.map(item).join('')}${especLink.map(item).join('')}${impacto.map(item).join('')}${fim.map(item).join('')}${funcoesDestaque}</div>`;
+  return `<div class="nav-bar">${base.map(item).join('')}${especLink.map(item).join('')}${impacto.map(item).join('')}${fim.map(item).join('')}</div>`;
 }
 
 // Funções que o membro pode pedir no cadastro
