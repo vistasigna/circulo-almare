@@ -1409,6 +1409,8 @@ function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,
 function gerarCodigo(){ return crypto.randomBytes(5).toString('hex'); }
 // Só Embaixador ou Especificador (ativos) podem gerar link de indicação de obra
 async function podeIndicarObra(membroId){
+  // Indicar uma obra específica (link rastreado, pode gerar comissão) é ação de
+  // Embaixador ou Especificador. Membro comum não indica — só compartilha (sem rastreio/comissão).
   const r = await pool.query(
     `SELECT 1 FROM circulo_membro_funcoes mf JOIN circulo_funcoes f ON f.id=mf.funcao_id
      WHERE mf.membro_id=$1 AND mf.ativo=true AND f.slug IN ('embaixador','especificador') LIMIT 1`,
@@ -3903,6 +3905,7 @@ app.get('/catalogo',authMembro,async(req,res)=>{
       </div>
 
       <script>
+        const PODE_INDICAR = ${isEspecificador || isEmbaixador};
         function filtrar(){
           const busca=document.getElementById('busca').value.toLowerCase();
           const colecao=document.getElementById('filtroColecao').value;
@@ -3945,11 +3948,27 @@ app.get('/catalogo',authMembro,async(req,res)=>{
           html+=\`<div style="font-size:10px;letter-spacing:.25em;text-transform:uppercase;color:var(--muted);margin-bottom:6px;">\${colecao}</div>\`;
           html+=\`<h2 style="font-family:'Cormorant Garamond',serif;font-size:28px;font-weight:400;margin-bottom:24px;">\${nome}</h2>\`;
           html+=\`<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 32px;">\${src.innerHTML}</div>\`;
-          html+=\`<a href="/obra/\${id}/link" class="btn btn-outline btn-full" style="margin-top:24px;">Indicar esta obra</a>\`;
+          if(PODE_INDICAR){
+            html+=\`<a href="/obra/\${id}/link" class="btn btn-outline btn-full" style="margin-top:24px;">Indicar esta obra</a>\`;
+          } else {
+            html+=\`<button type="button" onclick="compartilharObra('\${nome.replace(/'/g,"\\\\'")}')" class="btn btn-outline btn-full" style="margin-top:24px;">Compartilhar</button>\`;
+          }
           html+=\`<a href="/obra/\${id}/comprar" class="btn btn-primary btn-full" style="margin-top:10px;">Adicionar ao carrinho</a>\`;
           document.getElementById('modal-body').innerHTML=html;
           document.getElementById('modal').style.display='block';
           document.body.style.overflow='hidden';
+        }
+
+        // Compartilhamento simples pra membro comum — sem rastreio, sem comissão
+        function compartilharObra(nomeObra){
+          const texto = 'Conheça "'+nomeObra+'", uma obra do catálogo ALMARE.';
+          const link = window.location.origin+'/convite';
+          if(navigator.share){
+            navigator.share({ title:'ALMARE', text:texto, url:link }).catch(()=>{});
+          } else {
+            navigator.clipboard.writeText(texto+' '+link);
+            alert('Link copiado! Cole onde quiser compartilhar.');
+          }
         }
 
         function trocarMolduraModal(cor, btn){
