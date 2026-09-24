@@ -1737,15 +1737,24 @@ app.get('/simulador', authMembro, async(req,res)=>{
         document.getElementById('resultado').innerHTML = '';
         SIM.data = data;
         const a = data.analise;
-        // Monta 3 sugestões finais a partir de até 4 candidatas. A 2ª sugestão nasce
-        // obrigatoriamente como composição (2 obras) — não fica a critério da IA nem
-        // exige ação manual da pessoa. Cada sugestão guarda uma LISTA de peças.
-        const candidatas = (data.sugestoes || []).slice(0, 4);
-        const grupos = [
-          candidatas[0] ? [candidatas[0]] : [],
-          [candidatas[1], candidatas[2]].filter(Boolean),
-          candidatas[3] ? [candidatas[3]] : (candidatas[1] ? [candidatas[1]] : [])
-        ].filter(g => g.length);
+        // Monta as sugestões finais: o servidor já manda "sugestoes" (obras solo,
+        // rankeadas) e "composicao" (0 ou 2 obras já com orientação e tamanho corretos
+        // pra formar um par — nunca duas horizontais, nunca estourando a largura da
+        // parede). Se não existir par elegível pra composição, cai pra 3 sugestões solo.
+        const solo = (data.sugestoes || []).slice(0, 4);
+        const composicao = (data.composicao || []).length === 2 ? data.composicao : null;
+
+        let grupos;
+        if(composicao){
+          grupos = [
+            solo[0] ? [solo[0]] : [],
+            composicao,
+            solo[1] ? [solo[1]] : (solo[2] ? [solo[2]] : [])
+          ];
+        } else {
+          grupos = [solo[0] ? [solo[0]] : [], solo[1] ? [solo[1]] : [], solo[2] ? [solo[2]] : []];
+        }
+        grupos = grupos.filter(g => g.length);
 
         SIM.cards = grupos.map((grupo, idx) => {
           const restore = (data._cardsRestore && data._cardsRestore[idx]) ? data._cardsRestore[idx] : null;
@@ -2194,25 +2203,58 @@ app.post('/simulador/analisar', authMembro, async(req,res)=>{
              formato_recomendado, orientacao, imagem_preview
       FROM almare_obras WHERE status='aprovada' AND codigo <> 'ALM-001'`);
 
-    // Manda 4 candidatas (não 3): uma das sugestões finais é uma composição de 2 obras,
-    // então precisa de uma obra extra além das 3 que aparecem "sozinhas".
-    const sugestoes = rankearObras(obras.rows, analise, dados).slice(0, 4);
+    // Rankeia TODAS as candidatas válidas de uma vez — precisamos da lista inteira tanto
+    // pras sugestões "sozinhas" quanto pra escolher o par da composição.
+    const rankeadas = rankearObras(obras.rows, analise, dados).filter(o => o._score > -999);
+    if(!rankeadas.length) return res.json({ erro:'Nenhuma obra do catálogo é compatível com essas medidas. Tente uma parede maior.' });
 
-    if(!sugestoes.length) return res.json({ erro:'Nenhuma obra do catálogo é compatível com essas medidas. Tente uma parede maior.' });
+    // Anota os tamanhos disponíveis em todas (não só nas 4 que viram sugestão solo) —
+    // a composição pode escolher uma obra fora do top 4.
+    for(const o of rankeadas){
+      o._tamanhosDisponiveis = (o._tamanhosCabem && o._tamanhosCabem.length)
+        ? o._tamanhosCabem
+        : (o._melhorTamanho ? [o._melhorTamanho] : []);
+    }
 
-    // Anexa a cada sugestão os tamanhos disponíveis para o dropdown. Usa _tamanhosCabem, que já foi
-    // filtrado no ranking por orientação real E limite físico (altura e largura da parede).
-    for(const s of sugestoes){
-      s._tamanhosDisponiveis = (s._tamanhosCabem && s._tamanhosCabem.length)
-        ? s._tamanhosCabem
-        : (s._melhorTamanho ? [s._melhorTamanho] : []);
+    const sugestoes = rankeadas.slice(0, 4);
+
+    // ── Composição (2 obras) ──
+    // Regra 1: NUNCA duas obras horizontais lado a lado — fica desproporcional. Composição
+    // só entra com obras verticais, quadradas, ou sem orientação cadastrada.
+    // Regra 2: a largura TOTAL da composição (as duas obras + o vão de 8cm entre elas) nunca
+    // pode passar do mesmo alvo curatorial que uma obra sozinha usaria (55% da parede) — cada
+    // obra da dupla precisa de um tamanho MENOR do que teria se estivesse sozinha na parede.
+    const GAP_CM = 8;
+    const paredeLnum = parseInt(parede_largura) || 0;
+    const larguraAlvoComposicao = paredeLnum * 0.55;
+    const alvoPorPeca = Math.max(20, (larguraAlvoComposicao - GAP_CM) / 2);
+
+    const candidatosComposicao = rankeadas.filter(o => {
+      const or = String(o.orientacao||'').toLowerCase();
+      return !/horizontal|paisagem/.test(or);
+    }).slice(0, 2);
+
+    let composicao = [];
+    if(candidatosComposicao.length === 2){
+      composicao = candidatosComposicao.map(o => {
+        const opcoes = o._tamanhosDisponiveis.length ? o._tamanhosDisponiveis : (o._melhorTamanho ? [o._melhorTamanho] : []);
+        const tamanhoAjustado = opcoes.length
+          ? opcoes.slice().sort((a,b) => Math.abs(a.largura-alvoPorPeca) - Math.abs(b.largura-alvoPorPeca))[0]
+          : o._melhorTamanho;
+        return { ...o, _melhorTamanho: tamanhoAjustado };
+      });
+      // Confere que a soma real não estourou o alvo (com folga de 15%) — se estourou mesmo
+      // assim (obra sem tamanho pequeno o bastante disponível), desiste da composição pra
+      // não entregar uma bizarrice; o front usa uma 3ª sugestão solo no lugar.
+      const larguraTotalReal = composicao.reduce((s,o)=>s+o._melhorTamanho.largura, 0) + GAP_CM;
+      if(larguraTotalReal > larguraAlvoComposicao * 1.15) composicao = [];
     }
 
     // Marca d'água genérica (uma só, o código muda visualmente por obra no front se quiser evoluir depois)
     const watermark = gerarMarcaDagua('ALMARE');
 
     res.json({
-      analise, sugestoes, watermark,
+      analise, sugestoes, composicao, watermark,
       foto_local,
       parede_largura: parseInt(parede_largura),
       parede_altura: parseInt(parede_altura)
