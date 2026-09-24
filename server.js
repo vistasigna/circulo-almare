@@ -1364,6 +1364,79 @@ Regra importante: se o ambiente estiver "carregado", recomende obra_unica_suave 
 }
 
 // Gera um watermark SVG real (padrão diagonal repetido) como data URI
+// Curadoria REAL por IA: recebe as obras que já foram fisicamente filtradas (cabem na
+// parede) e pede pra IA reordenar por afinidade curatorial de verdade — cor, estilo,
+// personalidade, caráter do ambiente — em vez de só comparar palavras-chave nos campos
+// cadastrados. Se a IA falhar por qualquer motivo, cai de volta pro ranking algorítmico
+// (o score/_motivos que rankearObras já calculou), nunca quebra a simulação.
+async function curarComIA(candidatos, analise, dados){
+  if(!ANTHROPIC_API_KEY || !candidatos.length) return candidatos;
+
+  const lista = candidatos.map(o => ({
+    id: o.id,
+    nome: o.nome,
+    colecao: o.colecao,
+    paleta: o.paleta,
+    paleta_detalhe: o.paleta_detalhe,
+    personalidade: o.personalidade_da_obra,
+    nivel_de_destaque: o.nivel_de_destaque,
+    ambientes_compativeis: o.ambientes_compativeis
+  }));
+
+  const prompt = `Você é o curador-chefe da ALMARE, decidindo quais obras do catálogo abaixo melhor combinam com o ambiente descrito — uma curadoria real, considerando harmonia de cor, estilo, personalidade da obra e o caráter do espaço, não uma comparação superficial de palavras.
+
+LEITURA DO AMBIENTE:
+- Paleta dominante: ${analise.paleta_dominante}
+- Temperatura: ${analise.temperatura}
+- Estilo: ${analise.estilo}
+- Carga visual: ${analise.carga_visual}
+- Caráter do ambiente: ${analise.justificativa_ambiente}
+- Tipo de ambiente informado pelo cliente: ${dados.finalidade || 'não especificado'}
+- A obra deve ser: ${dados.destaque === 'ponto_focal' ? 'o ponto focal do ambiente' : 'integrada, em harmonia'}
+${dados.pref_paleta ? `- Preferência de paleta do cliente: ${dados.pref_paleta}` : ''}
+${dados.observacao ? `- Observação do cliente: "${dados.observacao}"` : ''}
+
+CATÁLOGO DISPONÍVEL (já filtrado — todas cabem fisicamente nessa parede):
+${JSON.stringify(lista)}
+
+Retorne SOMENTE um JSON válido, sem texto antes ou depois, com TODAS as obras da lista ordenadas da melhor pra pior combinação com esse ambiente específico:
+{
+  "ranking": [
+    { "id": 0, "motivo": "1 frase curta e específica sobre por que essa obra combina com ESSE ambiente (não genérica)" }
+  ]
+}`;
+
+  try{
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method:'POST',
+      headers:{ 'x-api-key':ANTHROPIC_API_KEY, 'anthropic-version':'2023-06-01', 'content-type':'application/json' },
+      body: JSON.stringify({ model:'claude-sonnet-5', max_tokens:2048, thinking:{type:'disabled'}, messages:[{ role:'user', content: prompt }] })
+    });
+    if(!resp.ok) return candidatos;
+    const data = await resp.json();
+    const txt = (data.content||[]).filter(c=>c.type==='text').map(c=>c.text).join('');
+    const jsonMatch = txt.match(/\{[\s\S]*\}/);
+    if(!jsonMatch) return candidatos;
+    const parsed = JSON.parse(jsonMatch[0]);
+    if(!parsed.ranking || !Array.isArray(parsed.ranking) || !parsed.ranking.length) return candidatos;
+
+    const porId = {};
+    candidatos.forEach(o => { porId[o.id] = o; });
+    const ordenados = [];
+    parsed.ranking.forEach(r => {
+      const obra = porId[r.id];
+      if(obra){ obra._motivos = [r.motivo || 'combina com o ambiente']; ordenados.push(obra); delete porId[r.id]; }
+    });
+    // Qualquer obra que a IA não tenha mencionado (não deveria acontecer) entra no final,
+    // na ordem algorítmica original — nunca some uma obra silenciosamente.
+    Object.values(porId).forEach(o => ordenados.push(o));
+    return ordenados;
+  }catch(e){
+    console.error('Curadoria IA:', e.message);
+    return candidatos;
+  }
+}
+
 function gerarMarcaDagua(codigo){
   const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="360" height="360">' +
     '<g transform="rotate(-32 180 180)" font-family="Georgia, serif" fill="rgba(255,255,255,0.5)">' +
@@ -2235,7 +2308,17 @@ app.post('/simulador/analisar', authMembro, async(req,res)=>{
         : (o._melhorTamanho ? [o._melhorTamanho] : []);
     }
 
-    const sugestoes = rankeadas.slice(0, 4);
+    // Curadoria real por IA: reordena as candidatas (que já passaram pelo filtro físico
+    // de tamanho/orientação) por afinidade de verdade com o ambiente, não só por
+    // palavra-chave. Limita a 20 pra não estourar o prompt em catálogos grandes — o resto
+    // (fora do top 20 algorítmico) entra depois, sem reordenar.
+    const universoParaIA = rankeadas.slice(0, 20);
+    const idsUniverso = new Set(universoParaIA.map(o => o.id));
+    const restoNaoEnviado = rankeadas.filter(o => !idsUniverso.has(o.id));
+    const curadas = await curarComIA(universoParaIA, analise, dados);
+    const rankeadasFinal = [...curadas, ...restoNaoEnviado];
+
+    const sugestoes = rankeadasFinal.slice(0, 4);
 
     // ── Composição (2 obras, sempre do MESMO tamanho) ──
     // Regra 1: NUNCA duas obras horizontais lado a lado — fica desproporcional. Composição
@@ -2251,7 +2334,7 @@ app.post('/simulador/analisar', authMembro, async(req,res)=>{
     const larguraAlvoComposicao = paredeLnum * 0.55;
     const alvoPorPeca = Math.max(20, (larguraAlvoComposicao - GAP_CM) / 2);
 
-    const poolComposicao = rankeadas.filter(o => {
+    const poolComposicao = rankeadasFinal.filter(o => {
       const or = String(o.orientacao||'').toLowerCase();
       return !/horizontal|paisagem/.test(or);
     });
@@ -2266,7 +2349,7 @@ app.post('/simulador/analisar', authMembro, async(req,res)=>{
     for(const key in porFormato){
       const grupo = porFormato[key];
       if(grupo.length < 2) continue;
-      const [a1, a2] = grupo; // rankeadas já vem em ordem de score, então são as 2 melhores desse formato
+      const [a1, a2] = grupo; // grupo já vem na ordem da curadoria (IA, com fallback pro score algorítmico), então são as 2 melhores desse formato
       const tamsA = a1._tamanhosDisponiveis || [];
       const tamsB = a2._tamanhosDisponiveis || [];
       const comuns = tamsA.filter(ta => tamsB.some(tb => tb.largura===ta.largura && tb.altura===ta.altura));
