@@ -4241,6 +4241,10 @@ async function garantirTabelas(){
 
 // ─── ROTA TEMPORÁRIA DE DIAGNÓSTICO — remover depois de usar ──────────────────
 app.get('/admin/debug/status-exemplares', async(req,res)=>{
+  if(req.query.distinct){
+    const r = await pool.query('SELECT status, COUNT(*) as qtd FROM almare_exemplares GROUP BY status ORDER BY qtd DESC');
+    return res.json({ status_com_contagem: r.rows });
+  }
   const r = await pool.query(`
     SELECT o.codigo, e.numero, e.status, e.cliente_email, e.observacao, e.data_venda
     FROM almare_exemplares e JOIN almare_obras o ON o.id=e.obra_id
