@@ -4260,6 +4260,12 @@ async function garantirTabelas(){
   }
 }
 
+app.get('/admin/debug/view-resumo', async(req,res)=>{
+  const def = await pool.query(`SELECT pg_get_viewdef('circulo_resumo_membro', true) as def`).catch(e=>({rows:[{def:'ERRO: '+e.message}]}));
+  const daniel = await pool.query(`SELECT * FROM circulo_resumo_membro WHERE email=$1`,[req.query.email||'daniellbfreitas@icloud.com']).catch(e=>({rows:[{erro:e.message}]}));
+  res.json({ definicao_view: def.rows[0], linha_daniel: daniel.rows[0] || null });
+});
+
 const PORT=process.env.PORT||3000;
 app.listen(PORT,()=>{
   console.log(`Círculo ALMARE rodando na porta ${PORT}`);
