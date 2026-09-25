@@ -1888,6 +1888,24 @@ app.get('/simulador', authMembro, async(req,res)=>{
 
       // Mostra o preço só quando a pessoa pede — e só da sugestão que ela está olhando.
       // Cada sugestão é uma simulação independente; nunca soma entre sugestões diferentes.
+      async function adicionarSugestaoAoCarrinho(i, btn){
+        const c = SIM.cards[i];
+        const pecas = c.pecas
+          .filter(p => p.tamanho)
+          .map(p => ({ obra_id: p.obra.id, largura: p.tamanho.largura, altura: p.tamanho.altura, moldura: p.moldura }));
+        if(!pecas.length) return;
+        btn.disabled = true; btn.textContent = 'Adicionando...';
+        try{
+          const r = await fetch('/simulador/adicionar-ao-carrinho', {
+            method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({ pecas })
+          });
+          const d = await r.json();
+          if(d.erro){ alert(d.erro); btn.disabled=false; btn.textContent='Adicionar ao carrinho'; return; }
+          window.location.href = '/carrinho';
+        }catch(e){ alert('Erro ao adicionar ao carrinho.'); btn.disabled=false; btn.textContent='Adicionar ao carrinho'; }
+      }
+
       function verOrcamento(i){
         const c = SIM.cards[i];
         let total = 0;
@@ -1905,10 +1923,12 @@ app.get('/simulador', authMembro, async(req,res)=>{
           '<div class="card" style="border-color:var(--gold);margin-top:10px;">' +
           '<h3 style="font-size:16px;margin-bottom:14px;">Orçamento desta sugestão</h3>' +
           linhas +
-          '<div style="display:flex;justify-content:space-between;align-items:center;padding-top:14px;margin-top:6px;">' +
+          '<div style="display:flex;justify-content:space-between;align-items:center;padding-top:14px;margin-top:6px;margin-bottom:16px;">' +
           '<span style="font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);">Total</span>' +
           '<span style="font-family:\\'Cormorant Garamond\\',serif;font-size:24px;color:var(--gold);">R$ '+total.toLocaleString('pt-BR')+'</span>' +
-          '</div></div>';
+          '</div>' +
+          '<button type="button" class="btn btn-primary btn-full" onclick="adicionarSugestaoAoCarrinho('+i+', this)">Adicionar ao carrinho</button>' +
+          '</div>';
         document.getElementById('orcamento-area-'+i).innerHTML = html;
       }
 
@@ -2603,6 +2623,37 @@ async function recalcularTotalCarrinho(pedidoId){
 }
 
 // Adicionar obra ao carrinho
+// Adicionar ao carrinho direto do simulador — recebe uma ou mais peças (uma composição
+// inteira de uma vez) e casa cada uma pelo tamanho real (largura×altura), não por um id
+// que pode não corresponder entre o cálculo do simulador e o catálogo de compra.
+app.post('/simulador/adicionar-ao-carrinho', authMembro, async(req,res)=>{
+  try{
+    const pecas = req.body.pecas || [];
+    if(!pecas.length) return res.json({ erro:'Nenhuma peça pra adicionar.' });
+    const pedido = await pegarOuCriarCarrinho(req.membro.id);
+    let adicionadas = 0;
+    for(const p of pecas){
+      const obraId = parseInt(p.obra_id);
+      if(!obraId || !MOLDURA_NOME[p.moldura]) continue;
+      const tamanhos = await tamanhosDaObra(obraId);
+      const tamanho = tamanhos.find(t => t.largura===p.largura && t.altura===p.altura);
+      if(!tamanho) continue; // pula peça sem tamanho correspondente, não trava as outras
+      const subtotal = Math.round(tamanho.preco*100)/100;
+      await pool.query(
+        `INSERT INTO circulo_pedido_itens (pedido_id,obra_id,obra_link_id,tamanho_id,tamanho_label,largura,altura,moldura,quantidade,preco_unitario,subtotal)
+         VALUES ($1,$2,NULL,$3,$4,$5,$6,$7,1,$8,$9)`,
+        [pedido.id, obraId, tamanho.id, tamanho.label, tamanho.largura, tamanho.altura, p.moldura, tamanho.preco, subtotal]
+      );
+      adicionadas++;
+    }
+    if(!adicionadas) return res.json({ erro:'Não foi possível adicionar essas peças ao carrinho.' });
+    await recalcularTotalCarrinho(pedido.id);
+    res.json({ ok:true, adicionadas });
+  }catch(e){
+    res.json({ erro: e.message });
+  }
+});
+
 app.post('/comprar/:obraId/adicionar', authMembro, async(req,res)=>{
   const obraId = parseInt(req.params.obraId);
   const { tamanho_id, moldura, codigo_indicacao } = req.body;
