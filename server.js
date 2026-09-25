@@ -1815,7 +1815,7 @@ app.get('/simulador', authMembro, async(req,res)=>{
               const cardsNormalizados = d.cards.map(c => c.pecas ? c : { pecas: [c] });
               renderResultado({
                 analise: d.analise || { parede_bbox:{left_pct:5,top_pct:5,width_pct:90,height_pct:90}, moldura_recomendada:'preta', paleta_dominante:'', temperatura:'', estilo:'', carga_visual:'', justificativa_ambiente:'' },
-                sugestoes: cardsNormalizados.map(c=>({ ...c.pecas[0].obra, _melhorTamanho:c.pecas[0].tamanho, _tamanhosDisponiveis:c.pecas[0].obra._tamanhosDisponiveis })),
+                grupos: cardsNormalizados.map(c => c.pecas.map(p => ({ ...p.obra, _melhorTamanho:p.tamanho, _tamanhosDisponiveis:p.obra._tamanhosDisponiveis }))),
                 watermark: d.watermark || '',
                 foto_local: d.foto_local,
                 parede_largura: d.parede_largura,
@@ -1831,24 +1831,10 @@ app.get('/simulador', authMembro, async(req,res)=>{
         document.getElementById('resultado').innerHTML = '';
         SIM.data = data;
         const a = data.analise;
-        // Monta as sugestões finais: o servidor já manda "sugestoes" (obras solo,
-        // rankeadas) e "composicao" (0 ou 2 obras já com orientação e tamanho corretos
-        // pra formar um par — nunca duas horizontais, nunca estourando a largura da
-        // parede). Se não existir par elegível pra composição, cai pra 3 sugestões solo.
-        const solo = (data.sugestoes || []).slice(0, 4);
-        const composicao = (data.composicao || []).length === 2 ? data.composicao : null;
-
-        let grupos;
-        if(composicao){
-          grupos = [
-            solo[0] ? [solo[0]] : [],
-            composicao,
-            solo[1] ? [solo[1]] : (solo[2] ? [solo[2]] : [])
-          ];
-        } else {
-          grupos = [solo[0] ? [solo[0]] : [], solo[1] ? [solo[1]] : [], solo[2] ? [solo[2]] : []];
-        }
-        grupos = grupos.filter(g => g.length);
+        // O servidor já manda os 3 grupos finais prontos — cada um é uma lista de 1 ou 2
+        // obras, já com tamanho e escala decididos lá (curadoria de IA + variedade de
+        // escala entre as 3 sugestões). O front só monta os cards, sem decidir nada.
+        const grupos = (data.grupos || []).filter(g => g.length);
 
         SIM.cards = grupos.map((grupo, idx) => {
           const restore = (data._cardsRestore && data._cardsRestore[idx]) ? data._cardsRestore[idx] : null;
@@ -2377,11 +2363,56 @@ app.post('/simulador/analisar', authMembro, async(req,res)=>{
       }
     }
 
+    // ── Variedade de escala entre as 3 sugestões ──
+    // Nem toda sugestão precisa mirar os mesmos 55% da parede — uma parede de 3m também
+    // comporta bem um quadro de 2m ou 2,25m. Em vez de as 3 sempre irem pro maior tamanho
+    // possível (o que fica "chapado"/previsível), monta-se aqui um leque real de escalas:
+    // uma opção grande (a que o ranking já calculou, ~55%), e pelo menos uma opção
+    // deliberadamente menor — usando o MESMO catálogo de tamanhos oficiais de cada obra,
+    // nunca inventando um tamanho novo.
+    function escolherTamanhoParaAlvo(tamanhos, alvoLargura, alvoAltura){
+      if(!tamanhos || !tamanhos.length) return null;
+      return tamanhos.slice().sort((a,b)=>{
+        const distA = Math.abs(a.largura-alvoLargura) + Math.abs(a.altura-alvoAltura);
+        const distB = Math.abs(b.largura-alvoLargura) + Math.abs(b.altura-alvoAltura);
+        return distA - distB;
+      })[0];
+    }
+    const paredeAnum = parseInt(parede_altura) || 0;
+    function comEscalaMenor(obra, percentual){
+      if(!obra) return obra;
+      const tam = escolherTamanhoParaAlvo(obra._tamanhosDisponiveis, paredeLnum*percentual, paredeAnum*percentual) || obra._melhorTamanho;
+      return { ...obra, _melhorTamanho: tam };
+    }
+
+    const idsComposicao = new Set(composicao.map(o => o.id));
+    const poolSolo = rankeadasFinal.filter(o => !idsComposicao.has(o.id));
+
+    let grupos;
+    if(composicao.length === 2){
+      // 1ª sugestão = maior/protagonista (tamanho que o ranking já mirou, ~55%)
+      // 2ª sugestão = a composição
+      // 3ª sugestão = outra obra, mas em escala deliberadamente menor (~38%) — dá variedade
+      grupos = [
+        poolSolo[0] ? [poolSolo[0]] : [],
+        composicao,
+        poolSolo[1] ? [comEscalaMenor(poolSolo[1], 0.38)] : []
+      ];
+    } else {
+      // Sem composição: 3 obras solo em 3 escalas diferentes de propósito — grande, média, pequena
+      grupos = [
+        poolSolo[0] ? [poolSolo[0]] : [],
+        poolSolo[1] ? [comEscalaMenor(poolSolo[1], 0.46)] : [],
+        poolSolo[2] ? [comEscalaMenor(poolSolo[2], 0.35)] : []
+      ];
+    }
+    grupos = grupos.filter(g => g.length);
+
     // Marca d'água genérica (uma só, o código muda visualmente por obra no front se quiser evoluir depois)
     const watermark = gerarMarcaDagua('ALMARE');
 
     res.json({
-      analise, sugestoes, composicao, watermark,
+      analise, grupos, watermark,
       foto_local,
       parede_largura: parseInt(parede_largura),
       parede_altura: parseInt(parede_altura)
