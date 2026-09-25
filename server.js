@@ -4539,6 +4539,11 @@ async function garantirTabelas(){
   }
 }
 
+app.get('/admin/debug/colunas-simulacoes', async(req,res)=>{
+  const r = await pool.query(`SELECT column_name, data_type FROM information_schema.columns WHERE table_name='circulo_simulacoes' ORDER BY ordinal_position`);
+  res.json({ colunas: r.rows });
+});
+
 const PORT=process.env.PORT||3000;
 app.listen(PORT,()=>{
   console.log(`Círculo ALMARE rodando na porta ${PORT}`);
