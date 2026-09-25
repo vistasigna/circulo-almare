@@ -1370,7 +1370,7 @@ Regra importante: se o ambiente estiver "carregado", recomende obra_unica_suave 
 // cadastrados. Se a IA falhar por qualquer motivo, cai de volta pro ranking algorítmico
 // (o score/_motivos que rankearObras já calculou), nunca quebra a simulação.
 async function curarComIA(candidatos, analise, dados){
-  if(!ANTHROPIC_API_KEY || !candidatos.length) return candidatos;
+  if(!ANTHROPIC_API_KEY || !candidatos.length) return { ordenados: candidatos, parComposicao: null };
 
   const lista = candidatos.map(o => ({
     id: o.id,
@@ -1380,7 +1380,8 @@ async function curarComIA(candidatos, analise, dados){
     paleta_detalhe: o.paleta_detalhe,
     personalidade: o.personalidade_da_obra,
     nivel_de_destaque: o.nivel_de_destaque,
-    ambientes_compativeis: o.ambientes_compativeis
+    ambientes_compativeis: o.ambientes_compativeis,
+    formato: o.formato_recomendado
   }));
 
   const prompt = `Você é o curador-chefe da ALMARE, decidindo quais obras do catálogo abaixo melhor combinam com o ambiente descrito — uma curadoria real, considerando harmonia de cor, estilo, personalidade da obra e o caráter do espaço, não uma comparação superficial de palavras.
@@ -1399,11 +1400,18 @@ ${dados.observacao ? `- Observação do cliente: "${dados.observacao}"` : ''}
 CATÁLOGO DISPONÍVEL (já filtrado — todas cabem fisicamente nessa parede):
 ${JSON.stringify(lista)}
 
-Retorne SOMENTE um JSON válido, sem texto antes ou depois, com TODAS as obras da lista ordenadas da melhor pra pior combinação com esse ambiente específico:
+Você tem DUAS tarefas:
+
+TAREFA 1 — Ordene TODAS as obras da lista da melhor pra pior combinação com ESSE ambiente específico.
+
+TAREFA 2 — Escolha, dentre as obras de MESMO "formato" (só obras do mesmo formato podem virar composição, por causa do tamanho), UM PAR que funcione bem como composição na mesma parede — duas obras penduradas lado a lado, coladas. Isso é uma decisão diferente da Tarefa 1: aqui você está avaliando as DUAS OBRAS UMA CONTRA A OUTRA, não contra o ambiente. Elas precisam ter uma linguagem visual conectada — mesma paleta, ou paletas complementares, estilo/personalidade que conversem entre si (ex: duas obras orgânicas, duas geométricas, duas com a mesma temperatura de cor). NUNCA junte estilos totalmente diferentes (ex: uma geométrica em blocos preto/branco com uma minimalista de gradiente quente) só porque cabem no mesmo tamanho — isso fica errado visualmente, mesmo que cada uma isoladamente combine com o ambiente. REGRA OBRIGATÓRIA: as duas obras do par NUNCA podem ser ambas horizontais/paisagem — nesse caso a composição lado a lado fica desproporcional demais. Pelo menos uma das duas (idealmente as duas) precisa ser vertical, quadrada, ou sem orientação cadastrada. Se DE VERDADE nenhum par do catálogo disponível formar uma composição coerente respeitando essa regra, retorne "melhor_par_composicao": null — não force um par ruim só pra ter uma composição.
+
+Retorne SOMENTE um JSON válido, sem texto antes ou depois:
 {
   "ranking": [
     { "id": 0, "motivo": "1 frase curta e específica sobre por que essa obra combina com ESSE ambiente (não genérica)" }
-  ]
+  ],
+  "melhor_par_composicao": { "ids": [0, 0], "motivo": "1 frase específica sobre por que essas DUAS obras combinam ENTRE SI" }
 }`;
 
   try{
@@ -1412,13 +1420,13 @@ Retorne SOMENTE um JSON válido, sem texto antes ou depois, com TODAS as obras d
       headers:{ 'x-api-key':ANTHROPIC_API_KEY, 'anthropic-version':'2023-06-01', 'content-type':'application/json' },
       body: JSON.stringify({ model:'claude-sonnet-5', max_tokens:2048, thinking:{type:'disabled'}, messages:[{ role:'user', content: prompt }] })
     });
-    if(!resp.ok) return candidatos;
+    if(!resp.ok) return { ordenados: candidatos, parComposicao: null };
     const data = await resp.json();
     const txt = (data.content||[]).filter(c=>c.type==='text').map(c=>c.text).join('');
     const jsonMatch = txt.match(/\{[\s\S]*\}/);
-    if(!jsonMatch) return candidatos;
+    if(!jsonMatch) return { ordenados: candidatos, parComposicao: null };
     const parsed = JSON.parse(jsonMatch[0]);
-    if(!parsed.ranking || !Array.isArray(parsed.ranking) || !parsed.ranking.length) return candidatos;
+    if(!parsed.ranking || !Array.isArray(parsed.ranking) || !parsed.ranking.length) return { ordenados: candidatos, parComposicao: null };
 
     const porId = {};
     candidatos.forEach(o => { porId[o.id] = o; });
@@ -1430,10 +1438,23 @@ Retorne SOMENTE um JSON válido, sem texto antes ou depois, com TODAS as obras d
     // Qualquer obra que a IA não tenha mencionado (não deveria acontecer) entra no final,
     // na ordem algorítmica original — nunca some uma obra silenciosamente.
     Object.values(porId).forEach(o => ordenados.push(o));
-    return ordenados;
+
+    // Valida o par de composição: os dois ids precisam existir de verdade entre as
+    // candidatas e ser dois ids diferentes. Se a IA mandou null (ou algo inválido),
+    // não força nada — sem par não tem composição nessa simulação.
+    let parComposicao = null;
+    const pc = parsed.melhor_par_composicao;
+    if(pc && Array.isArray(pc.ids) && pc.ids.length === 2 && pc.ids[0] !== pc.ids[1]){
+      const idsPorObra = {};
+      candidatos.forEach(o => { idsPorObra[o.id] = o; });
+      const o1 = idsPorObra[pc.ids[0]], o2 = idsPorObra[pc.ids[1]];
+      if(o1 && o2) parComposicao = { obras:[o1,o2], motivo: pc.motivo || 'composição curada pela IA' };
+    }
+
+    return { ordenados, parComposicao };
   }catch(e){
     console.error('Curadoria IA:', e.message);
-    return candidatos;
+    return { ordenados: candidatos, parComposicao: null };
   }
 }
 
@@ -2311,59 +2332,48 @@ app.post('/simulador/analisar', authMembro, async(req,res)=>{
     // Curadoria real por IA: reordena as candidatas (que já passaram pelo filtro físico
     // de tamanho/orientação) por afinidade de verdade com o ambiente, não só por
     // palavra-chave. Limita a 20 pra não estourar o prompt em catálogos grandes — o resto
-    // (fora do top 20 algorítmico) entra depois, sem reordenar.
+    // (fora do top 20 algorítmico) entra depois, sem reordenar. A mesma chamada também
+    // decide, explicitamente, qual par de obras forma uma composição de verdade — avaliando
+    // as duas obras UMA CONTRA A OUTRA (paleta, estilo, personalidade), não só cada uma
+    // contra o ambiente. Nunca junta duas obras só porque cabem no mesmo tamanho.
     const universoParaIA = rankeadas.slice(0, 20);
     const idsUniverso = new Set(universoParaIA.map(o => o.id));
     const restoNaoEnviado = rankeadas.filter(o => !idsUniverso.has(o.id));
-    const curadas = await curarComIA(universoParaIA, analise, dados);
+    const { ordenados: curadas, parComposicao } = await curarComIA(universoParaIA, analise, dados);
     const rankeadasFinal = [...curadas, ...restoNaoEnviado];
 
     const sugestoes = rankeadasFinal.slice(0, 4);
 
     // ── Composição (2 obras, sempre do MESMO tamanho) ──
-    // Regra 1: NUNCA duas obras horizontais lado a lado — fica desproporcional. Composição
-    // só entra com obras verticais, quadradas, ou sem orientação cadastrada.
-    // Regra 2: a largura TOTAL da composição (as duas obras + o vão de 8cm entre elas) nunca
-    // pode passar do mesmo alvo curatorial que uma obra sozinha usaria (55% da parede).
-    // Regra 3: as duas obras da composição usam exatamente o MESMO tamanho — nunca um
-    // tamanho por obra. Só obras do mesmo formato/proporção compartilham a mesma tabela
-    // oficial de tamanhos, então a busca é por par de obras de mesmo formato cuja
-    // interseção de tamanhos disponíveis tenha uma opção que caiba no alvo.
+    // O PAR em si (quais duas obras) vem da IA (parComposicao) — ela é quem julga se as
+    // duas combinam entre si. Aqui só resta a parte física: achar, dentro do que as duas
+    // obras têm disponível, um tamanho IDÊNTICO pra ambas que não estoure o espaço que uma
+    // composição pode ocupar (mesmo alvo de 55% da parede que uma obra sozinha usaria, com
+    // vão real de 8cm entre elas). Se a IA não achou par nenhum coerente, ou o par que ela
+    // escolheu não tem tamanho em comum que caiba, não força composição nessa simulação.
     const GAP_CM = 8;
     const paredeLnum = parseInt(parede_largura) || 0;
     const larguraAlvoComposicao = paredeLnum * 0.55;
     const alvoPorPeca = Math.max(20, (larguraAlvoComposicao - GAP_CM) / 2);
 
-    const poolComposicao = rankeadasFinal.filter(o => {
-      const or = String(o.orientacao||'').toLowerCase();
-      return !/horizontal|paisagem/.test(or);
-    });
-    const porFormato = {};
-    poolComposicao.forEach(o => {
-      const key = String(o.formato_recomendado||'').trim() || '?';
-      (porFormato[key] = porFormato[key] || []).push(o);
-    });
-
     let composicao = [];
-    let melhorScoreGrupo = -1;
-    for(const key in porFormato){
-      const grupo = porFormato[key];
-      if(grupo.length < 2) continue;
-      const [a1, a2] = grupo; // grupo já vem na ordem da curadoria (IA, com fallback pro score algorítmico), então são as 2 melhores desse formato
+    if(parComposicao){
+      const [a1, a2] = parComposicao.obras;
+      const or1 = String(a1.orientacao||'').toLowerCase();
+      const or2 = String(a2.orientacao||'').toLowerCase();
+      const ambasHorizontais = /horizontal|paisagem/.test(or1) && /horizontal|paisagem/.test(or2);
       const tamsA = a1._tamanhosDisponiveis || [];
       const tamsB = a2._tamanhosDisponiveis || [];
       const comuns = tamsA.filter(ta => tamsB.some(tb => tb.largura===ta.largura && tb.altura===ta.altura));
-      if(!comuns.length) continue;
-      const tamanhoEscolhido = comuns.slice().sort((x,y) => Math.abs(x.largura-alvoPorPeca) - Math.abs(y.largura-alvoPorPeca))[0];
-      const larguraTotalReal = tamanhoEscolhido.largura*2 + GAP_CM;
-      if(larguraTotalReal > larguraAlvoComposicao * 1.15) continue;
-      const scoreSoma = a1._score + a2._score;
-      if(scoreSoma > melhorScoreGrupo){
-        melhorScoreGrupo = scoreSoma;
-        composicao = [
-          { ...a1, _melhorTamanho: tamanhoEscolhido },
-          { ...a2, _melhorTamanho: tamanhoEscolhido }
-        ];
+      if(!ambasHorizontais && comuns.length){
+        const tamanhoEscolhido = comuns.slice().sort((x,y) => Math.abs(x.largura-alvoPorPeca) - Math.abs(y.largura-alvoPorPeca))[0];
+        const larguraTotalReal = tamanhoEscolhido.largura*2 + GAP_CM;
+        if(larguraTotalReal <= larguraAlvoComposicao * 1.15){
+          composicao = [
+            { ...a1, _melhorTamanho: tamanhoEscolhido, _motivos: [parComposicao.motivo] },
+            { ...a2, _melhorTamanho: tamanhoEscolhido, _motivos: [parComposicao.motivo] }
+          ];
+        }
       }
     }
 
