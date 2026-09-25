@@ -2466,7 +2466,7 @@ async function limparSimulacoesExpiradas(){
 app.post('/simulador/salvar', authMembro, async(req,res)=>{
   try{
     await limparSimulacoesExpiradas();
-    const { nome, foto_local, parede_largura, parede_altura, cards } = req.body;
+    const { nome, foto_local, parede_largura, parede_altura, analise, cards } = req.body;
     if(!nome || !nome.trim()) return res.json({ erro:'Dê um nome para a simulação.' });
     if(!foto_local || !cards) return res.json({ erro:'Dados da simulação incompletos.' });
 
@@ -2477,9 +2477,9 @@ app.post('/simulador/salvar', authMembro, async(req,res)=>{
     }
 
     await pool.query(
-      `INSERT INTO circulo_simulacoes (membro_id, nome, foto_local, parede_largura, parede_altura, cards_json)
-       VALUES ($1,$2,$3,$4,$5,$6)`,
-      [req.membro.id, nome.trim(), foto_local, parseInt(parede_largura)||null, parseInt(parede_altura)||null, JSON.stringify(cards)]
+      `INSERT INTO circulo_simulacoes (membro_id, nome, foto_local, parede_largura, parede_altura, cards_json, analise_json)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+      [req.membro.id, nome.trim(), foto_local, parseInt(parede_largura)||null, parseInt(parede_altura)||null, JSON.stringify(cards), JSON.stringify(analise||null)]
     );
     res.json({ ok:true });
   }catch(e){
@@ -2509,6 +2509,7 @@ app.get('/simulador/salva/:id', authMembro, async(req,res)=>{
     res.json({
       nome: s.nome, foto_local: s.foto_local,
       parede_largura: s.parede_largura, parede_altura: s.parede_altura,
+      analise: s.analise_json ? JSON.parse(s.analise_json) : null,
       cards: JSON.parse(s.cards_json)
     });
   }catch(e){ res.json({ erro:e.message }); }
@@ -4400,6 +4401,11 @@ app.post('/admin/sugestoes/:id/responder',authAdmin,async(req,res)=>{
 // ─── GARANTE ESTRUTURA DO BANCO (cria o que faltar ao iniciar, nunca apaga nada) ──────────
 async function garantirTabelas(){
   try{
+    // Guarda a análise de IA (paleta, bbox da parede, largura real calculada etc.) junto
+    // com a simulação salva — sem isso, reabrir usa um valor genérico no lugar do que a IA
+    // realmente calculou pra aquela foto, e os tamanhos saem desproporcionais.
+    await pool.query(`ALTER TABLE circulo_simulacoes ADD COLUMN IF NOT EXISTS analise_json TEXT;`).catch(()=>{});
+
     // Corrige a view circulo_resumo_membro: "obras que encontraram um lar" tem que
     // contar da fonte de verdade única (almare_exemplares.status='vendido'), a mesma
     // que o painel curatorial usa — não do lançamento de cashback (que é outra coisa
@@ -4538,11 +4544,6 @@ async function garantirTabelas(){
     console.error('garantirTabelas erro:', e.message);
   }
 }
-
-app.get('/admin/debug/colunas-simulacoes', async(req,res)=>{
-  const r = await pool.query(`SELECT column_name, data_type FROM information_schema.columns WHERE table_name='circulo_simulacoes' ORDER BY ordinal_position`);
-  res.json({ colunas: r.rows });
-});
 
 const PORT=process.env.PORT||3000;
 app.listen(PORT,()=>{
