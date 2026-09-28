@@ -2989,7 +2989,7 @@ app.post('/carrinho/definir-cliente', authMembro, async(req,res)=>{
       // mais. Limpa tudo e volta pro status de carrinho, forçando gerar uma cobrança nova
       // na próxima vez que a pessoa for pro pagamento.
       await pool.query(
-        `UPDATE circulo_pedidos SET cliente_membro_id=$1, asaas_cliente_id=NULL, asaas_cobranca_id=NULL, invoice_url=NULL, link_publico=NULL, status='CARRINHO' WHERE id=$2`,
+        `UPDATE circulo_pedidos SET cliente_membro_id=$1, checkout_url=NULL, link_publico=NULL, status='CARRINHO' WHERE id=$2`,
         [cliente_membro_id, pedidoId]
       );
     } else {
@@ -3015,58 +3015,10 @@ app.post('/carrinho/:itemId/remover', authMembro, async(req,res)=>{
 
 
 // ════════════════════════════════════════════════════════════════
-// FUNÇÃO 3 — CHECKOUT E PAGAMENTO (Asaas)
+// FUNÇÃO 3 — CHECKOUT E PAGAMENTO (InfinitePay)
 // ════════════════════════════════════════════════════════════════
-const ASAAS_API_URL = process.env.ASAAS_API_URL || 'https://sandbox.asaas.com/api/v3';
-const ASAAS_API_KEY = process.env.ASAAS_API_KEY;
+const infinitepay = require('./infinitepay');
 
-async function asaasRequest(metodo, caminho, corpo){
-  const resp = await fetch(ASAAS_API_URL + caminho, {
-    method: metodo,
-    headers: { 'access_token': ASAAS_API_KEY, 'Content-Type': 'application/json' },
-    body: corpo ? JSON.stringify(corpo) : undefined
-  });
-  const data = await resp.json();
-  if(!resp.ok){
-    throw new Error((data.errors && data.errors[0] && data.errors[0].description) || 'Erro na comunicação com o Asaas');
-  }
-  return data;
-}
-
-// Garante que o CLIENTE FINAL (não o embaixador) tenha um cadastro no Asaas — a fatura é sempre em nome dele
-async function garantirClienteAsaas(clienteMembroId){
-  const r = await pool.query('SELECT * FROM circulo_membros WHERE id=$1',[clienteMembroId]);
-  if(!r.rows.length) throw new Error('Cliente não encontrado.');
-  const c = r.rows[0];
-  if(!c.documento) throw new Error('O cliente precisa ter CPF/CNPJ cadastrado em "Meus dados" antes de gerar o pagamento.');
-  if(!c.cep || !c.numero) throw new Error('O cliente precisa completar CEP e número do endereço em "Meus dados" antes de gerar o pagamento — assim ele não precisa preencher tudo de novo na hora de pagar.');
-  if(!c.celular && !c.telefone) throw new Error('O cliente precisa cadastrar um telefone/celular em "Meus dados" antes de gerar o pagamento.');
-
-  // Manda o endereço completo — o Asaas resolve rua/bairro/cidade sozinho a partir do CEP + número,
-  // então a fatura já chega pronta e o cliente não precisa preencher nada de novo.
-  const dadosAsaas = {
-    name: c.nome, cpfCnpj: c.documento.replace(/\D/g,''), email: c.email,
-    phone: c.telefone || c.celular, mobilePhone: c.celular || c.telefone,
-    postalCode: c.cep.replace(/\D/g,''), addressNumber: c.numero,
-    complement: c.complemento || undefined,
-    externalReference: 'circulo-membro-'+c.id
-  };
-
-  if(c.asaas_cliente_id){
-    // Sempre re-sincroniza — se o cliente completou/corrigiu os dados depois da primeira vez,
-    // a ficha no Asaas não pode ficar desatualizada e voltar a pedir tudo de novo na fatura.
-    try{
-      await asaasRequest('PUT', '/customers/'+c.asaas_cliente_id, dadosAsaas);
-    }catch(e){ console.error('Sync cliente Asaas:', e.message); }
-    return c.asaas_cliente_id;
-  }
-
-  const novo = await asaasRequest('POST', '/customers', dadosAsaas);
-  await pool.query('UPDATE circulo_membros SET asaas_cliente_id=$1 WHERE id=$2',[novo.id, c.id]);
-  return novo.id;
-}
-
-// Cria (ou reaproveita) a cobrança do pedido no Asaas
 // Gera um link público único para o pedido (usado quando o cliente vai pagar sozinho)
 async function garantirLinkPublico(pedidoId){
   const r = await pool.query('SELECT link_publico FROM circulo_pedidos WHERE id=$1',[pedidoId]);
@@ -3076,204 +3028,185 @@ async function garantirLinkPublico(pedidoId){
   return token;
 }
 
-// Cria (ou reaproveita) uma cobrança PIX vinculada ao cliente, devolve QR pra exibir na hora.
-async function obterOuCriarPix(pedidoId){
+// Cria o link de pagamento da InfinitePay pro pedido e devolve a URL. O cliente escolhe PIX ou cartão
+// na página deles. origem: 'membro' (quem monta o pedido paga) ou 'publico' (o cliente abriu o link
+// público) — só muda pra onde a pessoa volta depois de pagar. A fatura continua em nome do CLIENTE FINAL.
+async function criarCheckoutPedido(pedidoId, origem){
   const pRes = await pool.query('SELECT * FROM circulo_pedidos WHERE id=$1',[pedidoId]);
   const p = pRes.rows[0];
   if(!p) throw new Error('Pedido não encontrado.');
   if(!p.cliente_membro_id) throw new Error('Vincule um cliente ao pedido antes de gerar o pagamento.');
   if(p.status === 'PAGO') throw new Error('Este pedido já foi pago.');
+  if(!['CARRINHO','AGUARDANDO_PAGAMENTO'].includes(p.status)) throw new Error('Este pedido não pode mais ser pago.');
+  if(!(parseFloat(p.total) > 0)) throw new Error('O pedido está sem valor.');
 
-  const asaasClienteId = await garantirClienteAsaas(p.cliente_membro_id);
-  let paymentId = p.asaas_cobranca_id;
+  const cRes = await pool.query('SELECT nome, email, telefone, celular FROM circulo_membros WHERE id=$1',[p.cliente_membro_id]);
+  const cliente = cRes.rows[0] || {};
+  const itens = await pool.query(
+    `SELECT pi.*, o.nome AS obra_nome FROM circulo_pedido_itens pi JOIN almare_obras o ON o.id=pi.obra_id WHERE pi.pedido_id=$1 ORDER BY pi.criado_em`,
+    [pedidoId]
+  );
 
-  if(!paymentId){
-    const vencimento = new Date(Date.now() + 1*24*60*60*1000).toISOString().slice(0,10);
-    const cobranca = await asaasRequest('POST', '/payments', {
-      customer: asaasClienteId, billingType: 'PIX', value: parseFloat(p.total),
-      dueDate: vencimento, description: 'Pedido ALMARE '+p.numero,
-      externalReference: 'circulo-pedido-'+p.id
-    });
-    paymentId = cobranca.id;
-    await pool.query(`UPDATE circulo_pedidos SET asaas_cliente_id=$1, asaas_cobranca_id=$2, status='AGUARDANDO_PAGAMENTO' WHERE id=$3`,[asaasClienteId, paymentId, p.id]);
+  let retorno;
+  if(origem === 'publico'){
+    const token = await garantirLinkPublico(pedidoId);
+    retorno = BASE_URL + '/pedido/' + token + '/retorno';
+  } else {
+    retorno = BASE_URL + '/pedido-interno/' + pedidoId + '/retorno';
   }
 
-  const qr = await asaasRequest('GET', '/payments/'+paymentId+'/pixQrCode');
-  return { encodedImage: qr.encodedImage, payload: qr.payload, expirationDate: qr.expirationDate };
+  const { url } = await infinitepay.criarLinkCheckout({
+    orderNsu: 'circulo-' + p.id,
+    numero: p.numero,
+    total: p.total,
+    itens: itens.rows.map(it => ({
+      descricao: it.obra_nome + ' — ' + (it.tamanho_label || '') + ' — Moldura ' + (MOLDURA_NOME[it.moldura] || it.moldura) + (it.quantidade > 1 ? ' (x' + it.quantidade + ')' : ''),
+      subtotal: it.subtotal
+    })),
+    cliente: { nome: cliente.nome, email: cliente.email, fone: cliente.celular || cliente.telefone },
+    redirectUrl: retorno,
+    webhookUrl: infinitepay.urlWebhook(BASE_URL, '/webhook/infinitepay')
+  });
+
+  await pool.query(
+    `UPDATE circulo_pedidos SET checkout_url=$1, status='AGUARDANDO_PAGAMENTO' WHERE id=$2 AND status IN ('CARRINHO','AGUARDANDO_PAGAMENTO')`,
+    [url, p.id]
+  );
+  return url;
 }
 
-// Cobra no cartão diretamente (sem redirecionar pro Asaas) — cliente continua vinculado,
-// e a pessoa escolhe o parcelamento (1 a 6x) na NOSSA tela, não na deles.
-async function pagarComCartao(pedidoId, dados, remoteIp){
-  const pRes = await pool.query('SELECT * FROM circulo_pedidos WHERE id=$1',[pedidoId]);
-  const p = pRes.rows[0];
-  if(!p) throw new Error('Pedido não encontrado.');
-  if(!p.cliente_membro_id) throw new Error('Vincule um cliente ao pedido antes de gerar o pagamento.');
-  if(p.status === 'PAGO') throw new Error('Este pedido já foi pago.');
-
-  const asaasClienteId = await garantirClienteAsaas(p.cliente_membro_id);
-  const valorTotal = Math.round(parseFloat(p.total)*100)/100;
-  const parcelas = Math.max(1, Math.min(6, parseInt(dados.parcelas)||1));
-  const hoje = new Date().toISOString().slice(0,10);
-
-  const corpo = {
-    customer: asaasClienteId, billingType: 'CREDIT_CARD', dueDate: hoje,
-    description: 'Pedido ALMARE '+p.numero, externalReference: 'circulo-pedido-'+p.id,
-    remoteIp: remoteIp,
-    creditCard: {
-      holderName: dados.holderName,
-      number: String(dados.number||'').replace(/\s+/g,''),
-      expiryMonth: String(dados.expiryMonth||'').padStart(2,'0'),
-      expiryYear: dados.expiryYear,
-      ccv: dados.ccv
-    },
-    creditCardHolderInfo: {
-      name: dados.holderName, email: dados.email,
-      cpfCnpj: String(dados.cpfCnpj||'').replace(/\D/g,''),
-      postalCode: String(dados.postalCode||'').replace(/\D/g,''),
-      addressNumber: dados.addressNumber,
-      phone: String(dados.phone||'').replace(/\D/g,'')
+// ÚNICO ponto que marca um pedido como PAGO (webhook, retorno do cliente e confirmação manual do admin).
+// Atômico e idempotente: o UPDATE só pega pedidos AGUARDANDO_PAGAMENTO, então aviso repetido ou webhook +
+// retorno ao mesmo tempo nunca duplicam Bling nem cashback. Uma mesma transação nunca libera dois pedidos.
+async function confirmarPagamentoPedido(pedidoId, info){
+  info = info || {};
+  let upd;
+  try{
+    upd = await pool.query(
+      `UPDATE circulo_pedidos
+          SET status='PAGO', metodo_pagamento=COALESCE($2, metodo_pagamento),
+              pagamento_transacao_nsu=$3, pagamento_recibo_url=$4, pagamento_valor_pago=$5,
+              pagamento_parcelas=$6, pagamento_origem=$7, pago_em=NOW()
+        WHERE id=$1 AND status='AGUARDANDO_PAGAMENTO'
+        RETURNING id, numero`,
+      [pedidoId, info.metodo || null, info.transacaoNsu || null, info.reciboUrl || null,
+       info.valorPago != null ? info.valorPago : null, info.parcelas != null ? info.parcelas : null, info.origem || null]
+    );
+  }catch(e){
+    if(e.code === '23505'){
+      console.error('[PAGAMENTO] ATENÇÃO: a transação ' + info.transacaoNsu + ' já foi usada em outro pedido. Pedido ' + pedidoId + ' NÃO foi liberado.');
+      return { processado:false, duplicado:true };
     }
-  };
-  if(parcelas > 1){ corpo.installmentCount = parcelas; corpo.totalValue = valorTotal; }
-  else { corpo.value = valorTotal; }
-
-  const resultado = await asaasRequest('POST', '/payments', corpo);
-  const novoStatus = (resultado.status==='CONFIRMED' || resultado.status==='RECEIVED') ? 'PAGO' : 'AGUARDANDO_PAGAMENTO';
-  await pool.query(`UPDATE circulo_pedidos SET asaas_cliente_id=$1, asaas_cobranca_id=$2, status=$3 WHERE id=$4`,
-    [asaasClienteId, resultado.id, novoStatus, p.id]);
-  if(novoStatus === 'PAGO'){ sincronizarPedidoBlingSeguro(p.id); concederBonusPedido(p.id); } // não bloqueia a resposta do pagamento
-  return { status: resultado.status, pago: novoStatus==='PAGO' };
+    throw e;
+  }
+  if(!upd.rows.length){
+    const a = await pool.query('SELECT status FROM circulo_pedidos WHERE id=$1',[pedidoId]);
+    const st = a.rows[0] && a.rows[0].status;
+    if(st === 'CANCELADO' || st === 'CARRINHO'){
+      console.error('[PAGAMENTO] ATENÇÃO: pagamento recebido para pedido ' + pedidoId + ' com status ' + st + ' — precisa de análise/estorno manual no app da InfinitePay.');
+    }
+    return { processado:false, statusAtual: st || null };
+  }
+  console.log('[PAGAMENTO] Pedido ' + upd.rows[0].numero + ' marcado como PAGO via ' + (info.origem || '?'));
+  sincronizarPedidoBlingSeguro(pedidoId); // não bloqueia a resposta
+  concederBonusPedido(pedidoId);
+  return { processado:true };
 }
 
-// Monta o formulário/UI de pagamento (PIX + Cartão) — reaproveitado na tela do membro
-// e na página pública do cliente. urlBasePix/urlBaseCartao são os endpoints a chamar.
-function montarUiPagamento(urlBasePix, urlBaseCartao, urlStatus, urlConfirmacao, dadosPreenchidos){
-  const d = dadosPreenchidos || {};
+// Cliente voltou da InfinitePay: a URL traz transaction_nsu e slug. Confere na InfinitePay e libera na hora,
+// sem depender do webhook chegar primeiro. Se o webhook já liberou, só responde "pago".
+async function confirmarRetornoPagamento(pedidoId, q){
+  q = q || {};
+  const r = await pool.query('SELECT id, numero, status, total FROM circulo_pedidos WHERE id=$1',[pedidoId]);
+  const p = r.rows[0];
+  if(!p) return { pago:false, naoEncontrado:true };
+  if(p.status === 'PAGO') return { pago:true };
+  if(p.status !== 'AGUARDANDO_PAGAMENTO') return { pago:false, status:p.status };
+  if(!q.transaction_nsu || !q.slug) return { pago:false, aguardando:true };
+
+  const check = await infinitepay.verificarPagamento({ orderNsu: 'circulo-' + p.id, transactionNsu: q.transaction_nsu, slug: q.slug });
+  if(!check.pago) return { pago:false, aguardando:true };
+  if(check.valor !== infinitepay.centavos(p.total)){
+    console.error('[PAGAMENTO] ATENÇÃO: valor pago diverge do pedido ' + p.numero + ' | esperado (centavos): ' + infinitepay.centavos(p.total) + ' | recebido: ' + check.valor);
+    return { pago:false, divergente:true };
+  }
+  await confirmarPagamentoPedido(p.id, {
+    metodo: infinitepay.mapearMetodo(check.metodo), transacaoNsu: q.transaction_nsu,
+    reciboUrl: q.receipt_url || null, valorPago: check.valorPago != null ? check.valorPago/100 : null,
+    parcelas: check.parcelas, origem: 'RETORNO'
+  });
+  const dep = await pool.query('SELECT status FROM circulo_pedidos WHERE id=$1',[p.id]);
+  return { pago: dep.rows[0].status === 'PAGO' };
+}
+
+// Monta a área de pagamento: um botão que leva ao checkout seguro da InfinitePay (PIX ou cartão).
+// Reaproveitada na tela do membro e na página pública do cliente.
+function montarUiPagamento(urlCheckout, total){
   return `
-    <div style="display:flex;gap:8px;margin-bottom:20px;">
-      <button type="button" onclick="mostrarAba('pix')" id="aba-pix" class="btn btn-outline" style="flex:1;">PIX</button>
-      <button type="button" onclick="mostrarAba('cartao')" id="aba-cartao" class="btn btn-outline" style="flex:1;">Cartão de crédito</button>
-    </div>
-
-    <div id="painel-pix" style="display:none;">
-      <button type="button" onclick="gerarPix()" id="btn-gerar-pix" class="btn btn-primary btn-full">Gerar QR Code PIX</button>
-      <div id="resultado-pix" style="margin-top:16px;"></div>
-    </div>
-
-    <div id="painel-cartao" style="display:none;">
-      <div class="field"><label>Parcelas</label>
-        <select id="pg-parcelas"></select>
-      </div>
-      <div class="field"><label>Nome impresso no cartão</label><input id="pg-holderName" placeholder="Como está no cartão"></div>
-      <div class="field"><label>Número do cartão</label><input id="pg-number" placeholder="0000 0000 0000 0000" maxlength="19"></div>
-      <div class="grid-2">
-        <div class="field"><label>Validade (MM/AAAA)</label>
-          <div style="display:flex;gap:8px;">
-            <input id="pg-expiryMonth" placeholder="MM" maxlength="2" style="width:70px;">
-            <input id="pg-expiryYear" placeholder="AAAA" maxlength="4" style="width:90px;">
-          </div>
-        </div>
-        <div class="field"><label>CVV</label><input id="pg-ccv" placeholder="000" maxlength="4" style="width:90px;"></div>
-      </div>
-      <hr class="divider">
-      <p style="font-size:12px;color:var(--muted);margin-bottom:12px;">Dados do titular do cartão (pode ser diferente do cliente, se estiver pagando com cartão de outra pessoa).</p>
-      <div class="field"><label>Nome completo do titular</label><input id="pg-nome" value="${esc(d.nome||'')}"></div>
-      <div class="grid-2">
-        <div class="field"><label>CPF/CNPJ do titular</label><input id="pg-cpf" value="${esc(d.documento||'')}"></div>
-        <div class="field"><label>Telefone do titular</label><input id="pg-telefone" value="${esc(d.telefone||'')}"></div>
-      </div>
-      <div class="field"><label>E-mail do titular</label><input id="pg-email" value="${esc(d.email||'')}"></div>
-      <div class="grid-2">
-        <div class="field"><label>CEP do titular</label><input id="pg-cep" value="${esc(d.cep||'')}"></div>
-        <div class="field"><label>Número do endereço</label><input id="pg-numero" value="${esc(d.numero||'')}"></div>
-      </div>
-      <button type="button" onclick="pagarCartao()" id="btn-pagar-cartao" class="btn btn-primary btn-full" style="margin-top:8px;">Pagar</button>
-      <div id="resultado-cartao" style="margin-top:16px;"></div>
-    </div>
-
+    <p style="color:var(--muted);font-size:13px;margin-bottom:16px;">Você será levado ao checkout seguro da InfinitePay e escolhe lá: <strong>PIX</strong> ou <strong>cartão de crédito</strong> (até 12x). Depois de pagar, você volta automaticamente para cá.</p>
+    <button type="button" id="btn-checkout" class="btn btn-primary btn-full" onclick="irParaCheckout()">Pagar R$ ${parseFloat(total||0).toFixed(2).replace('.',',')}</button>
+    <div id="resultado-checkout" style="margin-top:16px;"></div>
     <script>
-      const PG_TOTAL = ${dadosPreenchidos.total || 0};
-      const PG_URL_PIX = '${urlBasePix}';
-      const PG_URL_CARTAO = '${urlBaseCartao}';
-      const PG_URL_STATUS = '${urlStatus}';
-      const PG_URL_CONFIRMACAO = '${urlConfirmacao}';
-
-      function mostrarAba(aba){
-        document.getElementById('painel-pix').style.display = aba==='pix' ? 'block' : 'none';
-        document.getElementById('painel-cartao').style.display = aba==='cartao' ? 'block' : 'none';
-        document.getElementById('aba-pix').style.borderColor = aba==='pix' ? 'var(--gold)' : 'var(--border)';
-        document.getElementById('aba-cartao').style.borderColor = aba==='cartao' ? 'var(--gold)' : 'var(--border)';
-        if(aba==='cartao' && document.getElementById('pg-parcelas').options.length===0) montarParcelas();
-      }
-      function montarParcelas(){
-        const sel = document.getElementById('pg-parcelas');
-        for(let n=1;n<=6;n++){
-          const valor = (PG_TOTAL/n).toLocaleString('pt-BR',{minimumFractionDigits:2});
-          const opt = document.createElement('option');
-          opt.value = n;
-          opt.textContent = n===1 ? '1x de R$ '+valor+' (à vista)' : n+'x de R$ '+valor;
-          sel.appendChild(opt);
-        }
-      }
-      async function gerarPix(){
-        const btn = document.getElementById('btn-gerar-pix'); btn.disabled=true; btn.textContent='Gerando...';
-        const areaR = document.getElementById('resultado-pix');
-        try{
-          const r = await fetch(PG_URL_PIX, { method:'POST' });
-          const d = await r.json();
-          btn.disabled=false; btn.textContent='Gerar QR Code PIX';
-          if(d.erro){ areaR.innerHTML='<div class="msg-erro">'+d.erro+'</div>'; return; }
-          areaR.innerHTML =
-            '<div style="text-align:center;">'+
-            '<img src="data:image/png;base64,'+d.encodedImage+'" style="width:220px;height:220px;background:#fff;padding:10px;border-radius:6px;">'+
-            '<p style="font-size:12px;color:var(--muted);margin-top:12px;">Ou copie o código:</p>'+
-            '<div style="background:#0d0d0d;border:1px solid var(--border);border-radius:3px;padding:12px;font-size:11px;word-break:break-all;margin:8px 0;">'+d.payload+'</div>'+
-            '<button onclick="navigator.clipboard.writeText(this.dataset.payload);this.textContent=\\'Copiado ✓\\'" data-payload="'+d.payload+'" class="btn btn-outline" style="margin-bottom:14px;">Copiar código PIX</button>'+
-            '<button onclick="verificarPix(this)" class="btn btn-primary btn-full">Já paguei — verificar</button>'+
-            '<div id="status-pix" style="margin-top:10px;"></div>'+
-            '</div>';
-        }catch(e){ btn.disabled=false; btn.textContent='Gerar QR Code PIX'; areaR.innerHTML='<div class="msg-erro">Erro ao gerar PIX.</div>'; }
-      }
-      async function verificarPix(btn){
-        btn.disabled=true; btn.textContent='Verificando...';
-        const areaStatus = document.getElementById('status-pix');
-        try{
-          const r = await fetch(PG_URL_STATUS);
-          const d = await r.json();
-          btn.disabled=false; btn.textContent='Já paguei — verificar';
-          if(d.pago){ window.location.href = PG_URL_CONFIRMACAO; return; }
-          areaStatus.innerHTML = '<div class="msg-info">Ainda não identificamos o pagamento. Se já pagou, aguarde alguns segundos e tente de novo.</div>';
-        }catch(e){ btn.disabled=false; btn.textContent='Já paguei — verificar'; areaStatus.innerHTML='<div class="msg-erro">Erro ao verificar.</div>'; }
-      }
-      async function pagarCartao(){
-        const btn = document.getElementById('btn-pagar-cartao'); btn.disabled=true; btn.textContent='Processando...';
-        const areaR = document.getElementById('resultado-cartao');
+      const PG_URL_CHECKOUT = '${urlCheckout}';
+      async function irParaCheckout(){
+        const btn = document.getElementById('btn-checkout');
+        const textoOriginal = btn.textContent;
+        btn.disabled = true; btn.textContent = 'Abrindo o pagamento...';
+        const areaR = document.getElementById('resultado-checkout');
         areaR.innerHTML = '';
-        const corpo = {
-          parcelas: document.getElementById('pg-parcelas').value,
-          holderName: document.getElementById('pg-holderName').value,
-          number: document.getElementById('pg-number').value,
-          expiryMonth: document.getElementById('pg-expiryMonth').value,
-          expiryYear: document.getElementById('pg-expiryYear').value,
-          ccv: document.getElementById('pg-ccv').value,
-          email: document.getElementById('pg-email').value,
-          cpfCnpj: document.getElementById('pg-cpf').value,
-          postalCode: document.getElementById('pg-cep').value,
-          addressNumber: document.getElementById('pg-numero').value,
-          phone: document.getElementById('pg-telefone').value
-        };
         try{
-          const r = await fetch(PG_URL_CARTAO, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(corpo) });
+          const r = await fetch(PG_URL_CHECKOUT, { method:'POST' });
           const d = await r.json();
-          if(d.erro){ btn.disabled=false; btn.textContent='Pagar'; areaR.innerHTML='<div class="msg-erro">'+d.erro+'</div>'; return; }
-          if(d.pago){ window.location.href = PG_URL_CONFIRMACAO; return; }
-          btn.disabled=false; btn.textContent='Pagar';
-          areaR.innerHTML='<div class="msg-info">Pagamento em análise (status: '+d.status+').</div>';
-        }catch(e){ btn.disabled=false; btn.textContent='Pagar'; areaR.innerHTML='<div class="msg-erro">Erro ao processar pagamento.</div>'; }
+          if(d.erro || !d.url){
+            btn.disabled = false; btn.textContent = textoOriginal;
+            areaR.innerHTML = '<div class="msg-erro">' + (d.erro || 'Não foi possível abrir o pagamento agora.') + '</div>';
+            return;
+          }
+          window.location.href = d.url;
+        }catch(e){
+          btn.disabled = false; btn.textContent = textoOriginal;
+          areaR.innerHTML = '<div class="msg-erro">Não foi possível abrir o pagamento agora.</div>';
+        }
       }
     </script>
   `;
+}
+
+// Tela mostrada quando o cliente voltou da InfinitePay mas a confirmação ainda não chegou:
+// recarrega sozinha a cada 3s (até ~45s) e, quando o pagamento é confirmado, a rota redireciona.
+function telaAguardandoPagamento(r){
+  if(r && r.divergente){
+    return `<div class="container-sm"><div class="msg-erro" style="margin-bottom:16px;">O valor pago não confere com o pedido. Fale com a ALMARE para resolvermos.</div><a href="/meus-pedidos" class="btn btn-outline">Meus pedidos</a></div>`;
+  }
+  return `
+    <div class="container-sm" style="text-align:center;padding:32px 0;">
+      <h2 style="font-size:26px;margin-bottom:12px;">Confirmando seu pagamento…</h2>
+      <p id="msg-aguardando" style="color:var(--muted);font-size:14px;">Estamos confirmando com a InfinitePay. Leva alguns segundos — não feche esta página.</p>
+    </div>
+    <script>
+      (function(){
+        var chave = 'ip_retorno_' + location.pathname;
+        var n = parseInt(sessionStorage.getItem(chave) || '0');
+        if(n >= 15){
+          document.getElementById('msg-aguardando').innerHTML = 'Ainda não recebemos a confirmação. Se você já pagou, ela chega em instantes: o pedido aparece como pago em Meus pedidos.';
+          sessionStorage.removeItem(chave);
+          return;
+        }
+        sessionStorage.setItem(chave, String(n + 1));
+        setTimeout(function(){ location.reload(); }, 3000);
+      })();
+    </script>
+  `;
+}
+
+// Casca das páginas públicas (sem login) — o cliente final não é obrigado a estar logado
+function paginaPublicaHtml(titulo, corpo){
+  return `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>${titulo} — ALMARE</title><style>${CSS}</style></head>
+    <body><div class="container" style="max-width:640px;padding-top:48px;">
+      <div class="logo" style="margin-bottom:32px;">ALMARE</div>
+      ${corpo}
+    </div></body></html>`;
 }
 
 // Tela de confirmação — celebra a compra, mostra número do pedido e resumo, com
@@ -3350,7 +3283,7 @@ app.post('/pedido-interno/:id/reabrir', authMembro, async(req,res)=>{
   try{
     const pedidoId = parseInt(req.params.id);
     const r = await pool.query(
-      `UPDATE circulo_pedidos SET status='CARRINHO', asaas_cliente_id=NULL, asaas_cobranca_id=NULL, invoice_url=NULL, link_publico=NULL
+      `UPDATE circulo_pedidos SET status='CARRINHO', checkout_url=NULL, link_publico=NULL
        WHERE id=$1 AND (membro_id=$2 OR cliente_membro_id=$2) AND status='AGUARDANDO_PAGAMENTO' RETURNING id`,
       [pedidoId, req.membro.id]
     );
@@ -3369,14 +3302,7 @@ app.get('/pedido-interno/:id/pagar', authMembro, async(req,res)=>{
   if(check.rows[0].status === 'PAGO') return res.redirect('/meus-pedidos');
 
   const { pedido, cliente, linhas } = await montarResumoPedidoHtml(pedidoId);
-  const uiPagamento = montarUiPagamento(
-    '/pedido-interno/'+pedidoId+'/pagamento/pix',
-    '/pedido-interno/'+pedidoId+'/pagamento/cartao',
-    '/pedido-interno/'+pedidoId+'/status',
-    '/pedido-interno/'+pedidoId+'/confirmado',
-    { total: parseFloat(pedido.total), nome: cliente.nome, documento: cliente.documento,
-      telefone: cliente.telefone||cliente.celular, email: cliente.email, cep: cliente.cep, numero: cliente.numero }
-  );
+  const uiPagamento = montarUiPagamento('/pedido-interno/'+pedidoId+'/pagamento/checkout', pedido.total);
 
   res.send(html('Pagar pedido',`
     <a href="/meus-pedidos" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);display:inline-block;margin-bottom:24px;">← Voltar aos pedidos</a>
@@ -3397,31 +3323,25 @@ app.get('/pedido-interno/:id/pagar', authMembro, async(req,res)=>{
   `,true));
 });
 
-app.post('/pedido-interno/:id/pagamento/pix', authMembro, async(req,res)=>{
+app.post('/pedido-interno/:id/pagamento/checkout', authMembro, async(req,res)=>{
   try{
     const pedidoId = parseInt(req.params.id);
     const check = await pool.query(`SELECT id FROM circulo_pedidos WHERE id=$1 AND (membro_id=$2 OR cliente_membro_id=$2)`,[pedidoId, req.membro.id]);
     if(!check.rows.length) return res.json({ erro:'Pedido não encontrado.' });
-    const dadosPix = await obterOuCriarPix(pedidoId);
-    res.json(dadosPix);
-  }catch(e){ res.json({ erro: e.message }); }
+    res.json({ url: await criarCheckoutPedido(pedidoId, 'membro') });
+  }catch(e){ console.error('Checkout pedido:', e.message); res.json({ erro: e.message }); }
 });
 
-app.post('/pedido-interno/:id/pagamento/cartao', authMembro, async(req,res)=>{
-  try{
-    const pedidoId = parseInt(req.params.id);
-    const check = await pool.query(`SELECT id FROM circulo_pedidos WHERE id=$1 AND (membro_id=$2 OR cliente_membro_id=$2)`,[pedidoId, req.membro.id]);
-    if(!check.rows.length) return res.json({ erro:'Pedido não encontrado.' });
-    const resultado = await pagarComCartao(pedidoId, req.body, req.ip);
-    res.json(resultado);
-  }catch(e){ res.json({ erro: e.message }); }
-});
-
-app.get('/pedido-interno/:id/status', authMembro, async(req,res)=>{
+// Volta da InfinitePay (membro): confirma na hora e leva pra tela de pedido confirmado
+app.get('/pedido-interno/:id/retorno', authMembro, async(req,res)=>{
   const pedidoId = parseInt(req.params.id);
-  const r = await pool.query(`SELECT status FROM circulo_pedidos WHERE id=$1 AND (membro_id=$2 OR cliente_membro_id=$2)`,[pedidoId, req.membro.id]);
-  if(!r.rows.length) return res.json({ erro:'Pedido não encontrado.' });
-  res.json({ pago: r.rows[0].status === 'PAGO' });
+  const check = await pool.query(`SELECT id FROM circulo_pedidos WHERE id=$1 AND (membro_id=$2 OR cliente_membro_id=$2)`,[pedidoId, req.membro.id]);
+  if(!check.rows.length) return res.redirect('/meus-pedidos');
+  let r;
+  try{ r = await confirmarRetornoPagamento(pedidoId, req.query); }
+  catch(e){ console.error('Retorno pagamento:', e.message); r = { pago:false, aguardando:true }; }
+  if(r.pago) return res.redirect('/pedido-interno/'+pedidoId+'/confirmado');
+  res.send(html('Confirmando pagamento', telaAguardandoPagamento(r), true));
 });
 
 app.get('/pedido-interno/:id/confirmado', authMembro, async(req,res)=>{
@@ -3439,13 +3359,7 @@ app.get('/carrinho/finalizar', authMembro, async(req,res)=>{
   if(!pedido.cliente_membro_id) return res.redirect('/carrinho');
 
   const { cliente, linhas } = await montarResumoPedidoHtml(pedido.id);
-  const uiPagamento = montarUiPagamento(
-    '/carrinho/pagamento/pix', '/carrinho/pagamento/cartao',
-    '/pedido-interno/'+pedido.id+'/status', '/pedido-interno/'+pedido.id+'/confirmado',
-    { total: parseFloat(pedido.total),
-      nome: cliente.nome, documento: cliente.documento, telefone: cliente.telefone||cliente.celular,
-      email: cliente.email, cep: cliente.cep, numero: cliente.numero }
-  );
+  const uiPagamento = montarUiPagamento('/carrinho/pagamento/checkout', pedido.total);
 
   res.send(html('Finalizar pedido',`
     <a href="/carrinho" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);display:inline-block;margin-bottom:24px;">← Voltar ao carrinho</a>
@@ -3495,22 +3409,12 @@ app.post('/carrinho/gerar-link', authMembro, async(req,res)=>{
   }catch(e){ res.json({ erro: e.message }); }
 });
 
-app.post('/carrinho/pagamento/pix', authMembro, async(req,res)=>{
+app.post('/carrinho/pagamento/checkout', authMembro, async(req,res)=>{
   try{
     const pedidoRes = await pool.query(`SELECT id FROM circulo_pedidos WHERE membro_id=$1 AND status IN ('CARRINHO','AGUARDANDO_PAGAMENTO') ORDER BY criado_em DESC LIMIT 1`,[req.membro.id]);
     if(!pedidoRes.rows.length) return res.json({ erro:'Pedido não encontrado.' });
-    const dadosPix = await obterOuCriarPix(pedidoRes.rows[0].id);
-    res.json(dadosPix);
-  }catch(e){ res.json({ erro: e.message }); }
-});
-
-app.post('/carrinho/pagamento/cartao', authMembro, async(req,res)=>{
-  try{
-    const pedidoRes = await pool.query(`SELECT id FROM circulo_pedidos WHERE membro_id=$1 AND status IN ('CARRINHO','AGUARDANDO_PAGAMENTO') ORDER BY criado_em DESC LIMIT 1`,[req.membro.id]);
-    if(!pedidoRes.rows.length) return res.json({ erro:'Pedido não encontrado.' });
-    const resultado = await pagarComCartao(pedidoRes.rows[0].id, req.body, req.ip);
-    res.json(resultado);
-  }catch(e){ res.json({ erro: e.message }); }
+    res.json({ url: await criarCheckoutPedido(pedidoRes.rows[0].id, 'membro') });
+  }catch(e){ console.error('Checkout carrinho:', e.message); res.json({ erro: e.message }); }
 });
 
 // ─── PÁGINA PÚBLICA — cliente vê o pedido e paga sozinho, sem precisar de login ──
@@ -3519,13 +3423,7 @@ app.get('/pedido/:token', async(req,res)=>{
   if(!r.rows.length) return res.status(404).send(html('Pedido',`<div class="container-sm"><div class="msg-erro">Este link não existe mais.</div></div>`));
   const { pedido, cliente, linhas } = await montarResumoPedidoHtml(r.rows[0].id);
   const tokenEsc = esc(req.params.token);
-  const uiPagamento = montarUiPagamento(
-    '/pedido/'+tokenEsc+'/pagamento/pix', '/pedido/'+tokenEsc+'/pagamento/cartao',
-    '/pedido/'+tokenEsc+'/status', '/pedido/'+tokenEsc+'/confirmado',
-    { total: parseFloat(pedido.total),
-      nome: cliente.nome, documento: cliente.documento, telefone: cliente.telefone||cliente.celular,
-      email: cliente.email, cep: cliente.cep, numero: cliente.numero }
-  );
+  const uiPagamento = montarUiPagamento('/pedido/'+tokenEsc+'/pagamento/checkout', pedido.total);
 
   res.send(`<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
     <title>Seu pedido — ALMARE</title><style>${CSS}</style></head>
@@ -3544,34 +3442,29 @@ app.get('/pedido/:token', async(req,res)=>{
       </div>
       <div class="card">
         <h3 style="font-size:18px;margin-bottom:16px;">Pagamento</h3>
-        <p style="color:var(--muted);font-size:12px;margin-bottom:16px;">PIX ou cartão de crédito em até 6x, processado com segurança pelo Asaas.</p>
+        <p style="color:var(--muted);font-size:12px;margin-bottom:16px;">PIX ou cartão de crédito (até 12x), processado com segurança pela InfinitePay.</p>
         ${uiPagamento}
       </div>
     </div></body></html>`);
 });
 
-app.post('/pedido/:token/pagamento/pix', async(req,res)=>{
+app.post('/pedido/:token/pagamento/checkout', async(req,res)=>{
   try{
     const r = await pool.query('SELECT id FROM circulo_pedidos WHERE link_publico=$1',[req.params.token]);
     if(!r.rows.length) return res.json({ erro:'Pedido não encontrado.' });
-    const dadosPix = await obterOuCriarPix(r.rows[0].id);
-    res.json(dadosPix);
-  }catch(e){ res.json({ erro: e.message }); }
+    res.json({ url: await criarCheckoutPedido(r.rows[0].id, 'publico') });
+  }catch(e){ console.error('Checkout público:', e.message); res.json({ erro: e.message }); }
 });
 
-app.post('/pedido/:token/pagamento/cartao', async(req,res)=>{
-  try{
-    const r = await pool.query('SELECT id FROM circulo_pedidos WHERE link_publico=$1',[req.params.token]);
-    if(!r.rows.length) return res.json({ erro:'Pedido não encontrado.' });
-    const resultado = await pagarComCartao(r.rows[0].id, req.body, req.ip);
-    res.json(resultado);
-  }catch(e){ res.json({ erro: e.message }); }
-});
-
-app.get('/pedido/:token/status', async(req,res)=>{
-  const r = await pool.query('SELECT status FROM circulo_pedidos WHERE link_publico=$1',[req.params.token]);
-  if(!r.rows.length) return res.json({ erro:'Pedido não encontrado.' });
-  res.json({ pago: r.rows[0].status === 'PAGO' });
+// Volta da InfinitePay (cliente, sem login): confirma na hora e leva pra tela de pedido confirmado
+app.get('/pedido/:token/retorno', async(req,res)=>{
+  const r = await pool.query('SELECT id FROM circulo_pedidos WHERE link_publico=$1',[req.params.token]);
+  if(!r.rows.length) return res.status(404).send(html('Pedido',`<div class="container-sm"><div class="msg-erro">Este link não existe mais.</div></div>`));
+  let resultado;
+  try{ resultado = await confirmarRetornoPagamento(r.rows[0].id, req.query); }
+  catch(e){ console.error('Retorno pagamento (público):', e.message); resultado = { pago:false, aguardando:true }; }
+  if(resultado.pago) return res.redirect('/pedido/'+req.params.token+'/confirmado');
+  res.send(paginaPublicaHtml('Confirmando pagamento', telaAguardandoPagamento(resultado)));
 });
 
 app.get('/pedido/:token/confirmado', async(req,res)=>{
@@ -3586,52 +3479,68 @@ app.get('/pedido/:token/confirmado', async(req,res)=>{
     </div></body></html>`);
 });
 
-// ─── WEBHOOK ASAAS — confirma pagamento automaticamente ──────────────────────
-// O Asaas chama esta rota sozinho quando o status de uma cobrança muda. Nunca requer
-// login (é o próprio Asaas batendo aqui, não um membro). Sempre responde rápido.
-app.post('/webhook/asaas', async(req,res)=>{
+// ─── WEBHOOK INFINITEPAY — confirma pagamento automaticamente ─────────────────
+// A InfinitePay chama esta rota quando um pagamento é concluído. O endereço (com o segredo) é enviado pelo
+// próprio sistema em cada link de pagamento — NÃO existe nada pra configurar no painel deles.
+// Regra deles: 200 = recebido; 400 = eles tentam de novo. Por isso: erro nosso / conferência indisponível
+// responde 400 (o pagamento não pode se perder); pedido inexistente, já processado ou valor divergente
+// respondem 200 (não gera retentativa infinita).
+app.post('/webhook/infinitepay', async(req,res)=>{
   try{
-    // Valida que a chamada realmente veio do Asaas — protege contra alguém forjar o aviso.
-    // Se a variável não estiver configurada ainda, deixa passar (evita travar antes de configurar).
-    if(process.env.ASAAS_WEBHOOK_TOKEN){
-      const tokenRecebido = req.headers['asaas-access-token'];
-      if(tokenRecebido !== process.env.ASAAS_WEBHOOK_TOKEN){
-        console.error('Webhook Asaas: token inválido, requisição rejeitada.');
-        return res.status(401).json({ received:false });
-      }
+    if(!infinitepay.segredoConfere(req.query.s)){
+      console.error('Webhook InfinitePay: segredo inválido, requisição rejeitada.');
+      return res.status(401).json({ received:false });
+    }
+    const b = req.body || {};
+    const m = String(b.order_nsu || '').match(/^circulo-(\d{1,9})$/);
+    if(!m || !b.transaction_nsu || !b.invoice_slug){
+      console.log('Webhook InfinitePay: ignorado (payload sem order_nsu/transaction_nsu/invoice_slug válidos).');
+      return res.json({ received:true, ignorado:true });
+    }
+    const pedidoId = parseInt(m[1]);
+    console.log('Webhook InfinitePay: recebido pedido ' + pedidoId + ' | NSU ' + b.transaction_nsu + ' | método ' + b.capture_method + ' | valor ' + b.amount);
+
+    const pRes = await pool.query('SELECT id, numero, status, total FROM circulo_pedidos WHERE id=$1',[pedidoId]);
+    if(!pRes.rows.length){
+      console.log('Webhook InfinitePay: nenhum pedido com id ' + pedidoId);
+      return res.json({ received:true, ignorado:true });
+    }
+    const p = pRes.rows[0];
+    if(p.status !== 'AGUARDANDO_PAGAMENTO'){
+      if(p.status === 'PAGO') console.log('Webhook InfinitePay: pedido ' + p.numero + ' já estava PAGO — nada a fazer.');
+      else console.error('Webhook InfinitePay: ATENÇÃO — pagamento recebido para pedido ' + p.numero + ' com status ' + p.status + ' — precisa de análise/estorno manual no app da InfinitePay.');
+      return res.json({ received:true, jaProcessado:true });
     }
 
-    const { id: eventId, event, payment } = req.body || {};
-    if(!eventId || !event) return res.json({ received:true });
-
-    // Idempotência: o Asaas pode reenviar o mesmo evento mais de uma vez. Se já
-    // processamos este event_id antes, não processa de novo — só confirma recebido.
-    const dedup = await pool.query(
-      'INSERT INTO circulo_asaas_eventos (event_id) VALUES ($1) ON CONFLICT DO NOTHING RETURNING event_id',
-      [eventId]
-    );
-    if(!dedup.rows.length) return res.json({ received:true });
-
-    if((event === 'PAYMENT_CONFIRMED' || event === 'PAYMENT_RECEIVED') && payment && payment.externalReference){
-      const m = String(payment.externalReference).match(/^circulo-pedido-(\d+)$/);
-      if(m){
-        const pedidoId = parseInt(m[1]);
-        const upd = await pool.query(
-          `UPDATE circulo_pedidos SET status='PAGO' WHERE id=$1 AND status<>'PAGO' RETURNING id`,
-          [pedidoId]
-        );
-        if(upd.rows.length){
-          console.log(`Webhook Asaas: pedido ${pedidoId} marcado como PAGO (evento ${event})`);
-          sincronizarPedidoBlingSeguro(pedidoId); // não bloqueia a resposta ao Asaas
-          concederBonusPedido(pedidoId);
-        }
-      }
+    // Conferência independente na InfinitePay: só libera o que eles confirmam como pago, no valor exato.
+    let check;
+    try{
+      check = await infinitepay.verificarPagamento({ orderNsu: b.order_nsu, transactionNsu: b.transaction_nsu, slug: b.invoice_slug });
+    }catch(e){
+      console.error('Webhook InfinitePay: não consegui conferir o pagamento agora (' + e.message + ') — 400 pra tentarem de novo.');
+      return res.status(400).json({ received:false });
     }
+    if(!check.pago){
+      console.error('Webhook InfinitePay: aviso de pagamento, mas a conferência diz que NÃO está pago (pedido ' + p.numero + ') — 400 pra tentarem de novo.');
+      return res.status(400).json({ received:false });
+    }
+    if(check.valor !== infinitepay.centavos(p.total)){
+      console.error('Webhook InfinitePay: ATENÇÃO — valor diverge no pedido ' + p.numero + ' | esperado (centavos): ' + infinitepay.centavos(p.total) + ' | pago: ' + check.valor + ' — pedido NÃO liberado.');
+      return res.json({ received:true, divergente:true });
+    }
+
+    await confirmarPagamentoPedido(p.id, {
+      metodo: infinitepay.mapearMetodo(check.metodo || b.capture_method),
+      transacaoNsu: b.transaction_nsu,
+      reciboUrl: b.receipt_url || null,
+      valorPago: check.valorPago != null ? check.valorPago/100 : null,
+      parcelas: check.parcelas != null ? check.parcelas : (b.installments != null ? Number(b.installments) : null),
+      origem: 'WEBHOOK'
+    });
     res.json({ received:true });
   }catch(e){
-    console.error('Webhook Asaas erro:', e.message);
-    // Responde erro pro Asaas tentar de novo mais tarde — só em falha real (ex: banco fora do ar)
-    res.status(500).json({ received:false });
+    console.error('Webhook InfinitePay erro:', e.message);
+    res.status(400).json({ received:false });
   }
 });
 
@@ -4224,6 +4133,22 @@ app.get('/admin',authAdmin,async(req,res)=>{
     JOIN circulo_funcoes f ON f.id=mf.funcao_id
     WHERE mf.ativo=false ORDER BY mf.id ASC`);
   const membros=await pool.query('SELECT * FROM circulo_resumo_membro ORDER BY membro_desde DESC');
+  const aguardando=await pool.query(`
+    SELECT p.id, p.numero, p.total, p.criado_em, m.nome AS membro_nome, c.nome AS cliente_nome
+    FROM circulo_pedidos p JOIN circulo_membros m ON m.id=p.membro_id LEFT JOIN circulo_membros c ON c.id=p.cliente_membro_id
+    WHERE p.status='AGUARDANDO_PAGAMENTO' AND p.criado_em > NOW() - INTERVAL '30 days'
+    ORDER BY p.criado_em DESC LIMIT 20`).catch(()=>({rows:[]}));
+  const linhaAguardando=aguardando.rows.map(p=>`
+    <tr>
+      <td><strong>${esc(p.numero)}</strong><br><span style="font-size:11px;color:var(--muted)">${new Date(p.criado_em).toLocaleString('pt-BR')}</span></td>
+      <td>${esc(p.cliente_nome||'—')}<br><span style="font-size:11px;color:var(--muted)">pedido de ${esc(p.membro_nome)}</span></td>
+      <td style="color:var(--gold)">R$ ${parseFloat(p.total).toFixed(2).replace('.',',')}</td>
+      <td>
+        <form method="POST" action="/admin/pedidos/${p.id}/confirmar-pagamento" style="display:inline" onsubmit="return confirm('Confirmar o pagamento do pedido ${esc(p.numero)}? Só faça isso depois de VER o valor entrando na sua conta InfinitePay.')">
+          <button class="btn btn-outline" style="padding:6px 14px;font-size:10px;">✔ Confirmar pagamento</button>
+        </form>
+      </td>
+    </tr>`).join('');
 
   const linhaPendentes=pendentes.rows.map(p=>`
     <tr>
@@ -4283,6 +4208,13 @@ app.get('/admin',authAdmin,async(req,res)=>{
       <strong>Sincronização concluída:</strong> ${req.query.bling_sync} membro(s) enviado(s) ao Bling com sucesso.
       ${req.query.bling_falhas ? `<br><span style="font-size:12px;color:var(--muted)">Falharam: ${decodeURIComponent(req.query.bling_falhas)}</span>` : ''}
     </div>` : ''}
+    ${aguardando.rows.length?`
+    <div class="card" style="margin-bottom:24px;">
+      <h3 style="font-size:18px;margin-bottom:6px;">Pedidos aguardando pagamento</h3>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:16px;">Normalmente a confirmação é automática. Use o botão só se o pagamento já apareceu na sua conta InfinitePay e o pedido continua aqui.</p>
+      <table><thead><tr><th>Pedido</th><th>Cliente</th><th>Total</th><th>Ação</th></tr></thead>
+      <tbody>${linhaAguardando}</tbody></table>
+    </div>`:''}
     ${pendentes.rows.length?`
     <div class="card" style="margin-bottom:24px;">
       <h3 style="font-size:18px;margin-bottom:20px;color:var(--gold);">Funções aguardando aprovação</h3>
@@ -4296,6 +4228,15 @@ app.get('/admin',authAdmin,async(req,res)=>{
     </div>
     <a href="/admin/sugestoes" class="btn btn-outline">Ver sugestões dos membros</a>
   `));
+});
+
+// Confirmação MANUAL de pagamento — trava de segurança. Passa pelo mesmo caminho do webhook
+// (libera o pedido, sincroniza o Bling e concede o cashback), e fica registrada como MANUAL_ADMIN.
+app.post('/admin/pedidos/:id/confirmar-pagamento', authAdmin, async(req,res)=>{
+  try{
+    await confirmarPagamentoPedido(parseInt(req.params.id), { origem:'MANUAL_ADMIN' });
+  }catch(e){ console.error('Confirmar pagamento manual:', e.message); }
+  res.redirect('/admin');
 });
 
 // ─── APROVAR / RECUSAR FUNÇÃO ─────────────────────────────────────────────────
@@ -4539,7 +4480,6 @@ async function garantirTabelas(){
     // Dados do membro reaproveitados no faturamento
     await pool.query(`ALTER TABLE circulo_membros ADD COLUMN IF NOT EXISTS bling_id VARCHAR(50);`).catch(()=>{});
     await pool.query(`ALTER TABLE circulo_membros ADD COLUMN IF NOT EXISTS documento VARCHAR(20);`).catch(()=>{});
-    await pool.query(`ALTER TABLE circulo_membros ADD COLUMN IF NOT EXISTS asaas_cliente_id VARCHAR(50);`).catch(()=>{});
     await pool.query(`ALTER TABLE circulo_membros ADD COLUMN IF NOT EXISTS telefone VARCHAR(20);`).catch(()=>{});
     await pool.query(`ALTER TABLE circulo_membros ADD COLUMN IF NOT EXISTS celular VARCHAR(20);`).catch(()=>{});
     await pool.query(`ALTER TABLE circulo_membros ADD COLUMN IF NOT EXISTS ie VARCHAR(30);`).catch(()=>{});
@@ -4550,14 +4490,8 @@ async function garantirTabelas(){
     await pool.query(`ALTER TABLE circulo_membros ADD COLUMN IF NOT EXISTS bairro VARCHAR(100);`).catch(()=>{});
     await pool.query(`ALTER TABLE circulo_membros ADD COLUMN IF NOT EXISTS cidade VARCHAR(100);`).catch(()=>{});
     await pool.query(`ALTER TABLE circulo_membros ADD COLUMN IF NOT EXISTS estado VARCHAR(2);`).catch(()=>{});
-    // Evita processar o mesmo evento do Asaas duas vezes (eles reenviam em caso de falha)
-    await pool.query(`CREATE TABLE IF NOT EXISTS circulo_asaas_eventos (
-      event_id VARCHAR(80) PRIMARY KEY,
-      recebido_em TIMESTAMP DEFAULT NOW()
-    );`).catch(()=>{});
     await pool.query(`ALTER TABLE circulo_pedidos ADD COLUMN IF NOT EXISTS cliente_membro_id INTEGER REFERENCES circulo_membros(id);`).catch(()=>{});
     await pool.query(`ALTER TABLE circulo_pedidos ADD COLUMN IF NOT EXISTS link_publico VARCHAR(20) UNIQUE;`).catch(()=>{});
-    await pool.query(`ALTER TABLE circulo_pedidos ADD COLUMN IF NOT EXISTS invoice_url TEXT;`).catch(()=>{});
     // Carrinho e checkout de obras
     await pool.query(`
       CREATE TABLE IF NOT EXISTS circulo_pedidos (
@@ -4567,8 +4501,6 @@ async function garantirTabelas(){
         status VARCHAR(30) NOT NULL DEFAULT 'CARRINHO',
         total NUMERIC(10,2) DEFAULT 0,
         metodo_pagamento VARCHAR(20),
-        asaas_cliente_id VARCHAR(50),
-        asaas_cobranca_id VARCHAR(50),
         bling_pedido_id VARCHAR(50),
         bling_erro TEXT,
         criado_em TIMESTAMP DEFAULT NOW()
@@ -4596,8 +4528,31 @@ async function garantirTabelas(){
   }
 }
 
+// Colunas do pagamento (InfinitePay). Função INDEPENDENTE de garantirTabelas: roda sempre logo depois dela,
+// mesmo que algum passo anterior falhe. Só ADICIONA — as colunas antigas do Asaas (asaas_cliente_id,
+// asaas_cobranca_id, invoice_url e a tabela circulo_asaas_eventos) ficam no banco só pelo histórico.
+async function garantirColunasPagamento(){
+  let falhas = 0;
+  for(const sql of [
+    `ALTER TABLE circulo_pedidos ADD COLUMN IF NOT EXISTS checkout_url TEXT`,
+    `ALTER TABLE circulo_pedidos ADD COLUMN IF NOT EXISTS pagamento_transacao_nsu VARCHAR(100)`,
+    `ALTER TABLE circulo_pedidos ADD COLUMN IF NOT EXISTS pagamento_recibo_url TEXT`,
+    `ALTER TABLE circulo_pedidos ADD COLUMN IF NOT EXISTS pagamento_valor_pago NUMERIC(12,2)`,
+    `ALTER TABLE circulo_pedidos ADD COLUMN IF NOT EXISTS pagamento_parcelas INTEGER`,
+    `ALTER TABLE circulo_pedidos ADD COLUMN IF NOT EXISTS pagamento_origem VARCHAR(30)`,
+    `ALTER TABLE circulo_pedidos ADD COLUMN IF NOT EXISTS pago_em TIMESTAMP`,
+    // uma mesma transação da InfinitePay nunca pode liberar dois pedidos
+    `CREATE UNIQUE INDEX IF NOT EXISTS ux_circulo_pedidos_transacao_nsu ON circulo_pedidos (pagamento_transacao_nsu) WHERE pagamento_transacao_nsu IS NOT NULL`
+  ]){
+    try{ await pool.query(sql); }
+    catch(e){ falhas++; console.error('garantirColunasPagamento falhou (o servidor segue no ar):', sql, '->', e.message); }
+  }
+  console.log('garantirColunasPagamento: ' + (falhas ? falhas + ' passo(s) com erro, veja acima' : 'ok'));
+}
+
 const PORT=process.env.PORT||3000;
 app.listen(PORT,()=>{
   console.log(`Círculo ALMARE rodando na porta ${PORT}`);
-  garantirTabelas();
+  if(!infinitepay.configurado()) console.error('[PAGAMENTO] ATENÇÃO: INFINITEPAY_HANDLE não está configurado — ninguém conseguirá pagar até essa variável ser definida no Railway.');
+  garantirTabelas().finally(garantirColunasPagamento);
 });
