@@ -13,7 +13,7 @@
 const crypto = require('crypto');
 
 const API_LINKS = 'https://api.checkout.infinitepay.io/links';
-const API_CHECK = 'https://api.infinitepay.io/invoices/public/checkout/payment_check';
+const API_CHECK = 'https://api.checkout.infinitepay.io/payment_check';
 const TIMEOUT_MS = 15000;
 
 function handle(){
