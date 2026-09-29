@@ -4190,6 +4190,23 @@ app.get('/admin',authAdmin,async(req,res)=>{
       <a href="/admin/modelos-3d" class="btn btn-outline" style="padding:8px 16px;font-size:11px;">Gerenciar</a>
     </div>
     <div class="card" style="margin-bottom:24px;display:flex;justify-content:space-between;align-items:center;">
+      <div><strong>Teste de pagamento</strong><br><span style="font-size:12px;color:var(--muted)">Gera pedido de R$ 1,00 pelo caminho real — mesmo checkout, mesmo webhook</span></div>
+      <button type="button" class="btn btn-outline" style="padding:8px 16px;font-size:11px;" onclick="gerarPedidoTesteAdmin(this)">Gerar pedido de teste</button>
+    </div>
+    <script>
+      async function gerarPedidoTesteAdmin(btn){
+        const textoOriginal = btn.textContent;
+        btn.disabled = true; btn.textContent = 'Gerando...';
+        try{
+          const r = await fetch('/admin/pedido-teste', { method:'POST' });
+          const d = await r.json();
+          if(!r.ok || d.erro){ alert(d.erro || 'Não foi possível gerar o pedido de teste.'); }
+          else { window.open(d.url, '_blank'); }
+        }catch(e){ alert('Não conseguiu falar com o servidor.'); }
+        btn.disabled = false; btn.textContent = textoOriginal;
+      }
+    </script>
+    <div class="card" style="margin-bottom:24px;display:flex;justify-content:space-between;align-items:center;">
       <div>
         <strong>Conexão Bling do Círculo</strong><br>
         <span style="font-size:12px;color:var(--muted)">${blingConectado?'✓ Conectado (isolado, exclusivo do Círculo)':'⚠ Não conectado — cadastros não sincronizam com o Bling'}</span>
@@ -4237,6 +4254,39 @@ app.post('/admin/pedidos/:id/confirmar-pagamento', authAdmin, async(req,res)=>{
     await confirmarPagamentoPedido(parseInt(req.params.id), { origem:'MANUAL_ADMIN' });
   }catch(e){ console.error('Confirmar pagamento manual:', e.message); }
   res.redirect('/admin');
+});
+
+// Gera um pedido de teste (R$1 por padrao) pelo caminho REAL do sistema — mesma criacao de pedido,
+// mesmo link da InfinitePay, mesmo webhook — so o preco muda. Existe pra nao precisar montar um
+// pedido de verdade (tamanho normal, R$300+) so pra testar se o pagamento esta funcionando.
+app.post('/admin/pedido-teste', authAdmin, async(req,res)=>{
+  try{
+    const valor = Number(req.body?.valor) > 0 ? Number(req.body.valor) : 1.0;
+    const membro = await pool.query('SELECT id FROM circulo_membros ORDER BY id ASC LIMIT 1');
+    if(!membro.rows.length) return res.status(400).json({ erro: 'Nenhum membro cadastrado para atribuir o pedido de teste.' });
+    const membroId = membro.rows[0].id;
+    const obra = await pool.query("SELECT id FROM almare_obras WHERE status='aprovada' ORDER BY id ASC LIMIT 1");
+    if(!obra.rows.length) return res.status(400).json({ erro: 'Nenhuma obra aprovada para o item de teste.' });
+    const obraId = obra.rows[0].id;
+
+    const numero = 'TESTE-' + Date.now();
+    const pedido = await pool.query(
+      `INSERT INTO circulo_pedidos (numero, membro_id, cliente_membro_id, status, total) VALUES ($1,$2,$2,'AGUARDANDO_PAGAMENTO',$3) RETURNING id`,
+      [numero, membroId, valor]
+    );
+    const pedidoId = pedido.rows[0].id;
+    await pool.query(
+      `INSERT INTO circulo_pedido_itens (pedido_id,obra_id,tamanho_label,largura,altura,moldura,quantidade,preco_unitario,subtotal)
+       VALUES ($1,$2,'Teste',1,1,'preta',1,$3,$3)`,
+      [pedidoId, obraId, valor]
+    );
+
+    const url = await criarCheckoutPedido(pedidoId, 'membro');
+    res.json({ pedidoId, numero, url });
+  }catch(e){
+    console.error('Pedido de teste:', e.message);
+    res.status(500).json({ erro: e.message });
+  }
 });
 
 // ─── APROVAR / RECUSAR FUNÇÃO ─────────────────────────────────────────────────
