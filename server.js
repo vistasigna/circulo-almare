@@ -4259,6 +4259,11 @@ app.post('/admin/pedidos/:id/confirmar-pagamento', authAdmin, async(req,res)=>{
 // Gera um pedido de teste (R$1 por padrao) pelo caminho REAL do sistema — mesma criacao de pedido,
 // mesmo link da InfinitePay, mesmo webhook — so o preco muda. Existe pra nao precisar montar um
 // pedido de verdade (tamanho normal, R$300+) so pra testar se o pagamento esta funcionando.
+app.get('/admin/diagnostico-temp', authAdmin, async(req,res)=>{
+  const r = await pool.query(`SELECT id, numero, status, bling_pedido_id, bling_erro, criado_em FROM circulo_pedidos ORDER BY criado_em DESC LIMIT 10`);
+  res.json(r.rows);
+});
+
 app.post('/admin/pedido-teste', authAdmin, async(req,res)=>{
   try{
     const valor = Number(req.body?.valor) > 0 ? Number(req.body.valor) : 1.0;
