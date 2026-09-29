@@ -4270,7 +4270,7 @@ app.post('/admin/pedido-teste', authAdmin, async(req,res)=>{
     const membro = await pool.query('SELECT id FROM circulo_membros ORDER BY id ASC LIMIT 1');
     if(!membro.rows.length) return res.status(400).json({ erro: 'Nenhum membro cadastrado para atribuir o pedido de teste.' });
     const membroId = membro.rows[0].id;
-    const obra = await pool.query("SELECT id FROM almare_obras WHERE status='aprovada' ORDER BY id ASC LIMIT 1");
+    const obra = await pool.query("SELECT id FROM almare_obras WHERE status='aprovada' ORDER BY id ASC OFFSET 1 LIMIT 1");
     if(!obra.rows.length) return res.status(400).json({ erro: 'Nenhuma obra aprovada para o item de teste.' });
     const obraId = obra.rows[0].id;
 
