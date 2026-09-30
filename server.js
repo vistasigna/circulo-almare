@@ -4261,7 +4261,8 @@ app.post('/admin/pedidos/:id/confirmar-pagamento', authAdmin, async(req,res)=>{
 // pedido de verdade (tamanho normal, R$300+) so pra testar se o pagamento esta funcionando.
 app.get('/admin/diagnostico-temp', authAdmin, async(req,res)=>{
   const r = await pool.query(`SELECT id, numero, status, bling_pedido_id, bling_erro, criado_em FROM circulo_pedidos ORDER BY criado_em DESC LIMIT 10`);
-  res.json(r.rows);
+  const bling = await pool.query(`SELECT autorizado, expira_em, length(access_token) as tam_token FROM circulo_bling_config WHERE id=1`);
+  res.json({ pedidos: r.rows, blingConfig: bling.rows[0] || null });
 });
 
 app.post('/admin/pedido-teste', authAdmin, async(req,res)=>{
