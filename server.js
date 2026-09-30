@@ -82,7 +82,7 @@ app.get('/auth/bling/callback', async (req, res) => {
     if (state !== _blingStateTemp) return res.status(400).send('Estado inválido — tenta conectar de novo pelo painel admin.');
 
     const creds = Buffer.from(`${BLING_CLIENT_ID}:${BLING_CLIENT_SECRET}`).toString('base64');
-    const resp = await fetch('https://www.bling.com.br/Api/v3/oauth/token', {
+    const resp = await fetch('https://api.bling.com.br/Api/v3/oauth/token', {
       method: 'POST',
       headers: { 'Authorization': `Basic ${creds}`, 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ grant_type: 'authorization_code', code, redirect_uri: BLING_REDIRECT_URI })
@@ -108,7 +108,7 @@ async function getBlingToken() {
   const config = r.rows[0];
   if (new Date(config.expira_em) <= new Date()) {
     const creds = Buffer.from(`${BLING_CLIENT_ID}:${BLING_CLIENT_SECRET}`).toString('base64');
-    const resp = await fetch('https://www.bling.com.br/Api/v3/oauth/token', {
+    const resp = await fetch('https://api.bling.com.br/Api/v3/oauth/token', {
       method: 'POST',
       headers: { 'Authorization': `Basic ${creds}`, 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: config.refresh_token })
@@ -4259,12 +4259,6 @@ app.post('/admin/pedidos/:id/confirmar-pagamento', authAdmin, async(req,res)=>{
 // Gera um pedido de teste (R$1 por padrao) pelo caminho REAL do sistema — mesma criacao de pedido,
 // mesmo link da InfinitePay, mesmo webhook — so o preco muda. Existe pra nao precisar montar um
 // pedido de verdade (tamanho normal, R$300+) so pra testar se o pagamento esta funcionando.
-app.get('/admin/diagnostico-temp', authAdmin, async(req,res)=>{
-  const r = await pool.query(`SELECT id, numero, status, bling_pedido_id, bling_erro, criado_em FROM circulo_pedidos ORDER BY criado_em DESC LIMIT 10`);
-  const bling = await pool.query(`SELECT autorizado, expira_em, length(access_token) as tam_token FROM circulo_bling_config WHERE id=1`);
-  res.json({ pedidos: r.rows, blingConfig: bling.rows[0] || null });
-});
-
 app.post('/admin/pedido-teste', authAdmin, async(req,res)=>{
   try{
     const valor = Number(req.body?.valor) > 0 ? Number(req.body.valor) : 1.0;
