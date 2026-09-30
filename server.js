@@ -4201,7 +4201,7 @@ app.get('/admin',authAdmin,async(req,res)=>{
           const r = await fetch('/admin/pedido-teste', { method:'POST' });
           const d = await r.json();
           if(!r.ok || d.erro){ alert(d.erro || 'Não foi possível gerar o pedido de teste.'); }
-          else { window.open(d.url, '_blank'); }
+          else { window.location.href = d.url; }
         }catch(e){ alert('Não conseguiu falar com o servidor.'); }
         btn.disabled = false; btn.textContent = textoOriginal;
       }
