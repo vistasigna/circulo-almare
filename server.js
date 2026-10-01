@@ -4259,20 +4259,6 @@ app.post('/admin/pedidos/:id/confirmar-pagamento', authAdmin, async(req,res)=>{
 // Gera um pedido de teste (R$1 por padrao) pelo caminho REAL do sistema — mesma criacao de pedido,
 // mesmo link da InfinitePay, mesmo webhook — so o preco muda. Existe pra nao precisar montar um
 // pedido de verdade (tamanho normal, R$300+) so pra testar se o pagamento esta funcionando.
-// TEMPORARIO — reenvia ao Bling o pedido de TESTE pago mais recente que falhou, pra provar que a permissao
-// de Pedidos de Venda funcionou. So mexe em pedido TESTE-*, nunca em pedido real. Remover depois.
-app.post('/admin/reenviar-bling-temp', authAdmin, async(req,res)=>{
-  try{
-    const r = await pool.query(`SELECT id, numero FROM circulo_pedidos WHERE status='PAGO' AND bling_pedido_id IS NULL AND numero LIKE 'TESTE-%' ORDER BY criado_em DESC LIMIT 1`);
-    if(!r.rows.length) return res.json({ erro: 'nenhum pedido de teste pago pendente' });
-    await pool.query('UPDATE circulo_pedidos SET bling_erro=NULL WHERE id=$1',[r.rows[0].id]);
-    let erro = null;
-    try{ await sincronizarPedidoBling(r.rows[0].id); }catch(e){ erro = e.message; }
-    const d = await pool.query('SELECT numero, bling_pedido_id, bling_erro FROM circulo_pedidos WHERE id=$1',[r.rows[0].id]);
-    res.json({ ...d.rows[0], erro_sincronizacao: erro });
-  }catch(e){ res.status(500).json({ erro: e.message }); }
-});
-
 app.post('/admin/pedido-teste', authAdmin, async(req,res)=>{
   try{
     const valor = Number(req.body?.valor) > 0 ? Number(req.body.valor) : 1.0;
