@@ -47,11 +47,21 @@ function gerarToken(payload, opts) { return jwt.sign(payload, JWT_SECRET, opts |
 // Rotas que precisam continuar acessíveis mesmo com cadastro incompleto — senão vira loop
 const ROTAS_LIVRES_CADASTRO_INCOMPLETO = ['/completar-cadastro', '/logout'];
 
+function destinoLogin(req){
+  if(req.method !== 'GET') return '/login';
+  const exclusivo = /^\/(simulador|modelos-3d)/.test(req.path);
+  return '/login?voltar=' + encodeURIComponent(req.originalUrl) + (exclusivo ? '&motivo=exclusivo' : '');
+}
 async function authMembro(req, res, next) {
   const token = req.cookies.circulo_token;
-  if (!token) return res.redirect('/login');
+  if (!token) return res.redirect(destinoLogin(req));
   try { req.membro = jwt.verify(token, JWT_SECRET); }
-  catch { res.clearCookie('circulo_token'); return res.redirect('/login'); }
+  catch { res.clearCookie('circulo_token'); return res.redirect(destinoLogin(req)); }
+
+  // Montou carrinho como visitante e acabou de entrar/se cadastrar: os itens vão pra conta e ele vai direto pro carrinho
+  let transferiu = false;
+  try { transferiu = await transferirCarrinhoVisitante(req, res, req.membro.id); } catch(e){ console.error(e.message); }
+  if (transferiu && req.method === 'GET' && req.path === '/portal') return res.redirect('/carrinho');
 
   if (ROTAS_LIVRES_CADASTRO_INCOMPLETO.includes(req.path)) return next();
   try {
@@ -60,6 +70,107 @@ async function authMembro(req, res, next) {
       return res.redirect('/completar-cadastro');
     }
   } catch(e){ console.error('Checar cadastro completo:', e.message); }
+  next();
+}
+
+// ════════════════════════════════════════════════════════════════
+// VISITANTE — almare.art.br aberto: ver obras, molduras, tamanhos, identificar e montar carrinho sem conta.
+// Conta só pra simulador, modelos 3D, área do membro e fechar pedido.
+// ════════════════════════════════════════════════════════════════
+const COOKIE_CARRINHO_VISITANTE = 'circulo_carrinho_visitante';
+// Carrinho do visitante fica no navegador, assinado (não dá pra adulterar). Guarda só a ESCOLHA
+// (obra, tamanho, moldura, quantidade): o preço é sempre recalculado pela tabela oficial.
+function dadosCarrinhoVisitante(req){
+  const c = req.cookies && req.cookies[COOKIE_CARRINHO_VISITANTE];
+  if(!c) return { id: null, itens: [] };
+  try { const d = jwt.verify(c, JWT_SECRET); return { id: d.id || null, itens: Array.isArray(d.itens) ? d.itens.slice(0, 20) : [] }; }
+  catch { return { id: null, itens: [] }; }
+}
+function lerCarrinhoVisitante(req){ return dadosCarrinhoVisitante(req).itens; }
+// Cada carrinho tem uma identidade única (mantida enquanto ele existe), usada pra nunca transferir duas vezes
+function gravarCarrinhoVisitante(res, itens, req){
+  if(!itens.length){ res.clearCookie(COOKIE_CARRINHO_VISITANTE); return; }
+  const id = (req && dadosCarrinhoVisitante(req).id) || crypto.randomBytes(12).toString('hex');
+  res.cookie(COOKIE_CARRINHO_VISITANTE, jwt.sign({ id, itens: itens.slice(0, 20) }, JWT_SECRET, { expiresIn: '30d' }),
+    { httpOnly: true, sameSite: 'lax', maxAge: 30*24*60*60*1000 });
+}
+// Quando o visitante entra ou se cadastra, o que ele montou vai pro carrinho da conta (preço recalculado)
+async function transferirCarrinhoVisitante(req, res, membroId){
+  const { id, itens } = dadosCarrinhoVisitante(req);
+  if(!itens.length) return false;
+  // Trava atômica: se este carrinho já foi transferido (outra aba, requisição repetida), não entra de novo
+  if(!id){ res.clearCookie(COOKIE_CARRINHO_VISITANTE); return false; }
+  const trava = await pool.query('INSERT INTO circulo_carrinhos_transferidos (id, membro_id) VALUES ($1,$2) ON CONFLICT (id) DO NOTHING', [String(id).slice(0,40), membroId]);
+  if(!trava.rowCount){ res.clearCookie(COOKIE_CARRINHO_VISITANTE); return false; }
+  let pedido = null, n = 0;
+  for(const it of itens){
+    try{
+      const obraId = parseInt(it.o);
+      const tamanho = (await tamanhosDaObra(obraId)).find(t=>t.id===parseInt(it.t));
+      if(!tamanho || !MOLDURA_NOME[it.m]) continue;
+      const quantidade = Math.max(1, Math.min(20, parseInt(it.q)||1));
+      let obraLinkId = null;
+      if(it.r){ const l = await pool.query('SELECT id FROM circulo_obra_links WHERE codigo=$1',[String(it.r)]); if(l.rows.length) obraLinkId = l.rows[0].id; }
+      pedido = pedido || await pegarOuCriarCarrinho(membroId);
+      await pool.query(
+        `INSERT INTO circulo_pedido_itens (pedido_id,obra_id,obra_link_id,tamanho_id,tamanho_label,largura,altura,moldura,quantidade,preco_unitario,subtotal)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+        [pedido.id,obraId,obraLinkId,tamanho.id,tamanho.label,tamanho.largura,tamanho.altura,it.m,quantidade,tamanho.preco,Math.round(tamanho.preco*quantidade*100)/100]);
+      n++;
+    }catch(e){ console.error('Transferir carrinho do visitante:', e.message); }
+  }
+  if(pedido) await recalcularTotalCarrinho(pedido.id);
+  res.clearCookie(COOKIE_CARRINHO_VISITANTE);
+  return n > 0;
+}
+function tokenMembroValido(req){
+  try { return jwt.verify(req.cookies.circulo_token, JWT_SECRET); } catch { return null; }
+}
+// Página aberta: membro logado é reconhecido (e o carrinho de visitante vai pra conta dele); visitante segue normal
+async function membroOpcional(req, res, next){
+  const m = tokenMembroValido(req);
+  if(m){
+    req.membro = m;
+    try { await transferirCarrinhoVisitante(req, res, m.id); } catch(e){ console.error(e.message); }
+  } else if(req.cookies && req.cookies.circulo_token){
+    res.clearCookie('circulo_token');
+  }
+  next();
+}
+// Rota com versão de membro e versão de visitante: membro passa pelo authMembro (com todas as checagens de sempre)
+function membroOuVisitante(handlerVisitante){
+  return (req, res, next) => tokenMembroValido(req) ? authMembro(req, res, next) : handlerVisitante(req, res);
+}
+function qtdCarrinhoVisitante(req){ return lerCarrinhoVisitante(req).reduce((s,i)=>s+(parseInt(i.q)||1),0); }
+function navVisitante(ativo, req){
+  const qtd = qtdCarrinhoVisitante(req);
+  const item = (k,h,l) => `<a href="${h}" class="nav-link${ativo===k?' ativo':''}">${l}</a>`;
+  return `<div class="nav-bar">${item('obras','/catalogo','Obras')}${item('identificar','/identificar','Identificar')}${item('simulador','/simulador','Simulador · membros')}${item('carrinho','/carrinho','Carrinho'+(qtd?' ('+qtd+')':''))}${item('entrar','/login','Entrar')}<a href="/convite/geral" class="nav-link" style="color:var(--gold);">Fazer parte do Círculo</a></div>`;
+}
+function avisoVisitante(){
+  return `<div style="border:1px solid rgba(201,169,110,.35);background:rgba(201,169,110,.06);border-radius:4px;padding:16px 18px;margin-bottom:28px;display:flex;gap:16px;align-items:center;justify-content:space-between;flex-wrap:wrap;">
+    <div style="font-size:13px;line-height:1.6;color:#ccc;max-width:640px;">Você está conhecendo o acervo ALMARE como visitante: veja as obras, molduras e tamanhos e monte seu carrinho. <span style="color:var(--gold-light,#e8d5b0);">O simulador e o fechamento do pedido são exclusivos de quem faz parte do Círculo.</span></div>
+    <a href="/convite/geral" class="btn btn-primary" style="white-space:nowrap;">Fazer parte do Círculo</a>
+  </div>`;
+}
+// IP real (o último endereço que o Railway registra; o primeiro o próprio visitante consegue forjar)
+function ipReal(req){
+  const xff = String(req.headers['x-forwarded-for']||'').split(',').map(s=>s.trim()).filter(Boolean);
+  return xff.length ? xff[xff.length-1] : (req.socket && req.socket.remoteAddress) || 'desconhecido';
+}
+// "Identificar" usa inteligência artificial (custa por uso): visitante tem limite
+const _usosIdentificar = new Map();
+let _usosIdentificarDia = { dia: '', n: 0 };
+function limiteIdentificarVisitante(req, res, next){
+  if(req.membro) return next();
+  const agora = Date.now(), ip = ipReal(req);
+  const recentes = (_usosIdentificar.get(ip) || []).filter(t => agora - t < 60*60*1000);
+  const hoje = new Date().toISOString().slice(0,10);
+  if(_usosIdentificarDia.dia !== hoje) _usosIdentificarDia = { dia: hoje, n: 0 };
+  if(recentes.length >= 5) return res.status(429).json({ erro: 'Você já usou o identificador 5 vezes na última hora. Faça parte do Círculo para usar sem esse limite.' });
+  if(_usosIdentificarDia.n >= 150) return res.status(429).json({ erro: 'O identificador está temporariamente indisponível para visitantes. Faça parte do Círculo para usar agora.' });
+  recentes.push(agora); _usosIdentificar.set(ip, recentes); _usosIdentificarDia.n++;
+  if(_usosIdentificar.size > 5000) _usosIdentificar.clear();
   next();
 }
 
@@ -497,7 +608,7 @@ app.get('/api/buscar-contato', async (req, res) => {
 // ════════════════════════════════════════════════════════════════
 app.get('/', (req,res) => {
   try { jwt.verify(req.cookies.circulo_token, JWT_SECRET); return res.redirect('/portal'); } catch {}
-  res.redirect('/convite');
+  res.redirect('/catalogo');   // almare.art.br aberto: visitante entra direto nas obras
 });
 app.get('/versao', (req,res) => res.json({ versao: 'XYZ789', tabela_precos: true, alm001_excluido: true, deploy: new Date().toISOString() }));
 app.get('/convite', (req,res) => res.redirect('/convite/geral'));
@@ -756,14 +867,17 @@ app.get('/login',(req,res)=>res.send(html('Entrar',`
     <h2 style="font-size:28px;margin-bottom:32px;">Círculo ALMARE</h2>
     ${req.query.erro?`<div class="msg-erro">${esc(req.query.erro)}</div>`:''}
     ${req.query.ok?`<div class="msg-ok">${esc(req.query.ok)}</div>`:''}
-    <a href="/convite" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);display:inline-block;margin-bottom:24px;">← Voltar</a>
+    ${req.query.motivo==='exclusivo'?`<div class="msg-ok" style="border-color:rgba(201,169,110,.4);color:var(--gold);">O simulador é exclusivo de quem faz parte do Círculo. Entre com sua conta ou <a href="/convite/geral" style="color:var(--gold);text-decoration:underline;">faça parte do Círculo</a>.</div>`:''}
+    ${String(req.query.voltar||'')==='/carrinho'?`<div class="msg-ok">Entre para fechar seu pedido — seu carrinho continua guardado.</div>`:''}
+    <a href="/catalogo" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);display:inline-block;margin-bottom:24px;">← Voltar às obras</a>
     <form method="POST" action="/login">
+      <input type="hidden" name="voltar" value="${esc(req.query.voltar||'')}">
       <div class="field"><label>E-mail</label><input name="email" type="email" required></div>
       <div class="field"><label>Senha</label><input name="senha" type="password" required></div>
       <button type="submit" class="btn btn-primary btn-full">Entrar</button>
     </form>
     <p style="margin-top:16px;text-align:center;font-size:12px;"><a href="/esqueci-senha">Esqueci minha senha</a></p>
-    <p style="margin-top:8px;text-align:center;font-size:12px;color:var(--muted);">Ainda não é membro? <a href="/convite">Quero entrar no Círculo</a></p>
+    <p style="margin-top:8px;text-align:center;font-size:12px;color:var(--muted);">Ainda não é membro? <a href="/convite/geral">Quero entrar no Círculo</a></p>
   </div>
 `)));
 
@@ -855,7 +969,9 @@ app.post('/login',async(req,res)=>{
     if(m.status!=='ativo')return res.redirect('/login?erro=Conta+não+ativa');
     if(!await bcrypt.compare(req.body.senha,m.senha_hash))return res.redirect('/login?erro=E-mail+ou+senha+inválidos');
     res.cookie('circulo_token',gerarToken({id:m.id,nome:m.nome,email:m.email}),{httpOnly:true,maxAge:7*24*60*60*1000});
-    res.redirect('/portal');
+    // volta pra onde estava (só caminho interno do próprio site)
+    const voltar = String(req.body.voltar||'');
+    res.redirect(voltar.startsWith('/') && !voltar.startsWith('//') && !voltar.includes('\\') ? voltar : '/portal');
   }catch{res.redirect('/login?erro=Erro+interno');}
 });
 app.get('/logout',(req,res)=>{res.clearCookie('circulo_token');res.redirect('/login');});
@@ -2660,7 +2776,23 @@ app.post('/simulador/adicionar-ao-carrinho', authMembro, async(req,res)=>{
   }
 });
 
-app.post('/comprar/:obraId/adicionar', authMembro, async(req,res)=>{
+// Visitante: a escolha vai pro carrinho do navegador (conta só pra fechar o pedido)
+async function adicionarCarrinhoVisitante(req, res){
+  try{
+    const obraId = parseInt(req.params.obraId);
+    const { tamanho_id, moldura, codigo_indicacao } = req.body;
+    const quantidade = Math.max(1, Math.min(20, parseInt(req.body.quantidade)||1));
+    const tamanho = (await tamanhosDaObra(obraId)).find(t=>t.id===parseInt(tamanho_id));
+    if(!tamanho || !MOLDURA_NOME[moldura]) return res.redirect('/catalogo');
+    const itens = lerCarrinhoVisitante(req);
+    if(itens.length >= 20) return res.redirect('/carrinho');
+    itens.push({ o: obraId, t: tamanho.id, m: moldura, q: quantidade, r: codigo_indicacao ? String(codigo_indicacao).slice(0,40) : undefined });
+    gravarCarrinhoVisitante(res, itens, req);
+    res.redirect('/carrinho');
+  }catch(e){ res.send(html('Erro',`<div class="container-sm"><div class="msg-erro">${esc(e.message)}</div></div>`)); }
+}
+
+app.post('/comprar/:obraId/adicionar', membroOuVisitante(adicionarCarrinhoVisitante), async(req,res)=>{
   const obraId = parseInt(req.params.obraId);
   const { tamanho_id, moldura, codigo_indicacao } = req.body;
   const quantidade = Math.max(1, Math.min(20, parseInt(req.body.quantidade)||1));
@@ -2826,7 +2958,56 @@ app.get('/meus-pedidos', authMembro, async(req,res)=>{
   `,true));
 });
 
-app.get('/carrinho', authMembro, async(req,res)=>{
+async function carrinhoVisitante(req, res){
+  const itens = lerCarrinhoVisitante(req);
+  const linhas = []; let total = 0;
+  for(let i=0;i<itens.length;i++){
+    const it = itens[i];
+    const o = await pool.query("SELECT id,nome,imagem_preview FROM almare_obras WHERE id=$1 AND status='aprovada'",[parseInt(it.o)]);
+    const t = o.rows.length ? (await tamanhosDaObra(o.rows[0].id)).find(x=>x.id===parseInt(it.t)) : null;
+    if(!o.rows.length || !t || !MOLDURA_NOME[it.m]) continue;
+    const q = Math.max(1, Math.min(20, parseInt(it.q)||1));
+    const sub = t.preco*q; total += sub;
+    linhas.push(`
+    <div style="display:flex;align-items:center;gap:16px;padding:16px 0;border-bottom:1px solid var(--border);">
+      <div style="width:64px;height:64px;border-radius:4px;overflow:hidden;background:#0d0d0d;flex-shrink:0;">
+        ${o.rows[0].imagem_preview?`<img src="${esc(o.rows[0].imagem_preview)}" style="width:100%;height:100%;object-fit:cover;">`:''}
+      </div>
+      <div style="flex:1;">
+        <div style="font-family:'Cormorant Garamond',serif;font-size:17px;">${esc(o.rows[0].nome)}</div>
+        <div style="font-size:12px;color:var(--muted);">${esc(t.label)} · Moldura ${esc(MOLDURA_NOME[it.m])} · Qtd ${q}</div>
+        <div style="font-size:13px;color:var(--gold);margin-top:2px;">R$ ${sub.toFixed(2).replace('.',',')}</div>
+      </div>
+      <form method="POST" action="/carrinho/visitante/${i}/remover"><button class="btn btn-outline" style="padding:6px 12px;font-size:10px;">Remover</button></form>
+    </div>`);
+  }
+  const corpo = linhas.length ? `
+    <div class="card">${linhas.join('')}
+      <div style="display:flex;justify-content:space-between;align-items:center;padding-top:18px;">
+        <span style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);">Total</span>
+        <span style="font-size:22px;color:var(--gold);">R$ ${total.toFixed(2).replace('.',',')}</span>
+      </div>
+    </div>
+    <div class="card" style="margin-top:20px;border-color:rgba(201,169,110,.35);">
+      <div style="font-family:'Cormorant Garamond',serif;font-size:22px;margin-bottom:8px;">Fechar o pedido</div>
+      <p style="color:#ccc;font-size:13px;line-height:1.7;margin-bottom:18px;">Para fechar o pedido, entre na sua conta ou faça parte do Círculo. Seu carrinho continua guardado e vai junto.</p>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;">
+        <a href="/login?voltar=%2Fcarrinho" class="btn btn-primary">Entrar e fechar o pedido</a>
+        <a href="/convite/geral" class="btn btn-outline">Fazer parte do Círculo</a>
+      </div>
+    </div>
+    <a href="/catalogo" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);display:inline-block;margin-top:20px;">← Continuar vendo obras</a>`
+  : `<div class="card" style="text-align:center;padding:48px 24px;"><p style="color:var(--muted);margin-bottom:20px;">Seu carrinho está vazio.</p><a href="/catalogo" class="btn btn-primary">Ver as obras</a></div>`;
+  res.send(html('Carrinho', `${navVisitante('carrinho', req)}<h2 style="font-size:28px;margin-bottom:16px;">Seu carrinho</h2>${corpo}`));
+}
+app.post('/carrinho/visitante/:idx/remover', (req,res)=>{
+  const itens = lerCarrinhoVisitante(req);
+  const i = parseInt(req.params.idx);
+  if(i >= 0 && i < itens.length){ itens.splice(i, 1); gravarCarrinhoVisitante(res, itens, req); }
+  res.redirect('/carrinho');
+});
+
+app.get('/carrinho', membroOuVisitante(carrinhoVisitante), async(req,res)=>{
   const pedidoRes = await pool.query(`SELECT * FROM circulo_pedidos WHERE membro_id=$1 AND status='CARRINHO' ORDER BY criado_em DESC LIMIT 1`,[req.membro.id]);
   const navBarHtml = navBar('carrinho', await temFuncaoComImpacto(req.membro.id), await ehEspecificador(req.membro.id));
   if(!pedidoRes.rows.length){
@@ -3553,25 +3734,26 @@ app.post('/webhook/infinitepay', async(req,res)=>{
 
 // Página de compra de uma obra (escolher tamanho, moldura, quantidade)
 // Tamanhos oficiais da obra (com preço), pra exibir no catálogo assim que a pessoa abre a obra
-app.get('/obra/:obraId/tamanhos-json', authMembro, async(req,res)=>{
+app.get('/obra/:obraId/tamanhos-json', membroOpcional, async(req,res)=>{
   try{
     const tamanhos = await tamanhosDaObra(parseInt(req.params.obraId));
     res.json({ tamanhos: tamanhos.map(t=>({ id:t.id, label:t.label, preco:t.preco, precoLabel: 'R$ '+t.preco.toLocaleString('pt-BR') })) });
   }catch(e){ res.status(500).json({ erro: e.message }); }
 });
 
-app.get('/obra/:obraId/comprar', authMembro, async(req,res)=>{
+app.get('/obra/:obraId/comprar', membroOpcional, async(req,res)=>{
   const obraId = parseInt(req.params.obraId);
   const obra = await pool.query('SELECT id,nome,colecao,imagem_preview FROM almare_obras WHERE id=$1 AND status=\'aprovada\'',[obraId]);
-  if(!obra.rows.length) return res.send(html('Comprar',`<div class="msg-erro">Obra não encontrada.</div>`,true));
+  if(!obra.rows.length) return res.send(html('Comprar',`<div class="msg-erro">Obra não encontrada.</div>`,!!req.membro));
   const o = obra.rows[0];
   const tamanhos = await tamanhosDaObra(obraId);
-  if(!tamanhos.length) return res.send(html('Comprar',`<div class="msg-erro">Esta obra não tem tamanhos disponíveis.</div>`,true));
+  if(!tamanhos.length) return res.send(html('Comprar',`<div class="msg-erro">Esta obra não tem tamanhos disponíveis.</div>`,!!req.membro));
 
   const opcoesTam = tamanhos.map(t=>`<option value="${t.id}">${esc(t.label)} · R$ ${t.preco.toLocaleString('pt-BR')}</option>`).join('');
   const codigoInd = req.query.ref || '';
 
   res.send(html('Comprar',`
+    ${req.membro ? '' : navVisitante('obras', req)}
     <a href="/catalogo" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);display:inline-block;margin-bottom:24px;">← Voltar às obras</a>
     <h2 style="font-size:26px;margin-bottom:4px;">${esc(o.nome)}</h2>
     <div style="font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);margin-bottom:24px;">${esc(o.colecao||'')}</div>
@@ -3591,7 +3773,7 @@ app.get('/obra/:obraId/comprar', authMembro, async(req,res)=>{
         <button type="submit" class="btn btn-primary btn-full">Adicionar ao carrinho</button>
       </form>
     </div>
-  `,true));
+  `,!!req.membro));
 });
 
 // ─── CATÁLOGO ─────────────────────────────────────────────────────────────────
@@ -3754,10 +3936,12 @@ app.post('/modelos-3d/baixar', authMembro, async(req,res)=>{
   }
 });
 
-app.get('/identificar', authMembro, async(req,res)=>{
-  const temImpacto = await temFuncaoComImpacto(req.membro.id);
+app.get('/identificar', membroOpcional, async(req,res)=>{
+  const navHtml = req.membro
+    ? navBar('identificar', await temFuncaoComImpacto(req.membro.id), await ehEspecificador(req.membro.id))
+    : navVisitante('identificar', req);
   res.send(html('Identificar obra',`
-    ${navBar('identificar', temImpacto, await ehEspecificador(req.membro.id))}
+    ${navHtml}
     <h2 style="font-size:28px;margin-bottom:8px;">Identificar obra</h2>
     <p style="color:var(--muted);margin-bottom:32px;">Tire uma foto de uma peça física e o sistema reconhece qual obra do acervo ALMARE ela é.</p>
     <div class="card">
@@ -3804,10 +3988,10 @@ app.get('/identificar', authMembro, async(req,res)=>{
         btn.disabled = false; btn.textContent = 'Identificar';
       }
     </script>
-  `,true));
+  `,!!req.membro));
 });
 
-app.post('/identificar', authMembro, uploadFoto.single('foto'), async(req,res)=>{
+app.post('/identificar', membroOpcional, limiteIdentificarVisitante, uploadFoto.single('foto'), async(req,res)=>{
   try {
     if (!req.file) return res.status(400).json({ erro: 'Nenhuma foto enviada' });
 
@@ -3875,17 +4059,23 @@ function textoDeTags(tags){
   return String(tags||'');
 }
 // Índice por obra, separado por peso: t = nome/código, g = tags, p = cor/paleta, c = coleção, f = ficha curatorial.
-function indiceDeBusca(o){
+// O índice vai dentro da página: só entra o que quem está vendo PODE ver (mesmas regras da ficha da obra).
+// Visitante e membro comum: descrição da obra. Embaixador+: perfil de cliente. Especificador/curador: dados de
+// especificação. Curador: nota, descrição comercial. Direção artística (interna de produção) nunca entra.
+function indiceDeBusca(o, ver){
+  ver = ver || {};
   const formato = String(o.formato_recomendado||'').replace(/\s+/g,'');
   const quadrado = formato.startsWith('1:1') || /quadrad/i.test(String(o.orientacao||'')) ? ' quadrado ' : '';
-  const ficha = [
+  const campos = [
     o.conceito, o.essencia, o.sensacao_provocada, o.sensacao_central, o.o_que_permanece, o.leitura_da_obra,
     o.analise_estetica, o.elementos_predominantes, o.textura_materia, o.composicao, o.luz,
-    o.personalidade_da_obra, o.experiencia_observador, o.ambiente_ideal, o.ambientes_compativeis,
-    o.ambientes_secundarios, o.perfil_arquitetonico, o.perfil_de_cliente, o.segmento, o.orientacao,
-    o.formato_recomendado, o.descricao_comercial, o.texto_curatorial, o.direcao_artistica,
-    o.possibilidade_composicao, o.nota_curador
-  ].filter(Boolean).join(' . ') + quadrado;
+    o.experiencia_observador, o.ambiente_ideal, o.ambientes_compativeis, o.ambientes_secundarios,
+    o.segmento, o.orientacao, o.texto_curatorial
+  ];
+  if (ver.embaixador || ver.especificador || ver.curador) campos.push(o.perfil_de_cliente);
+  if (ver.especificador || ver.curador) campos.push(o.personalidade_da_obra, o.perfil_arquitetonico, o.possibilidade_composicao, o.formato_recomendado, o.nivel_de_destaque);
+  if (ver.curador) campos.push(o.nota_curador, o.descricao_comercial);
+  const ficha = campos.filter(Boolean).join(' . ') + quadrado;
   return {
     t: normalizarBusca((o.nome||'') + ' ' + (o.codigo||'')),
     g: normalizarBusca(textoDeTags(o.tags)),
@@ -3895,9 +4085,10 @@ function indiceDeBusca(o){
   };
 }
 
-app.get('/catalogo',authMembro,async(req,res)=>{
+app.get('/catalogo',membroOpcional,async(req,res)=>{
   try{
-    const fRows=await pool.query(`SELECT f.slug FROM circulo_membro_funcoes mf JOIN circulo_funcoes f ON f.id=mf.funcao_id WHERE mf.membro_id=$1 AND mf.ativo=true`,[req.membro.id]);
+    // Visitante (sem conta) vê o acervo com a ficha pública; membro vê conforme as funções dele
+    const fRows=req.membro?await pool.query(`SELECT f.slug FROM circulo_membro_funcoes mf JOIN circulo_funcoes f ON f.id=mf.funcao_id WHERE mf.membro_id=$1 AND mf.ativo=true`,[req.membro.id]):{rows:[]};
     const slugs=fRows.rows.map(r=>r.slug);
     const isCurador=slugs.includes('curador');
     const isEspecificador=slugs.includes('especificador');
@@ -3914,7 +4105,7 @@ app.get('/catalogo',authMembro,async(req,res)=>{
     obras.rows.forEach(o=>{ if(!o.paleta) return; const k=chaveFiltro(o.paleta); grafias[k]=grafias[k]||{}; grafias[k][o.paleta]=(grafias[k][o.paleta]||0)+1; });
     const paletas=Object.keys(grafias).sort().map(k=>({chave:k,label:Object.entries(grafias[k]).sort((a,b)=>b[1]-a[1])[0][0]}));
     const indiceBusca={};
-    obras.rows.forEach(o=>{ indiceBusca[o.id]=indiceDeBusca(o); });
+    obras.rows.forEach(o=>{ indiceBusca[o.id]=indiceDeBusca(o,{embaixador:isEmbaixador,especificador:isEspecificador,curador:isCurador}); });
 
     function campo(label,valor){
       if(!valor)return '';
@@ -3952,7 +4143,7 @@ app.get('/catalogo',authMembro,async(req,res)=>{
     const exemplosBusca=['branco e preto','azul','dourado','textura','corporativo','quadrado'];
 
     res.send(html('Catálogo',`
-      ${navBar('obras', !!navImpacto, slugs.includes('especificador'))}
+      ${req.membro ? navBar('obras', !!navImpacto, slugs.includes('especificador')) : navVisitante('obras', req) + avisoVisitante()}
 
       <!-- BARRA DE FILTROS -->
       <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:32px;align-items:center;">
@@ -4189,8 +4380,8 @@ app.get('/catalogo',authMembro,async(req,res)=>{
         }
         document.addEventListener('keydown',e=>{if(e.key==='Escape')fecharModal();});
       </script>
-    `,true));
-  }catch(e){res.send(html('Catálogo',`<div class="msg-erro">${e.message}</div>`,true));}
+    `,!!req.membro));
+  }catch(e){res.send(html('Catálogo',`<div class="msg-erro">${esc(e.message)}</div>`,!!req.membro));}
 });
 
 // ─── IMPACTO ──────────────────────────────────────────────────────────────────
@@ -4754,6 +4945,13 @@ async function garantirTabelas(){
         preco_unitario NUMERIC(10,2) NOT NULL,
         subtotal NUMERIC(10,2) NOT NULL,
         bling_produto_id VARCHAR(50),
+        criado_em TIMESTAMP DEFAULT NOW()
+      );`);
+    // Carrinho de visitante já transferido pra uma conta: garante que o mesmo carrinho nunca entra duas vezes
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS circulo_carrinhos_transferidos (
+        id VARCHAR(40) PRIMARY KEY,
+        membro_id INTEGER,
         criado_em TIMESTAMP DEFAULT NOW()
       );`);
     console.log('garantirTabelas: estrutura verificada/criada com sucesso');
