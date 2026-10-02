@@ -1214,6 +1214,7 @@ const TABELA_TAMANHOS_POR_FORMATO = {
     {largura:25, altura:25, preco:299},
     {largura:40, altura:40, preco:449},
     {largura:70, altura:70, preco:899},
+    {largura:120, altura:120, preco:1890},
     {largura:150, altura:150, preco:2890},
   ],
   '3:2': [
@@ -2606,8 +2607,9 @@ async function tamanhosDaObra(obraId){
   const orient = String(o.rows[0].orientacao||'').toLowerCase();
   if(/vertical|retrato/.test(orient)){ const v=tams.filter(t=>t.altura>=t.largura); if(v.length) tams=v; }
   else if(/horizontal|paisagem/.test(orient)){ const h=tams.filter(t=>t.largura>=t.altura); if(h.length) tams=h; }
-  // dá um id sequencial estável a cada tamanho
-  return tams.map((t,i)=>({ id:i, label:t.label, largura:t.largura, altura:t.altura, preco:t.preco }));
+  // id derivado do próprio tamanho (120x120 -> 120120): incluir um tamanho novo na tabela nunca muda o id dos
+  // outros. Antes era a posição na lista, e um tamanho novo no meio fazia o 150x150 virar o id do 120x120.
+  return tams.map(t=>({ id:t.largura*1000+t.altura, label:t.label, largura:t.largura, altura:t.altura, preco:t.preco }));
 }
 
 async function pegarOuCriarCarrinho(membroId){
