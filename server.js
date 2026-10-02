@@ -4115,8 +4115,10 @@ app.get('/catalogo',membroOpcional,async(req,res)=>{
     const cardsHtml=obras.rows.map(o=>{
       let detalhe=campo('Conceito',o.conceito)+campo('Essência',o.essencia)+campo('Sensação',o.sensacao_provocada)+campo('O que permanece',o.o_que_permanece)+campo('Ambientes',o.ambientes_compativeis)+campo('Texto curatorial',o.texto_curatorial)+campo('Paleta',o.paleta)+campo('Cores',o.paleta_detalhe);
       if(isEmbaixador||isEspecificador||isCurador) detalhe+=campo('Perfil de cliente',o.perfil_de_cliente);
-      if(isEspecificador||isCurador) detalhe+=campo('Nível de destaque',o.nivel_de_destaque)+campo('Personalidade',o.personalidade_da_obra)+campo('Perfil arquitetônico',o.perfil_arquitetonico)+campo('Composição múltipla',o.possibilidade_composicao)+campo('Tamanhos recomendados',o.tamanhos_recomendados)+campo('Formato recomendado',o.formato_recomendado);
-      if(isCurador) detalhe+=campo('Nota do curador',o.nota_curador)+campo('Potencial',o.potencial_nota?o.potencial_nota+'/100':'')+campo('Justificativa',o.potencial_justificativa)+campo('Obs. produção',o.observacoes_producao)+campo('Descrição comercial',o.descricao_comercial);
+      if(isEspecificador||isCurador) detalhe+=campo('Nível de destaque',o.nivel_de_destaque)+campo('Personalidade',o.personalidade_da_obra)+campo('Perfil arquitetônico',o.perfil_arquitetonico)+campo('Composição múltipla',o.possibilidade_composicao)+campo('Formato recomendado',o.formato_recomendado);
+      // Decisão do Anderson: o Círculo não mostra a nota de potencial (uma obra não vale "mais" que outra pro cliente)
+      // nem "tamanhos recomendados" (quem escolhe o tamanho é o cliente). Esses dados ficam só no painel curatorial.
+      if(isCurador) detalhe+=campo('Nota do curador',o.nota_curador)+campo('Obs. produção',o.observacoes_producao)+campo('Descrição comercial',o.descricao_comercial);
 
       const palataAttr=o.paleta?chaveFiltro(o.paleta):'';
       const colecaoAttr=o.colecao?chaveFiltro(o.colecao):'';
