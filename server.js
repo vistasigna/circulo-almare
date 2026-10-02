@@ -3858,6 +3858,41 @@ app.post('/identificar', authMembro, uploadFoto.single('foto'), async(req,res)=>
 });
 
 
+// ===== Busca do catálogo =====
+// Texto normalizado: minúsculo, sem acento, só letras/números (e "&", "/", ":" pra "P&B", "p/b", "1:1").
+// A tela normaliza a busca do mesmo jeito (função normalizar no script do catálogo) — as duas têm que bater.
+function normalizarBusca(s){
+  const t = String(s==null?'':s).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+    .replace(/\s*&\s*/g,'&').replace(/[^a-z0-9&\/:]+/g,' ').trim();
+  return ' ' + t + ' ';
+}
+function chaveFiltro(s){ return normalizarBusca(s).trim().replace(/ /g,'-'); }
+function textoDeTags(tags){
+  if(Array.isArray(tags)) return tags.join(' , ');
+  if(tags && typeof tags === 'object') return Object.values(tags).join(' , ');
+  return String(tags||'');
+}
+// Índice por obra, separado por peso: t = nome/código, g = tags, p = cor/paleta, c = coleção, f = ficha curatorial.
+function indiceDeBusca(o){
+  const formato = String(o.formato_recomendado||'').replace(/\s+/g,'');
+  const quadrado = formato.startsWith('1:1') || /quadrad/i.test(String(o.orientacao||'')) ? ' quadrado ' : '';
+  const ficha = [
+    o.conceito, o.essencia, o.sensacao_provocada, o.sensacao_central, o.o_que_permanece, o.leitura_da_obra,
+    o.analise_estetica, o.elementos_predominantes, o.textura_materia, o.composicao, o.luz,
+    o.personalidade_da_obra, o.experiencia_observador, o.ambiente_ideal, o.ambientes_compativeis,
+    o.ambientes_secundarios, o.perfil_arquitetonico, o.perfil_de_cliente, o.segmento, o.orientacao,
+    o.formato_recomendado, o.descricao_comercial, o.texto_curatorial, o.direcao_artistica,
+    o.possibilidade_composicao, o.nota_curador
+  ].filter(Boolean).join(' . ') + quadrado;
+  return {
+    t: normalizarBusca((o.nome||'') + ' ' + (o.codigo||'')),
+    g: normalizarBusca(textoDeTags(o.tags)),
+    p: normalizarBusca((o.paleta||'') + ' . ' + (o.paleta_detalhe||'')),
+    c: normalizarBusca(o.colecao),
+    f: normalizarBusca(ficha)
+  };
+}
+
 app.get('/catalogo',authMembro,async(req,res)=>{
   try{
     const fRows=await pool.query(`SELECT f.slug FROM circulo_membro_funcoes mf JOIN circulo_funcoes f ON f.id=mf.funcao_id WHERE mf.membro_id=$1 AND mf.ativo=true`,[req.membro.id]);
@@ -3867,19 +3902,17 @@ app.get('/catalogo',authMembro,async(req,res)=>{
     const isEmbaixador=slugs.includes('embaixador');
     const navImpacto=slugs.some(s=>['embaixador','especificador','artista','colaborador'].includes(s))?'<a href="/meu-impacto" class="nav-link">Impacto</a>':'';
 
-    const obras=await pool.query(`
-      SELECT o.id, o.nome, o.colecao, o.tiragem_total,
-             o.conceito, o.essencia, o.sensacao_provocada, o.o_que_permanece,
-             o.ambientes_compativeis, o.texto_curatorial, o.paleta, o.paleta_detalhe,
-             o.perfil_de_cliente, o.nivel_de_destaque, o.personalidade_da_obra,
-             o.perfil_arquitetonico, o.possibilidade_composicao, o.tamanhos_recomendados,
-             o.formato_recomendado, o.nota_curador, o.potencial_nota, o.potencial_justificativa,
-             o.observacoes_producao, o.descricao_comercial, o.direcao_artistica, o.imagem_preview
-      FROM almare_obras o WHERE o.status='aprovada' ORDER BY o.colecao, o.nome`);
+    // Obra inteira: tags e a ficha curatorial completa entram na busca
+    const obras=await pool.query(`SELECT o.* FROM almare_obras o WHERE o.status='aprovada' ORDER BY o.colecao, o.nome`);
 
-    // Listas únicas para filtros
+    // Listas únicas para filtros — sem duplicar por acento ("Dourados e Ambar" = "Dourados e Âmbar");
+    // o rótulo mostrado é a grafia mais usada
     const colecoes=[...new Set(obras.rows.map(o=>o.colecao).filter(Boolean))].sort();
-    const paletas=[...new Set(obras.rows.map(o=>o.paleta).filter(Boolean))].sort();
+    const grafias={};
+    obras.rows.forEach(o=>{ if(!o.paleta) return; const k=chaveFiltro(o.paleta); grafias[k]=grafias[k]||{}; grafias[k][o.paleta]=(grafias[k][o.paleta]||0)+1; });
+    const paletas=Object.keys(grafias).sort().map(k=>({chave:k,label:Object.entries(grafias[k]).sort((a,b)=>b[1]-a[1])[0][0]}));
+    const indiceBusca={};
+    obras.rows.forEach(o=>{ indiceBusca[o.id]=indiceDeBusca(o); });
 
     function campo(label,valor){
       if(!valor)return '';
@@ -3892,10 +3925,10 @@ app.get('/catalogo',authMembro,async(req,res)=>{
       if(isEspecificador||isCurador) detalhe+=campo('Nível de destaque',o.nivel_de_destaque)+campo('Personalidade',o.personalidade_da_obra)+campo('Perfil arquitetônico',o.perfil_arquitetonico)+campo('Composição múltipla',o.possibilidade_composicao)+campo('Tamanhos recomendados',o.tamanhos_recomendados)+campo('Formato recomendado',o.formato_recomendado);
       if(isCurador) detalhe+=campo('Nota do curador',o.nota_curador)+campo('Potencial',o.potencial_nota?o.potencial_nota+'/100':'')+campo('Justificativa',o.potencial_justificativa)+campo('Obs. produção',o.observacoes_producao)+campo('Descrição comercial',o.descricao_comercial);
 
-      const palataAttr=o.paleta?o.paleta.toLowerCase().replace(/\s+/g,'-'):'';
-      const colecaoAttr=o.colecao?o.colecao.toLowerCase().replace(/\s+/g,'-'):'';
+      const palataAttr=o.paleta?chaveFiltro(o.paleta):'';
+      const colecaoAttr=o.colecao?chaveFiltro(o.colecao):'';
 
-      return `<div class="obra-card" data-colecao="${colecaoAttr}" data-paleta="${palataAttr}" data-nome="${(o.nome||'').toLowerCase()}">
+      return `<div class="obra-card" data-id="${o.id}" data-colecao="${colecaoAttr}" data-paleta="${palataAttr}" data-nome="${esc((o.nome||'').toLowerCase())}">
         <div onclick="abrirObra(${o.id})" style="cursor:pointer;">
           <div style="position:relative;background:#0d0d0d;border-radius:4px 4px 0 0;overflow:hidden;height:300px;display:flex;align-items:center;justify-content:center;">
             ${o.imagem_preview?`<img src="${o.imagem_preview}" style="max-width:100%;max-height:100%;width:auto;height:auto;object-fit:contain;" loading="lazy">`:`<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:11px;letter-spacing:.15em;">SEM IMAGEM</div>`}
@@ -3904,6 +3937,7 @@ app.get('/catalogo',authMembro,async(req,res)=>{
             <div style="font-size:10px;letter-spacing:.25em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;">${o.colecao||'—'}</div>
             <div style="font-family:'Cormorant Garamond',serif;font-size:18px;margin-bottom:8px;">${o.nome||'Sem título'}</div>
             <div style="font-size:11px;color:var(--muted);">${o.paleta||''}</div>
+            <div class="motivo-busca" style="display:none;margin-top:8px;font-size:11px;color:var(--gold);"></div>
           </div>
         </div>
         <!-- DETALHE (oculto, abre no modal) -->
@@ -3911,15 +3945,16 @@ app.get('/catalogo',authMembro,async(req,res)=>{
       </div>`;
     }).join('');
 
-    const opcoesColecao=colecoes.map(c=>`<option value="${c.toLowerCase().replace(/\s+/g,'-')}">${c}</option>`).join('');
-    const opcoesPaleta=paletas.map(p=>`<option value="${p.toLowerCase().replace(/\s+/g,'-')}">${p}</option>`).join('');
+    const opcoesColecao=colecoes.map(c=>`<option value="${chaveFiltro(c)}">${esc(c)}</option>`).join('');
+    const opcoesPaleta=paletas.map(p=>`<option value="${p.chave}">${esc(p.label)}</option>`).join('');
+    const exemplosBusca=['branco e preto','azul','dourado','textura','corporativo','quadrado'];
 
     res.send(html('Catálogo',`
       ${navBar('obras', !!navImpacto, slugs.includes('especificador'))}
 
       <!-- BARRA DE FILTROS -->
       <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:32px;align-items:center;">
-        <input id="busca" type="text" placeholder="Buscar obra..." oninput="filtrar()" style="flex:1;min-width:200px;background:#0d0d0d;border:1px solid var(--border);color:var(--text);padding:10px 14px;border-radius:3px;font-size:13px;font-family:'Inter',sans-serif;outline:none;">
+        <input id="busca" type="search" placeholder="Busque por nome, cor, tag, sensação, ambiente…" aria-label="Buscar obras" oninput="filtrar()" style="flex:1;min-width:240px;background:#0d0d0d;border:1px solid var(--border);color:var(--text);padding:10px 14px;border-radius:3px;font-size:13px;font-family:'Inter',sans-serif;outline:none;">
         <select id="filtroColecao" onchange="filtrar()" style="background:#0d0d0d;border:1px solid var(--border);color:var(--text);padding:10px 14px;border-radius:3px;font-size:12px;font-family:'Inter',sans-serif;outline:none;">
           <option value="">Todas as coleções</option>${opcoesColecao}
         </select>
@@ -3928,12 +3963,17 @@ app.get('/catalogo',authMembro,async(req,res)=>{
         </select>
         <span id="contagem" style="font-size:12px;color:var(--muted);white-space:nowrap;">${obras.rows.length} obras</span>
       </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:-20px 0 28px;">
+        <span style="font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-right:4px;">Experimente:</span>
+        ${exemplosBusca.map(x=>`<button type="button" class="exemplo-busca" data-q="${esc(x)}" style="background:transparent;border:1px solid var(--border);color:var(--text);padding:5px 12px;border-radius:999px;font-size:12px;cursor:pointer;">${esc(x)}</button>`).join('')}
+      </div>
 
       <!-- GRADE -->
       <div id="grade" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:20px;">
         ${cardsHtml}
       </div>
       <div id="sem-resultado" style="display:none;text-align:center;padding:60px 0;color:var(--muted);">Nenhuma obra encontrada.</div>
+      <script>var INDICE_BUSCA = ${JSON.stringify(indiceBusca).replace(/</g,'\\u003c')};</script>
 
       <!-- MODAL DE DETALHE -->
       <div id="modal" onclick="fecharModal(event)" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:1000;overflow-y:auto;padding:40px 20px;">
@@ -3946,23 +3986,161 @@ app.get('/catalogo',authMembro,async(req,res)=>{
       </div>
 
       <script>
-        function filtrar(){
-          const busca=document.getElementById('busca').value.toLowerCase();
-          const colecao=document.getElementById('filtroColecao').value;
-          const paleta=document.getElementById('filtroPaleta').value;
-          const cards=document.querySelectorAll('.obra-card');
-          let visiveis=0;
-          cards.forEach(c=>{
-            const nomeOk=!busca||c.dataset.nome.includes(busca);
-            const colecaoOk=!colecao||c.dataset.colecao===colecao;
-            const paletaOk=!paleta||c.dataset.paleta===paleta;
-            const ok=nomeOk&&colecaoOk&&paletaOk;
-            c.style.display=ok?'':'none';
-            if(ok)visiveis++;
-          });
-          document.getElementById('contagem').textContent=visiveis+' obra'+(visiveis!==1?'s':'');
-          document.getElementById('sem-resultado').style.display=visiveis===0?'block':'none';
+        // ===== Busca do catálogo =====
+        // Procura em nome, código, tags, cor/paleta, coleção e ficha curatorial inteira; entende sinônimos de cor
+        // e de ideia, ignora acento e plural, combina palavras (todas precisam aparecer) e ordena por relevância.
+        // (Sem crase, sem cifrão-chave e sem barra invertida: este script vive dentro do modelo da página do servidor.)
+        var RE_ACENTO = new RegExp('[' + String.fromCharCode(0x300) + '-' + String.fromCharCode(0x36f) + ']', 'g');
+        function normalizar(s){
+          var t = String(s == null ? '' : s).toLowerCase().normalize('NFD').replace(RE_ACENTO, '');
+          var out = '';
+          for (var i = 0; i < t.length; i++){
+            var ch = t[i];
+            var ok = (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch === '&' || ch === '/' || ch === ':';
+            out += ok ? ch : ' ';
+          }
+          out = out.split(' ').filter(function(x){ return x; }).join(' ');
+          out = out.split(' & ').join('&').split('& ').join('&').split(' &').join('&');
+          return ' ' + out + ' ';
         }
+        // Expressões de várias palavras (procuradas antes de quebrar a busca em palavras)
+        var FRASES = [
+          { busca: ['preto e branco', 'branco e preto', 'preto branco', 'branco preto', 'p&b', 'p/b', 'pb'],
+            acha: ['monocromat', 'monocromia', 'p&b', 'preto e branco', 'branco e preto'] },
+          { busca: ['alto padrao'], acha: ['alto padrao', 'premium', 'luxo', 'sofisticad'] },
+          { busca: ['obra ancora', 'peca ancora'], acha: ['ancora'] }
+        ];
+        // Palavras equivalentes (radicais: "dourad" acha dourado, dourada, dourados...)
+        var SINONIMOS = [
+          ['monocromat', 'monocromia', 'p&b', 'preto e branco', 'branco e preto'],
+          ['preto', 'preta', 'negro', 'negra', 'carvao'],
+          ['branco', 'branca', 'off white', 'alvo'],
+          ['azul', 'azuis', 'anil', 'indigo', 'marinho', 'cobalto', 'turquesa'],
+          ['verde', 'verdes', 'esmeralda', 'oliva', 'musgo'],
+          ['vermelh', 'rubro', 'carmim', 'escarlate'],
+          ['dourad', 'ouro', 'ambar'],
+          ['amarel', 'ocre', 'mostarda'],
+          ['laranja', 'alaranjad', 'cobre', 'ferrugem'],
+          ['marrom', 'terros', 'terra', 'argila', 'terracota'],
+          ['bege', 'areia', 'neutro', 'neutra', 'creme'],
+          ['cinza', 'grafite', 'chumbo', 'concreto', 'prata', 'pratead'],
+          ['rosa', 'rosad'],
+          ['roxo', 'violeta', 'lilas', 'purpura'],
+          ['brilhant', 'brilho', 'lumino', 'luz', 'polid', 'metalic', 'reflex', 'cintilant'],
+          ['colorid', 'vibrant', 'cores'],
+          ['quadrad', '1:1'],
+          ['vertical', 'retrato'],
+          ['horizontal', 'paisagem'],
+          ['mar', 'oceano', 'agua', 'onda', 'maritim'],
+          ['calm', 'seren', 'tranquil', 'contemplat', 'contemplac', 'silencio', 'paz'],
+          ['impactant', 'intens', 'marcant', 'forte'],
+          ['corporativ', 'escritorio', 'empresa', 'reuniao', 'recepcao'],
+          ['abstrat', 'abstrac'],
+          ['geometri', 'geometric']
+        ];
+        var PALAVRAS_VAZIAS = ' e de da do das dos com para pra em no na nos nas o a os as um uma que por tipo quadro quadros obra obras peca pecas ';
+        var PESO = { t: 10, g: 6, p: 6, c: 4, f: 1 };
+        var MOTIVO = { t: 'nome', g: 'tags', p: 'cor/paleta', c: 'coleção', f: 'ficha curatorial' };
+
+        function grupoDe(palavra){
+          for (var i = 0; i < SINONIMOS.length; i++){
+            for (var j = 0; j < SINONIMOS[i].length; j++){
+              var s = SINONIMOS[i][j];
+              if (palavra === s || (s.length >= 4 && palavra.indexOf(s) === 0)) return SINONIMOS[i];
+            }
+          }
+          return null;
+        }
+        function alternativasDe(palavra){
+          var alts = [palavra];
+          if (palavra.length > 4 && palavra.slice(-2) === 'es') alts.push(palavra.slice(0, -2));
+          if (palavra.length > 3 && palavra.slice(-1) === 's') alts.push(palavra.slice(0, -1));
+          var g = grupoDe(palavra) || grupoDe(alts[alts.length - 1]);
+          return g ? alts.concat(g) : alts;
+        }
+        // Palavra curta (até 3 letras) só vale inteira; maior vale como começo de palavra ("azu" não, "textur" sim)
+        function contem(texto, alt){
+          if (!texto) return false;
+          return alt.length <= 3 ? texto.indexOf(' ' + alt + ' ') >= 0 : texto.indexOf(' ' + alt) >= 0;
+        }
+        function entenderBusca(q){
+          var s = normalizar(q);
+          var grupos = [];
+          FRASES.forEach(function(f){
+            f.busca.forEach(function(b){
+              var alvo = ' ' + b + ' ';
+              if (s.indexOf(alvo) >= 0){ grupos.push(f.acha); s = s.split(alvo).join(' '); }
+            });
+          });
+          s.split(' ').forEach(function(p){
+            if (!p || PALAVRAS_VAZIAS.indexOf(' ' + p + ' ') >= 0) return;
+            grupos.push(alternativasDe(p));
+          });
+          return grupos;
+        }
+        function pontuar(idx, grupos){
+          var total = 0, motivos = {};
+          for (var i = 0; i < grupos.length; i++){
+            var melhor = 0, campo = null, outrosFortes = 0;
+            for (var k in PESO){
+              var achou = false;
+              for (var j = 0; j < grupos[i].length; j++){
+                if (contem(idx[k], grupos[i][j])){ achou = true; break; }
+              }
+              if (!achou) continue;
+              if (PESO[k] > melhor){ if (campo && PESO[campo] > 1) outrosFortes++; melhor = PESO[k]; campo = k; }
+              else if (PESO[k] > 1) outrosFortes++;
+            }
+            if (!melhor) return null;          // todas as palavras precisam aparecer
+            // Bater em mais de um campo importante (ex.: paleta E tags) sobe a obra na lista
+            total += melhor + outrosFortes * 3;
+            motivos[MOTIVO[campo]] = true;
+          }
+          return { pontos: total, motivos: Object.keys(motivos) };
+        }
+
+        var ORDEM_ORIGINAL = null;
+        function filtrar(){
+          var grade = document.getElementById('grade');
+          var cards = Array.prototype.slice.call(document.querySelectorAll('.obra-card'));
+          if (!ORDEM_ORIGINAL) ORDEM_ORIGINAL = cards.slice();
+          var q = document.getElementById('busca').value;
+          var colecao = document.getElementById('filtroColecao').value;
+          var paleta = document.getElementById('filtroPaleta').value;
+          var grupos = entenderBusca(q);
+          var resultados = [];
+          cards.forEach(function(c){
+            var r = grupos.length ? pontuar(INDICE_BUSCA[c.dataset.id] || {}, grupos) : { pontos: 0, motivos: [] };
+            var ok = !!r && (!colecao || c.dataset.colecao === colecao) && (!paleta || c.dataset.paleta === paleta);
+            c.style.display = ok ? '' : 'none';
+            var m = c.querySelector('.motivo-busca');
+            if (m){
+              if (ok && grupos.length){ m.textContent = 'Encontrada por: ' + r.motivos.join(', '); m.style.display = 'block'; }
+              else { m.textContent = ''; m.style.display = 'none'; }
+            }
+            if (ok) resultados.push({ card: c, pontos: r.pontos });
+          });
+          // Mais relevante primeiro; sem busca, volta à ordem original
+          if (grupos.length){
+            resultados.slice().sort(function(a, b){ return b.pontos - a.pontos; }).forEach(function(x){ grade.appendChild(x.card); });
+          } else {
+            ORDEM_ORIGINAL.forEach(function(c){ grade.appendChild(c); });
+          }
+          var n = resultados.length;
+          document.getElementById('contagem').textContent = n + ' obra' + (n !== 1 ? 's' : '');
+          var sem = document.getElementById('sem-resultado');
+          sem.textContent = q.trim()
+            ? 'Nenhuma obra para "' + q.trim() + '". Tente uma cor, uma sensação, um ambiente ou parte do nome.'
+            : 'Nenhuma obra encontrada.';
+          sem.style.display = n === 0 ? 'block' : 'none';
+        }
+        document.querySelectorAll('.exemplo-busca').forEach(function(b){
+          b.addEventListener('click', function(){
+            document.getElementById('busca').value = b.getAttribute('data-q');
+            filtrar();
+            document.getElementById('busca').focus();
+          });
+        });
 
         function abrirObra(id){
           const src=document.getElementById('detalhe-'+id);
