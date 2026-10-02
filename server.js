@@ -33,9 +33,13 @@ async function enviarEmail(destinatario, assunto, corpoHtml){
 const JWT_SECRET = process.env.JWT_SECRET || 'circulo-almare-secret-2026';
 const ADMIN_SENHA = process.env.ADMIN_SENHA || 'admin123';
 const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
+// Endereço técnico (Railway direto): chamadas de servidor pra servidor que NÃO podem mudar junto com o domínio
+// público — aviso de pagamento da InfinitePay (sem Cloudflare no caminho) e retorno da autorização do Bling
+// (tem que bater com o cadastrado no app do Bling). BASE_URL fica só pro que o cliente vê (almare.art.br).
+const ENDERECO_TECNICO = (process.env.WEBHOOK_BASE_URL || 'https://circulo-almare-production.up.railway.app').replace(/\/+$/, '');
 const BLING_CLIENT_ID = process.env.CIRCULO_BLING_CLIENT_ID;
 const BLING_CLIENT_SECRET = process.env.CIRCULO_BLING_CLIENT_SECRET;
-const BLING_REDIRECT_URI = process.env.CIRCULO_BLING_REDIRECT_URI || `${process.env.BASE_URL || ''}/auth/bling/callback`;
+const BLING_REDIRECT_URI = process.env.CIRCULO_BLING_REDIRECT_URI || `${ENDERECO_TECNICO}/auth/bling/callback`;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 
 function gerarToken(payload, opts) { return jwt.sign(payload, JWT_SECRET, opts || { expiresIn: '7d' }); }
@@ -3065,7 +3069,7 @@ async function criarCheckoutPedido(pedidoId, origem){
     })),
     cliente: { nome: cliente.nome, email: cliente.email, fone: cliente.celular || cliente.telefone },
     redirectUrl: retorno,
-    webhookUrl: infinitepay.urlWebhook(BASE_URL, '/webhook/infinitepay')
+    webhookUrl: infinitepay.urlWebhook(ENDERECO_TECNICO, '/webhook/infinitepay')
   });
 
   await pool.query(
