@@ -340,6 +340,25 @@ async function buscarContatoBling(documento) {
   return iguais[0] || null;
 }
 
+// Contato antigo SEM CPF com o mesmo nome e o mesmo e-mail (criado pelo antigo botão / formato errado).
+// Só considera contatos sem documento: nunca vincula a um contato de outra pessoa/empresa.
+async function buscarContatoLegadoBling(nome, email) {
+  const alvoNome = normNome(nome), alvoEmail = String(email || '').trim().toLowerCase();
+  if (!alvoNome || !alvoEmail) return null;
+  const token = await getBlingToken();
+  const resp = await fetch('https://api.bling.com.br/Api/v3/contatos?pesquisa=' + encodeURIComponent(String(nome).trim()) + '&limite=100', { headers: { Authorization: 'Bearer ' + token } });
+  if (!resp.ok) throw new Error('Bling não respondeu à busca de contato (' + resp.status + ')');
+  const data = await resp.json();
+  const candidatos = (data.data || []).filter(c => normNome(c.nome) === alvoNome && !String(c.numeroDocumento || '').replace(/\D/g, '')).sort((a, b) => Number(a.id) - Number(b.id)).slice(0, 5);
+  for (const cand of candidatos) {
+    const r = await fetch('https://api.bling.com.br/Api/v3/contatos/' + cand.id, { headers: { Authorization: 'Bearer ' + token } });
+    if (!r.ok) continue;
+    const det = ((await r.json()) || {}).data || {};
+    if (String(det.email || '').trim().toLowerCase() === alvoEmail) return cand;
+  }
+  return null;
+}
+
 async function salvarContatoBling(dados, blingId) {
   const token = await getBlingToken();
   const documentoLimpo = (dados.documento || '').replace(/\D/g, '');
@@ -370,7 +389,8 @@ async function salvarContatoBling(dados, blingId) {
       headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
     });
-    const result = await resp.json();
+    if (resp.status === 404) { const e404 = new Error('contato ' + blingId + ' não existe mais no Bling'); e404.code = 'NAO_EXISTE'; throw e404; }
+    const result = await resp.json().catch(() => ({}));
     if (!resp.ok || result.error) {
       throw new Error(JSON.stringify(result));
     }
@@ -396,6 +416,7 @@ async function salvarContatoBling(dados, blingId) {
 // pelo CPF/CNPJ antes de criar (se já existe no Bling, só vincula e atualiza); só entra no Bling quem tem
 // CPF/CNPJ (sem documento não há como evitar duplicata nem emitir nota).
 const TRAVA_CONTATO_BLING = 71001;
+function normNome(s){ return String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9 ]+/g,' ').replace(/\s+/g,' ').trim(); }
 async function garantirContatoBlingMembro(membroId){
   const client = await pool.connect();
   try {
@@ -404,14 +425,30 @@ async function garantirContatoBlingMembro(membroId){
     if (!m) return null;
     const doc = String(m.documento || '').replace(/\D/g, '');
     if (!m.bling_id && doc.length < 11) return null;   // espera completar o cadastro
-    let blingId = m.bling_id || null;
-    if (!blingId) {
-      const existente = await buscarContatoBling(doc);
-      if (existente) blingId = String(existente.id);
-    }
     const dados = { nome: m.nome, email: m.email, documento: m.documento, ie: m.ie, telefone: m.telefone, celular: m.celular,
       cep: m.cep, endereco: m.endereco, numero: m.numero, complemento: m.complemento, bairro: m.bairro, cidade: m.cidade, estado: m.estado };
-    const id = await salvarContatoBling(dados, blingId);
+    // Qual contato do Bling é desta pessoa:
+    // 1) existe contato com o CPF/CNPJ dela? É ele (tem prioridade, inclusive sobre um vínculo antigo sem CPF);
+    // 2) senão, o vínculo que já existe;
+    // 3) senão, um contato antigo SEM CPF com o mesmo nome e o mesmo e-mail (criado pelo defeito antigo);
+    // 4) senão, cria.
+    const escolherContato = async (ignorarVinculo) => {
+      if (doc.length >= 11) { const porDoc = await buscarContatoBling(doc); if (porDoc) return String(porDoc.id); }
+      if (!ignorarVinculo && m.bling_id) return String(m.bling_id);
+      const legado = await buscarContatoLegadoBling(m.nome, m.email);
+      return legado ? String(legado.id) : null;
+    };
+    let blingId = await escolherContato(false);
+    let id;
+    try {
+      id = await salvarContatoBling(dados, blingId);
+    } catch (e) {
+      if (e.code !== 'NAO_EXISTE') throw e;
+      // o contato vinculado foi apagado no Bling (ex.: limpeza de duplicados): passa para o que ficou
+      blingId = await escolherContato(true);
+      if (blingId === String(m.bling_id)) blingId = null;
+      id = await salvarContatoBling(dados, blingId);
+    }
     if (!id) throw new Error('o Bling não devolveu o número do contato');
     await client.query('UPDATE circulo_membros SET bling_id=$1, bling_erro=NULL, bling_erro_em=NULL WHERE id=$2', [String(id), membroId]);
     return String(id);
@@ -442,6 +479,29 @@ async function sincronizarPendentesBling(){
     }
   } catch (e) { console.error('Rotina de contatos Bling:', e.message); }
   finally { _sincronizandoContatosBling = false; }
+}
+
+// Uma vez só: completa (CPF e endereço) os contatos já vinculados que ficaram incompletos pelo formato antigo.
+// Pula quem está em algum grupo de duplicados do relatório (esses se acertam quando a limpeza for feita).
+async function completarContatosAntigosBling(){
+  try {
+    const cfg = (await pool.query('SELECT autorizado FROM circulo_bling_config WHERE id=1').catch(() => ({ rows: [] }))).rows[0];
+    if (!cfg || !cfg.autorizado) return;
+    const ja = await pool.query("SELECT 1 FROM circulo_migracoes WHERE nome='completar_contatos_bling_v1'");
+    if (ja.rows.length) return;
+    const rel = (await pool.query("SELECT resultado FROM circulo_relatorios WHERE nome='duplicados_bling' AND status='pronto'").catch(() => ({ rows: [] }))).rows[0];
+    const emGrupo = new Set();
+    if (rel && rel.resultado && rel.resultado.grupos) rel.resultado.grupos.forEach(g => g.contatos.forEach(x => emGrupo.add(String(x.id))));
+    const membros = (await pool.query(`SELECT id, bling_id FROM circulo_membros WHERE bling_id IS NOT NULL AND length(regexp_replace(COALESCE(documento,''),'\\D','','g')) >= 11 ORDER BY id`)).rows;
+    let feitos = 0, pulados = 0;
+    for (const m of membros) {
+      if (emGrupo.has(String(m.bling_id))) { pulados++; continue; }
+      try { await garantirContatoBlingMembro(m.id); feitos++; } catch (e) { console.error('Completar contato membro ' + m.id + ':', e.message); }
+      await new Promise(ok => setTimeout(ok, 700));
+    }
+    await pool.query("INSERT INTO circulo_migracoes (nome) VALUES ('completar_contatos_bling_v1') ON CONFLICT (nome) DO NOTHING");
+    console.log('Contatos antigos completados no Bling: ' + feitos + ' (pulados por estarem em grupo de duplicados: ' + pulados + ')');
+  } catch (e) { console.error('Completar contatos antigos:', e.message); }
 }
 
 // ─── BLING — sincroniza pedido de venda quando o pagamento é confirmado ──────
@@ -4561,7 +4621,6 @@ async function blingGetLento(caminho){
   }
   throw new Error('Bling limitou as consultas (429) em ' + caminho);
 }
-const normNome = s => String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9 ]+/g,' ').replace(/\s+/g,' ').trim();
 // Roda em segundo plano (pode levar minutos: o e-mail só vem consultando contato por contato, e o Bling
 // limita a 3 consultas/s). Resultado e progresso ficam guardados em circulo_relatorios.
 let _relatorioDuplicadosRodando = false;
@@ -5198,5 +5257,6 @@ setTimeout(manterBlingRenovado, 60*1000);
 setInterval(manterBlingRenovado, 2*60*60*1000);
 // Contatos de membros: entram no Bling sozinhos (1ª rodada 90 s após subir, depois a cada 5 min)
 setTimeout(sincronizarPendentesBling, 90*1000);
+setTimeout(completarContatosAntigosBling, 150*1000);
 setInterval(sincronizarPendentesBling, 5*60*1000);
 });
