@@ -123,6 +123,30 @@ async function montarGeometria(builder, larguraCm, alturaCm, profundidadeCm, cor
   });
 }
 
+// ─── Identificador (GUID) do modelo ─────────────────────────────────────────
+// O SketchUp usa o GUID do arquivo pra saber se dois modelos são "o mesmo": ao importar um .skp num projeto,
+// se o GUID bate com o de um componente que já está lá, ele REAPROVEITA o existente (traz o quadro errado);
+// se bate com o do projeto aberto, RECUSA ("não pode importar o modelo nele mesmo").
+// A biblioteca openskp copia o cabeçalho de um arquivo-modelo fixo, então TODO quadro saía com o mesmo GUID
+// (9ad39330...94b0, posição 52, logo após "SketchUp Model" e "{17.0.1}").
+// Agora cada variação (obra + tamanho + moldura + imagem) tem GUID próprio e estável: a mesma variação baixada
+// duas vezes é reconhecida como a mesma; qualquer diferença gera outro GUID.
+const crypto = require('crypto');
+const VERSAO_GERADOR_3D = 'g2';                       // mude se a geometria do quadro mudar
+const POS_GUID_MODELO = 52;
+const GUID_DO_ARQUIVO_MODELO = Buffer.from('9ad3933069aa294e8d5315cbfe3d94b0', 'hex');
+function darIdentificadorProprio(skpBytes, nomeComponente, imagemBytes) {
+  const atual = Buffer.from(skpBytes.subarray(POS_GUID_MODELO, POS_GUID_MODELO + 16));
+  const cabecalhoOk = skpBytes[0] === 0xff && skpBytes[1] === 0xfe && skpBytes[2] === 0xff && skpBytes[3] === 0x0e;
+  // só troca se o arquivo tiver exatamente a estrutura esperada (protege contra mudança na biblioteca)
+  if (!cabecalhoOk || !atual.equals(GUID_DO_ARQUIVO_MODELO)) {
+    throw new Error('Estrutura do arquivo .skp diferente da esperada — identificador não aplicado (atualização da biblioteca openskp?)');
+  }
+  const imagemHash = crypto.createHash('sha256').update(imagemBytes || Buffer.alloc(0)).digest('hex');
+  const guid = crypto.createHash('md5').update('almare|' + VERSAO_GERADOR_3D + '|' + nomeComponente + '|' + imagemHash).digest();
+  skpBytes.set(guid, POS_GUID_MODELO);
+}
+
 function nomeArquivoLimpo(obraNome, larguraCm, alturaCm, moldura) {
   const nomeObraLimpo = (obraNome||'obra').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^\w\s-]/g,'').trim().replace(/\s+/g,'-');
   return `${nomeObraLimpo}_${larguraCm}x${alturaCm}cm_${NOMES_MOLDURA[moldura]||moldura}`;
@@ -139,6 +163,7 @@ async function gerarModelo3D({ obraCodigo, obraNome, larguraCm, alturaCm, moldur
   builder.addInstance(def);
 
   const skpBytes = builder.toBytes();
+  darIdentificadorProprio(skpBytes, nomeComponente, imagemBytes);
   const nomeBase = nomeArquivoLimpo(obraNome, larguraCm, alturaCm, moldura);
 
   if (formato === 'skp') {
