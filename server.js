@@ -63,6 +63,9 @@ async function authMembro(req, res, next) {
   let transferiu = false;
   try { transferiu = await transferirCarrinhoVisitante(req, res, req.membro.id); } catch(e){ console.error(e.message); }
   if (transferiu && req.method === 'GET' && req.path === '/portal') return res.redirect('/carrinho');
+  let tinhaIntencao = false;
+  try { tinhaIntencao = await processarIntencaoConvenio(req, res, req.membro.id); } catch(e){ console.error(e.message); }
+  if (tinhaIntencao && req.method === 'GET' && req.path === '/portal') return res.redirect('/arquitetos');
 
   if (ROTAS_LIVRES_CADASTRO_INCOMPLETO.includes(req.path)) return next();
   try {
@@ -150,7 +153,7 @@ function qtdCarrinhoVisitante(req){ return lerCarrinhoVisitante(req).reduce((s,i
 function navVisitante(ativo, req){
   const qtd = qtdCarrinhoVisitante(req);
   const item = (k,h,l) => `<a href="${h}" class="nav-link${ativo===k?' ativo':''}">${l}</a>`;
-  return `<div class="nav-bar">${item('obras','/catalogo','Obras')}${item('identificar','/identificar','Identificar')}${item('simulador','/simulador','Simulador · membros')}${item('carrinho','/carrinho','Carrinho'+(qtd?' ('+qtd+')':''))}${item('entrar','/login','Entrar')}<a href="/convite/geral" class="nav-link" style="color:var(--gold);">Fazer parte do Círculo</a></div>`;
+  return `<div class="nav-bar">${item('obras','/catalogo','Obras')}${item('identificar','/identificar','Identificar')}${item('simulador','/simulador','Simulador · membros')}${item('carrinho','/carrinho','Carrinho'+(qtd?' ('+qtd+')':''))}${item('arquitetos','/arquitetos','Para arquitetos')}${item('entrar','/login','Entrar')}<a href="/convite/geral" class="nav-link" style="color:var(--gold);">Fazer parte do Círculo</a></div>`;
 }
 function avisoVisitante(){
   return `<div style="border:1px solid rgba(201,169,110,.35);background:rgba(201,169,110,.06);border-radius:4px;padding:16px 18px;margin-bottom:28px;display:flex;gap:16px;align-items:center;justify-content:space-between;flex-wrap:wrap;">
@@ -766,6 +769,50 @@ function navBar(ativo, temImpacto=false, ehEspec=false) {
 // Convênio de arquitetos e designers de interiores = função Especificador (o tipo fica em "detalhe")
 const TIPOS_CONVENIO = { arquiteto: 'Arquiteto(a)', designer_interiores: 'Designer de interiores' };
 
+// ─── Funil de arquitetos (tráfego pago → /arquitetos → cadastro → pedido → aprovado) ───
+// Visitante identificado por um cookie próprio do site (sem dado pessoal); origem = utm do anúncio.
+function idVisitante(req, res){
+  let v = req.cookies && req.cookies.circulo_vid;
+  if (!v || !/^[a-f0-9]{24}$/.test(v)) {
+    v = crypto.randomBytes(12).toString('hex');
+    res.cookie('circulo_vid', v, { httpOnly: true, sameSite: 'lax', maxAge: 365*24*60*60*1000 });
+  }
+  return v;
+}
+function origemDaUrl(q){
+  const partes = [q.utm_source, q.utm_campaign, q.utm_content].map(x => String(x||'').trim().slice(0, 40)).filter(Boolean);
+  return partes.length ? partes.join(' / ') : null;
+}
+async function registrarFunil(evento, dados){
+  try {
+    await pool.query('INSERT INTO circulo_funil (evento, visitante, origem, membro_id) VALUES ($1,$2,$3,$4)',
+      [evento, dados.visitante || null, dados.origem ? String(dados.origem).slice(0,120) : null, dados.membroId || null]);
+  } catch (e) { console.error('Funil:', e.message); }
+}
+// Pedido de convênio (função Especificador pendente). Só cria se não estiver ativa nem já pendente.
+async function criarPedidoConvenio(membroId, tipo){
+  const f = (await pool.query("SELECT id FROM circulo_funcoes WHERE slug='especificador'")).rows[0];
+  if (!f || !TIPOS_CONVENIO[tipo]) return false;
+  const r = await pool.query(`INSERT INTO circulo_membro_funcoes (membro_id, funcao_id, ativo, status, detalhe, solicitado_em)
+      VALUES ($1, $2, false, 'pendente', $3, NOW())
+    ON CONFLICT (membro_id, funcao_id) DO UPDATE SET status='pendente', ativo=false, detalhe=$3, solicitado_em=NOW(), decidido_em=NULL
+      WHERE circulo_membro_funcoes.status NOT IN ('ativa','pendente')`, [membroId, f.id, tipo]);
+  return r.rowCount > 0;
+}
+// Visitante clicou em "quero ser conveniado" e foi se cadastrar/entrar: ao voltar logado, o pedido sai sozinho
+async function processarIntencaoConvenio(req, res, membroId){
+  const tipo = req.cookies && req.cookies.circulo_intencao_convenio;
+  if (!tipo) return false;
+  res.clearCookie('circulo_intencao_convenio');
+  if (!TIPOS_CONVENIO[tipo]) return false;
+  const criou = await criarPedidoConvenio(membroId, tipo).catch(() => false);
+  if (criou) {
+    const m = (await pool.query('SELECT origem FROM circulo_membros WHERE id=$1', [membroId])).rows[0];
+    await registrarFunil('pedido', { visitante: req.cookies.circulo_vid, origem: (m && m.origem) || req.cookies.circulo_origem, membroId });
+  }
+  return true;
+}
+
 // Funções que o membro pode pedir no cadastro
 // Funções concedidas apenas pelo admin (Embaixador e Especificador geram cashback,
 // nunca ficam abertas pra autosserviço; Artista/Colaborador reservadas pro mesmo caminho).
@@ -1029,6 +1076,13 @@ app.post('/cadastro-passo2', async (req,res) => {
 
     // Bling: automático, em segundo plano, sem duplicar
     sincronizarMembroBlingEmSegundoPlano(mid);
+
+    // Funil de arquitetos: veio da página /arquitetos (ou de anúncio)? registra o cadastro e guarda a origem
+    if (req.cookies && (req.cookies.circulo_intencao_convenio || req.cookies.circulo_origem)) {
+      const origem = req.cookies.circulo_origem ? String(req.cookies.circulo_origem).slice(0,120) : null;
+      if (origem) await pool.query('UPDATE circulo_membros SET origem=$1 WHERE id=$2', [origem, mid]).catch(()=>{});
+      await registrarFunil('cadastro', { visitante: req.cookies.circulo_vid, origem, membroId: mid });
+    }
 
     // Membro entra direto, sem nenhuma função extra — só como Membro. Funções
     // adicionais (Embaixador, Especificador etc.) agora só via "Minhas Funções"
@@ -1477,17 +1531,28 @@ app.get('/minhas-funcoes',authMembro,async(req,res)=>{
 // Apresenta o kit de especificação; a bonificação aparece de forma discreta. O pedido de convênio vira um
 // pedido da função Especificador na fila do admin — uma vez por pedido.
 // ════════════════════════════════════════════════════════════════
-app.get('/arquitetos', authMembro, async (req, res) => {
-  const reg = (await pool.query(`SELECT mf.status, mf.detalhe FROM circulo_membro_funcoes mf JOIN circulo_funcoes f ON f.id=mf.funcao_id
-    WHERE mf.membro_id=$1 AND f.slug='especificador'`, [req.membro.id])).rows[0];
-  const estado = reg ? reg.status : null;
-  const tipo = reg && TIPOS_CONVENIO[reg.detalhe] ? TIPOS_CONVENIO[reg.detalhe] : '';
+app.get('/arquitetos', membroOpcional, async (req, res) => {
+  // Funil: identifica o visitante, guarda a origem do anúncio (utm) e registra a visita
+  const visitante = idVisitante(req, res);
+  const origemUrl = origemDaUrl(req.query);
+  if (origemUrl) res.cookie('circulo_origem', origemUrl, { httpOnly: true, sameSite: 'lax', maxAge: 30*24*60*60*1000 });
+  const origem = origemUrl || (req.cookies && req.cookies.circulo_origem) || null;
+  await registrarFunil('visita', { visitante, origem, membroId: req.membro && req.membro.id });
+
+  let estado = null, tipo = '';
+  if (req.membro) {
+    await processarIntencaoConvenio(req, res, req.membro.id).catch(() => {});
+    const reg = (await pool.query(`SELECT mf.status, mf.detalhe FROM circulo_membro_funcoes mf JOIN circulo_funcoes f ON f.id=mf.funcao_id
+      WHERE mf.membro_id=$1 AND f.slug='especificador'`, [req.membro.id])).rows[0];
+    estado = reg ? reg.status : null;
+    tipo = reg && TIPOS_CONVENIO[reg.detalhe] ? TIPOS_CONVENIO[reg.detalhe] : '';
+  }
   const botoes = `
       <form method="POST" action="/arquitetos/solicitar" style="display:flex;gap:12px;flex-wrap:wrap;margin-top:18px;">
         <button name="tipo" value="arquiteto" class="btn btn-outline">Sou arquiteto(a) — quero ser conveniado(a)</button>
         <button name="tipo" value="designer_interiores" class="btn btn-outline">Sou designer de interiores — quero ser conveniado(a)</button>
       </form>
-      <p style="font-size:12px;color:var(--muted);margin-top:12px;">Cada solicitação é analisada pessoalmente.</p>`;
+      <p style="font-size:12px;color:var(--muted);margin-top:12px;">Cada solicitação é analisada pessoalmente.${req.membro ? '' : ' Você cria seu acesso ao Círculo em poucos minutos e o pedido segue automaticamente. Já faz parte? <a href="/login?voltar=%2Farquitetos" style="color:var(--gold);">Entrar</a>.'}</p>`;
   const situacao =
     estado === 'ativa' ? `<div class="card" style="border-color:rgba(46,204,113,.4);">
         <div style="font-family:'Cormorant Garamond',serif;font-size:22px;margin-bottom:6px;">Você é ${tipo ? tipo.toLowerCase() : 'especificador(a)'} conveniado(a)</div>
@@ -1498,36 +1563,43 @@ app.get('/arquitetos', authMembro, async (req, res) => {
         <div style="font-family:'Cormorant Garamond',serif;font-size:22px;margin-bottom:6px;">Solicitação em análise</div>
         <p style="color:#ccc;font-size:13px;">Recebemos seu pedido${tipo ? ' como ' + tipo.toLowerCase() : ''}. Assim que for analisado, o kit aparece liberado aqui e em "Minhas funções".</p>
       </div>`
-    : `<div class="card">
+    : `<div class="card" id="convenio">
         <div style="font-family:'Cormorant Garamond',serif;font-size:22px;margin-bottom:6px;">Solicitar convênio</div>
         ${estado === 'recusada' ? `<p style="color:#ccc;font-size:13px;">Sua solicitação anterior não foi aprovada. Se quiser, você pode solicitar novamente.</p>` : `<p style="color:#ccc;font-size:13px;">Para arquitetos e designers de interiores que querem especificar ALMARE em seus projetos.</p>`}
         ${botoes}
       </div>`;
   const recurso = (titulo, texto) => `<div class="card" style="flex:1;min-width:220px;"><div style="font-family:'Cormorant Garamond',serif;font-size:19px;margin-bottom:6px;">${titulo}</div><p style="color:var(--muted);font-size:13px;line-height:1.7;">${texto}</p></div>`;
+  const nav = req.membro ? navBar('arquitetos', await temFuncaoComImpacto(req.membro.id), await ehEspecificador(req.membro.id)) : navVisitante('arquitetos', req);
   res.send(html('Para arquitetos e designers', `
-    ${navBar('arquitetos', await temFuncaoComImpacto(req.membro.id), await ehEspecificador(req.membro.id))}
+    ${nav}
     <h2 style="font-size:30px;margin-bottom:10px;">Espaço para arquitetos e designers de interiores</h2>
-    <p style="color:#ccc;max-width:720px;line-height:1.8;margin-bottom:28px;">A ALMARE foi pensada para entrar no projeto desde o início — não como o quadro escolhido no fim, mas como parte da especificação.</p>
-    <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:24px;">
+    <p style="color:#ccc;max-width:720px;line-height:1.8;margin-bottom:20px;">A ALMARE foi pensada para entrar no projeto desde o início — não como o quadro escolhido no fim, mas como parte da especificação.</p>
+    ${estado === 'ativa' || estado === 'pendente' ? '' : '<a href="#convenio" class="btn btn-primary" style="margin-bottom:28px;display:inline-block;">Solicitar convênio</a>'}
+    <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:28px;">
       ${recurso('Modelos 3D de cada obra', 'Arquivos para SketchUp, OBJ e DXF no tamanho e na moldura reais, prontos para importar no seu projeto.')}
       ${recurso('Simulador de ambiente', 'Envie a foto do espaço e veja as obras que dialogam com ele, em escala.')}
       ${recurso('Especificação pronta', 'Ficha técnica, dimensões e opções de moldura para o memorial descritivo.')}
+      ${recurso('Parceria com o seu trabalho', 'Quando uma obra especificada por você encontra lar, você também participa do valor que ajudou a criar. Os detalhes são apresentados após a aprovação.')}
     </div>
-    <p style="color:var(--muted);font-size:12px;max-width:720px;line-height:1.7;margin-bottom:28px;">Arquitetos e designers conveniados também participam do valor que ajudam a criar quando uma obra especificada encontra lar. Os detalhes são apresentados após a aprovação.</p>
     ${situacao}
-  `, true));
+  `, !!req.membro));
 });
 
-app.post('/arquitetos/solicitar', authMembro, async (req, res) => {
+app.post('/arquitetos/solicitar', membroOpcional, async (req, res) => {
   const tipo = TIPOS_CONVENIO[req.body.tipo] ? req.body.tipo : null;
   if (!tipo) return res.redirect('/arquitetos');
-  const f = (await pool.query("SELECT id FROM circulo_funcoes WHERE slug='especificador'")).rows[0];
-  if (!f) return res.redirect('/arquitetos');
-  // vira pedido só se não estiver ativa nem já pendente (um pedido por vez; recusado/encerrado pode pedir de novo)
-  await pool.query(`INSERT INTO circulo_membro_funcoes (membro_id, funcao_id, ativo, status, detalhe, solicitado_em)
-      VALUES ($1, $2, false, 'pendente', $3, NOW())
-    ON CONFLICT (membro_id, funcao_id) DO UPDATE SET status='pendente', ativo=false, detalhe=$3, solicitado_em=NOW(), decidido_em=NULL
-      WHERE circulo_membro_funcoes.status NOT IN ('ativa','pendente')`, [req.membro.id, f.id, tipo]);
+  const visitante = idVisitante(req, res);
+  const origem = (req.cookies && req.cookies.circulo_origem) || null;
+  await registrarFunil('clique', { visitante, origem, membroId: req.membro && req.membro.id });
+  if (!req.membro) {
+    // ainda não é do Círculo: guarda a intenção e manda pro cadastro; o pedido sai sozinho ao voltar logado
+    res.cookie('circulo_intencao_convenio', tipo, { httpOnly: true, sameSite: 'lax', maxAge: 30*24*60*60*1000 });
+    return res.redirect('/convite/geral');
+  }
+  if (await criarPedidoConvenio(req.membro.id, tipo)) {
+    const m = (await pool.query('SELECT origem FROM circulo_membros WHERE id=$1', [req.membro.id])).rows[0];
+    await registrarFunil('pedido', { visitante, origem: (m && m.origem) || origem, membroId: req.membro.id });
+  }
   res.redirect('/arquitetos');
 });
 
@@ -4869,6 +4941,13 @@ app.get('/admin',authAdmin,async(req,res)=>{
   const sc = situacaoContatos.rows[0];
   const errosContatos = parseInt(sc.com_erro) ? (await pool.query(`SELECT nome, bling_erro FROM circulo_membros WHERE bling_id IS NULL AND bling_erro IS NOT NULL ORDER BY bling_erro_em DESC LIMIT 5`)).rows : [];
   // Funções pendentes de aprovação
+  // Funil de arquitetos — últimos 30 dias, total e por origem (campanha do anúncio)
+  const funilSql = `SELECT COUNT(DISTINCT visitante) FILTER (WHERE evento='visita') AS visitantes,
+      COUNT(DISTINCT COALESCE(visitante, 'm'||membro_id)) FILTER (WHERE evento='clique') AS cliques,
+      COUNT(*) FILTER (WHERE evento='cadastro') AS cadastros, COUNT(*) FILTER (WHERE evento='pedido') AS pedidos,
+      COUNT(*) FILTER (WHERE evento='aprovado') AS aprovados`;
+  const funilTotal = (await pool.query(funilSql + ` FROM circulo_funil WHERE criado_em > NOW() - INTERVAL '30 days'`).catch(()=>({rows:[{}]}))).rows[0] || {};
+  const funilOrigem = (await pool.query(funilSql + `, COALESCE(origem,'direto (sem campanha)') AS origem FROM circulo_funil WHERE criado_em > NOW() - INTERVAL '30 days' GROUP BY 6 ORDER BY 1 DESC LIMIT 8`).catch(()=>({rows:[]}))).rows;
   const pendentes=await pool.query(`
     SELECT mf.id as mf_id, m.nome, m.email, m.codigo_membro, f.nome as funcao, f.slug, m.id as membro_id, mf.detalhe, mf.solicitado_em
     FROM circulo_membro_funcoes mf
@@ -4950,7 +5029,14 @@ app.get('/admin',authAdmin,async(req,res)=>{
       }
     </script>
     <div class="card" style="margin-bottom:24px;display:flex;justify-content:space-between;align-items:center;">
-      <div>
+      <div class="card" style="margin-bottom:24px;">
+      <strong>Funil de arquitetos e designers</strong> <span style="font-size:11px;color:var(--muted)">· últimos 30 dias · página almare.art.br/arquitetos</span>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px;">
+        ${[['Visitantes', funilTotal.visitantes], ['Clicaram em convênio', funilTotal.cliques], ['Cadastros', funilTotal.cadastros], ['Pedidos', funilTotal.pedidos], ['Aprovados', funilTotal.aprovados]].map(([r, n], k) => `<div style="flex:1;min-width:110px;border:1px solid var(--border);border-radius:3px;padding:10px 12px;"><div style="font-size:22px;color:var(--gold)">${parseInt(n)||0}</div><div style="font-size:11px;color:var(--muted)">${k ? '→ ' : ''}${r}</div></div>`).join('')}
+      </div>
+      ${funilOrigem.length ? `<table style="width:100%;margin-top:14px;font-size:12px;"><tr style="color:var(--muted);text-align:left"><th>Origem (utm)</th><th>Visitantes</th><th>Cliques</th><th>Cadastros</th><th>Pedidos</th><th>Aprovados</th></tr>${funilOrigem.map(o => `<tr><td>${esc(o.origem)}</td><td>${o.visitantes}</td><td>${o.cliques}</td><td>${o.cadastros}</td><td>${o.pedidos}</td><td>${o.aprovados}</td></tr>`).join('')}</table>` : `<p style="font-size:12px;color:var(--muted);margin-top:12px;">Sem visitas ainda. Para separar por anúncio, use no link: almare.art.br/arquitetos?utm_source=instagram&amp;utm_campaign=nome-do-video</p>`}
+    </div>
+    <div>
         <strong>Conexão Bling do Círculo</strong><br>
         ${blingConectado
           ? `<span style="font-size:12px;color:#7fd8a0">✓ Conectado e funcionando</span><br><span style="font-size:11px;color:var(--muted)">O acesso é renovado sozinho${blingStatus.renovadoEm ? ' · última renovação ' + fmtDataHora(blingStatus.renovadoEm) : ''}. Não precisa reconectar.</span>`
@@ -5160,6 +5246,10 @@ app.post('/admin/membros/:id/editar', authAdmin, async(req,res)=>{
 
 app.post('/admin/funcoes/:id/aprovar',authAdmin,async(req,res)=>{
   await pool.query("UPDATE circulo_membro_funcoes SET ativo=true, status='ativa', decidido_em=NOW() WHERE id=$1",[req.params.id]);
+  // funil: convênio de arquiteto/designer aprovado
+  const conv = (await pool.query(`SELECT mf.membro_id, m.origem FROM circulo_membro_funcoes mf JOIN circulo_funcoes f ON f.id=mf.funcao_id
+    JOIN circulo_membros m ON m.id=mf.membro_id WHERE mf.id=$1 AND f.slug='especificador'`, [req.params.id])).rows[0];
+  if (conv) await registrarFunil('aprovado', { origem: conv.origem, membroId: conv.membro_id });
   // registra no passaporte
   const mf=await pool.query('SELECT mf.*,f.nome as fn,m.nome as mn FROM circulo_membro_funcoes mf JOIN circulo_funcoes f ON f.id=mf.funcao_id JOIN circulo_membros m ON m.id=mf.membro_id WHERE mf.id=$1',[req.params.id]);
   if(mf.rows.length){
@@ -5281,6 +5371,10 @@ async function garantirTabelas(){
     // Dados do membro reaproveitados no faturamento
     await pool.query(`ALTER TABLE circulo_membros ADD COLUMN IF NOT EXISTS bling_id VARCHAR(50);`).catch(()=>{});
     await pool.query(`ALTER TABLE circulo_membros ADD COLUMN IF NOT EXISTS bling_erro TEXT;`).catch(()=>{});
+    // Funil de arquitetos: cada etapa registrada (visita, clique, cadastro, pedido, aprovado) com a origem (utm)
+    await pool.query(`CREATE TABLE IF NOT EXISTS circulo_funil (id SERIAL PRIMARY KEY, evento VARCHAR(20), visitante VARCHAR(40), origem VARCHAR(120), membro_id INTEGER, criado_em TIMESTAMP DEFAULT NOW())`).catch(()=>{});
+    await pool.query(`CREATE INDEX IF NOT EXISTS circulo_funil_data ON circulo_funil (criado_em)`).catch(()=>{});
+    await pool.query(`ALTER TABLE circulo_membros ADD COLUMN IF NOT EXISTS origem VARCHAR(120)`).catch(()=>{});
     // Funções com ESTADO claro: pendente (pedido de verdade) | ativa | recusada | encerrada (desativada/removida).
     // Antes "pendente" era qualquer função inativa: desativar ou remover jogava a pessoa de novo na fila de
     // aprovação, e cópias da mesma função faziam o pedido recusado "voltar".
