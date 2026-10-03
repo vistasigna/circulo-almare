@@ -720,9 +720,86 @@ const CSS = `
   @media(max-width:600px){.grid-2,.grid-3{grid-template-columns:1fr}.steps{flex-direction:column}}
 `;
 
+// ─── Google Analytics 4 ──────────────────────────────────────────────────────
+// Uma única tag, colocada no <head> de cada modelo de página (cada página usa um só → nunca carrega duas vezes).
+// Privacidade: o endereço é LIMPO antes de ir pro Google — tokens e códigos pessoais viram ":token"/":codigo" e
+// todos os parâmetros saem, menos os de campanha (utm_* e gclid); nada de user_id, sinais de anúncio desligados.
+// Área /admin não é medida. Visualização de página manual (send_page_view:false) com proteção contra repetição.
+// Trocar ou desligar sem mexer no código: variável GA4_ID no Railway ("off" desliga).
+const GA4_ID = String(process.env.GA4_ID || 'G-J6PSQNTNGM').trim();
+function tagGA4(){
+  if (!/^G-[A-Z0-9]{4,20}$/.test(GA4_ID)) return '';
+  return `<script>
+(function(){
+  var ID = '${GA4_ID}';
+  if (location.pathname === '/admin' || location.pathname.indexOf('/admin/') === 0) return;
+  if (window.__ga4Iniciado) return;
+  window.__ga4Iniciado = true;
+  var s = document.createElement('script');
+  s.async = true;
+  s.src = 'https://www.googletagmanager.com/gtag/js?id=' + ID;
+  document.head.appendChild(s);
+  window.dataLayer = window.dataLayer || [];
+  window.gtag = function(){ window.dataLayer.push(arguments); };
+  function caminhoLimpo(caminho){
+    var partes = caminho.split('/');
+    for (var i = 1; i < partes.length; i++){
+      var ant = partes[i - 1], seg = partes[i];
+      if (!seg) continue;
+      if (ant === 'pedido' || ant === 'redefinir-senha') partes[i] = ':token';
+      else if (ant === 'pedido-interno' || ant === 'salva') partes[i] = ':id';
+      else if (ant === 'convite' && seg !== 'geral') partes[i] = ':codigo';
+      else if (/^[A-Za-z0-9_-]{20,}$/.test(seg)) partes[i] = ':id';
+    }
+    return partes.join('/');
+  }
+  var MANTER = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term', 'gclid'];
+  function urlLimpa(endereco){
+    var u = new URL(endereco, location.origin);
+    var q = new URLSearchParams();
+    MANTER.forEach(function(k){ var v = u.searchParams.get(k); if (v) q.set(k, v.slice(0, 100)); });
+    var qs = q.toString();
+    return u.origin + caminhoLimpo(u.pathname) + (qs ? '?' + qs : '');
+  }
+  function referenciaLimpa(){
+    if (!document.referrer) return '';
+    try {
+      var r = new URL(document.referrer);
+      return r.origin === location.origin ? urlLimpa(document.referrer) : r.origin + '/';
+    } catch (e) { return ''; }
+  }
+  var referencia = referenciaLimpa();
+  window.gtag('js', new Date());
+  window.gtag('config', ID, {
+    send_page_view: false,
+    allow_google_signals: false,
+    allow_ad_personalization_signals: false,
+    page_location: urlLimpa(location.href),
+    page_referrer: referencia
+  });
+  var ultimaEnviada = null;
+  function enviarVisualizacao(){
+    var endereco = urlLimpa(location.href);
+    if (endereco === ultimaEnviada) return;
+    ultimaEnviada = endereco;
+    window.gtag('event', 'page_view', { page_location: endereco, page_title: document.title, page_referrer: referencia });
+    referencia = endereco;
+  }
+  enviarVisualizacao();
+  ['pushState', 'replaceState'].forEach(function(nome){
+    var original = history[nome];
+    if (typeof original !== 'function') return;
+    history[nome] = function(){ var r = original.apply(this, arguments); setTimeout(enviarVisualizacao, 0); return r; };
+  });
+  window.addEventListener('popstate', enviarVisualizacao);
+})();
+</script>`;
+}
+
 function html(titulo, corpo, nav=false) {
   const sairHtml = nav ? `<a href="/logout" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--danger);margin-top:12px;display:inline-block">Sair</a>` : '';
   return `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  ${tagGA4()}
   <title>${titulo} — Círculo ALMARE</title><style>${CSS}</style></head>
   <body><div class="container"><header><div class="logo">ALMARE</div><div class="logo-sub">Círculo</div><div style="text-align:right">${sairHtml}</div></header>${corpo}</div></body></html>`;
 }
@@ -856,7 +933,7 @@ app.get('/convite/:codigo', async (req,res) => {
     } catch {}
   }
   res.send(`<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Círculo ALMARE</title>
+  <title>Círculo ALMARE</title>${tagGA4()}
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;1,300;1,400&family=Inter:wght@300;400;500&display=swap');
     *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -3688,7 +3765,7 @@ function telaAguardandoPagamento(r){
 // Casca das páginas públicas (sem login) — o cliente final não é obrigado a estar logado
 function paginaPublicaHtml(titulo, corpo){
   return `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-    <title>${titulo} — ALMARE</title><style>${CSS}</style></head>
+    <title>${titulo} — ALMARE</title>${tagGA4()}<style>${CSS}</style></head>
     <body><div class="container" style="max-width:640px;padding-top:48px;">
       <div class="logo" style="margin-bottom:32px;">ALMARE</div>
       ${corpo}
@@ -3912,7 +3989,7 @@ app.get('/pedido/:token', async(req,res)=>{
   const uiPagamento = montarUiPagamento('/pedido/'+tokenEsc+'/pagamento/checkout', pedido.total);
 
   res.send(`<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-    <title>Seu pedido — ALMARE</title><style>${CSS}</style></head>
+    <title>Seu pedido — ALMARE</title>${tagGA4()}<style>${CSS}</style></head>
     <body><div class="container" style="max-width:640px;padding-top:48px;">
       <div class="logo" style="margin-bottom:32px;">ALMARE</div>
       <h1 style="font-size:28px;margin-bottom:8px;">Seu pedido</h1>
@@ -3958,7 +4035,7 @@ app.get('/pedido/:token/confirmado', async(req,res)=>{
   if(!r.rows.length) return res.status(404).send(html('Pedido',`<div class="container-sm"><div class="msg-erro">Este link não existe mais.</div></div>`));
   const { pedido, linhas } = await montarResumoPedidoHtml(r.rows[0].id);
   res.send(`<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-    <title>Pedido confirmado — ALMARE</title><style>${CSS}</style></head>
+    <title>Pedido confirmado — ALMARE</title>${tagGA4()}<style>${CSS}</style></head>
     <body><div class="container" style="max-width:640px;padding-top:48px;">
       <div class="logo" style="margin-bottom:32px;">ALMARE</div>
       ${montarTelaConfirmacaoHtml(pedido, linhas, null, 'Fechar')}
@@ -4741,6 +4818,7 @@ app.get('/catalogo',membroOpcional,async(req,res)=>{
         });
 
         function abrirObra(id){
+          if (window.gtag) window.gtag('event', 'ver_obra', { obra_id: String(id) });
           const src=document.getElementById('detalhe-'+id);
           if(!src)return;
           const card=src.closest('.obra-card');
