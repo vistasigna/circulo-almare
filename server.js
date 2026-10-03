@@ -4268,7 +4268,25 @@ app.get('/catalogo',membroOpcional,async(req,res)=>{
     const colecoes=[...new Set(obras.rows.map(o=>o.colecao).filter(Boolean))].sort();
     const grafias={};
     obras.rows.forEach(o=>{ if(!o.paleta) return; const k=chaveFiltro(o.paleta); grafias[k]=grafias[k]||{}; grafias[k][o.paleta]=(grafias[k][o.paleta]||0)+1; });
-    const paletas=Object.keys(grafias).sort().map(k=>({chave:k,label:Object.entries(grafias[k]).sort((a,b)=>b[1]-a[1])[0][0]}));
+    // rótulo: prefere a grafia com acento ("Dourados e Âmbar"); empate, a mais usada
+    const temAcento = s => /[^\x00-\x7f]/.test(s);
+    const paletas=Object.keys(grafias).sort().map(k=>({chave:k,label:Object.entries(grafias[k]).sort((a,b)=>(temAcento(b[0])-temAcento(a[0]))||(b[1]-a[1]))[0][0]}));
+    // Formato da obra (orientação da ficha; reserva: proporção 1:1 = quadrada)
+    const formatoDaObra = o => {
+      const ori = String(o.orientacao||'').toLowerCase();
+      if (ori.includes('quadrad')) return 'quadrada';
+      if (ori.includes('vertical')) return 'vertical';
+      if (ori.includes('horizontal')) return 'horizontal';
+      return String(o.formato_recomendado||'').replace(/\s+/g,'').startsWith('1:1') ? 'quadrada' : '';
+    };
+    const contar = f => { const n = {}; obras.rows.forEach(o => { const k = f(o); if (k) n[k] = (n[k]||0) + 1; }); return n; };
+    const nFormato = contar(formatoDaObra), nColecao = contar(o => o.colecao ? chaveFiltro(o.colecao) : ''), nPaleta = contar(o => o.paleta ? chaveFiltro(o.paleta) : '');
+    const chip = (grupo, valor, rotulo, n) => n ? `<button type="button" class="chip-filtro" data-grupo="${grupo}" data-valor="${esc(valor)}" aria-pressed="false">${esc(rotulo)} <span class="chip-n">${n}</span></button>` : '';
+    const gruposFiltro = [
+      ['Formato', [['quadrada','Quadrada'],['horizontal','Horizontal'],['vertical','Vertical']].map(([v,r]) => chip('formato', v, r, nFormato[v])).join('')],
+      ['Coleção', colecoes.map(cn => chip('colecao', chaveFiltro(cn), cn, nColecao[chaveFiltro(cn)])).join('')],
+      ['Cor', paletas.map(pl => chip('paleta', pl.chave, pl.label, nPaleta[pl.chave])).join('')]
+    ];
     const indiceBusca={};
     obras.rows.forEach(o=>{ indiceBusca[o.id]=indiceDeBusca(o,{embaixador:isEmbaixador,especificador:isEspecificador,curador:isCurador}); });
 
@@ -4288,7 +4306,7 @@ app.get('/catalogo',membroOpcional,async(req,res)=>{
       const palataAttr=o.paleta?chaveFiltro(o.paleta):'';
       const colecaoAttr=o.colecao?chaveFiltro(o.colecao):'';
 
-      return `<div class="obra-card" data-id="${o.id}" data-colecao="${colecaoAttr}" data-paleta="${palataAttr}" data-nome="${esc((o.nome||'').toLowerCase())}">
+      return `<div class="obra-card" data-id="${o.id}" data-colecao="${colecaoAttr}" data-paleta="${palataAttr}" data-formato="${formatoDaObra(o)}" data-nome="${esc((o.nome||'').toLowerCase())}">
         <div onclick="abrirObra(${o.id})" style="cursor:pointer;">
           <div style="position:relative;background:#0d0d0d;border-radius:4px 4px 0 0;overflow:hidden;height:300px;display:flex;align-items:center;justify-content:center;">
             ${o.imagem_preview?`<img src="${o.imagem_preview}" style="max-width:100%;max-height:100%;width:auto;height:auto;object-fit:contain;" loading="lazy">`:`<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:11px;letter-spacing:.15em;">SEM IMAGEM</div>`}
@@ -4315,13 +4333,22 @@ app.get('/catalogo',membroOpcional,async(req,res)=>{
       <!-- BARRA DE FILTROS -->
       <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:32px;align-items:center;">
         <input id="busca" type="search" placeholder="Busque por nome, cor, tag, sensação, ambiente…" aria-label="Buscar obras" oninput="filtrar()" style="flex:1;min-width:240px;background:#0d0d0d;border:1px solid var(--border);color:var(--text);padding:10px 14px;border-radius:3px;font-size:13px;font-family:'Inter',sans-serif;outline:none;">
-        <select id="filtroColecao" onchange="filtrar()" style="background:#0d0d0d;border:1px solid var(--border);color:var(--text);padding:10px 14px;border-radius:3px;font-size:12px;font-family:'Inter',sans-serif;outline:none;">
-          <option value="">Todas as coleções</option>${opcoesColecao}
-        </select>
-        <select id="filtroPaleta" onchange="filtrar()" style="background:#0d0d0d;border:1px solid var(--border);color:var(--text);padding:10px 14px;border-radius:3px;font-size:12px;font-family:'Inter',sans-serif;outline:none;">
-          <option value="">Todas as paletas</option>${opcoesPaleta}
-        </select>
         <span id="contagem" style="font-size:12px;color:var(--muted);white-space:nowrap;">${obras.rows.length} obras</span>
+      </div>
+      <style>
+        .filtros-grupos{display:grid;gap:10px;margin:-16px 0 26px;}
+        .filtro-linha{display:flex;gap:8px;flex-wrap:wrap;align-items:center;}
+        .filtro-titulo{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);min-width:72px;}
+        .chip-filtro{background:transparent;border:1px solid var(--border);color:var(--text);padding:6px 12px;border-radius:999px;font-size:12px;cursor:pointer;font-family:'Inter',sans-serif;}
+        .chip-filtro .chip-n{color:var(--muted);font-size:11px;margin-left:2px;}
+        .chip-filtro.ativo{background:var(--gold);border-color:var(--gold);color:#0a0a0a;font-weight:700;}
+        .chip-filtro.ativo::before{content:'✓ ';}
+        .chip-filtro.ativo .chip-n{color:#0a0a0a;}
+        #limpar-filtros{display:none;background:transparent;border:0;color:var(--gold);text-decoration:underline;font-size:12px;cursor:pointer;padding:4px 0;justify-self:start;}
+      </style>
+      <div class="filtros-grupos">
+        ${gruposFiltro.map(([titulo, chips]) => chips ? `<div class="filtro-linha"><span class="filtro-titulo">${titulo}</span>${chips}</div>` : '').join('')}
+        <button type="button" id="limpar-filtros">Limpar filtros (ver todas as obras)</button>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:-20px 0 28px;">
         <span style="font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-right:4px;">Experimente:</span>
@@ -4470,13 +4497,16 @@ app.get('/catalogo',membroOpcional,async(req,res)=>{
           var cards = Array.prototype.slice.call(document.querySelectorAll('.obra-card'));
           if (!ORDEM_ORIGINAL) ORDEM_ORIGINAL = cards.slice();
           var q = document.getElementById('busca').value;
-          var colecao = document.getElementById('filtroColecao').value;
-          var paleta = document.getElementById('filtroPaleta').value;
+          var F = FILTROS_ATIVOS;
           var grupos = entenderBusca(q);
           var resultados = [];
           cards.forEach(function(c){
             var r = grupos.length ? pontuar(INDICE_BUSCA[c.dataset.id] || {}, grupos) : { pontos: 0, motivos: [] };
-            var ok = !!r && (!colecao || c.dataset.colecao === colecao) && (!paleta || c.dataset.paleta === paleta);
+            // dentro de um grupo as escolhas SOMAM (quadrada OU horizontal); entre grupos se COMBINAM
+            var ok = !!r
+              && (!F.formato.length || F.formato.indexOf(c.dataset.formato) >= 0)
+              && (!F.colecao.length || F.colecao.indexOf(c.dataset.colecao) >= 0)
+              && (!F.paleta.length || F.paleta.indexOf(c.dataset.paleta) >= 0);
             c.style.display = ok ? '' : 'none';
             var m = c.querySelector('.motivo-busca');
             if (m){
@@ -4499,6 +4529,30 @@ app.get('/catalogo',membroOpcional,async(req,res)=>{
             : 'Nenhuma obra encontrada.';
           sem.style.display = n === 0 ? 'block' : 'none';
         }
+        // Filtros de várias escolhas: Formato, Coleção e Cor (pode marcar mais de uma opção em cada)
+        var FILTROS_ATIVOS = { formato: [], colecao: [], paleta: [] };
+        function atualizarLimparFiltros(){
+          var algum = FILTROS_ATIVOS.formato.length || FILTROS_ATIVOS.colecao.length || FILTROS_ATIVOS.paleta.length;
+          document.getElementById('limpar-filtros').style.display = algum ? 'block' : 'none';
+        }
+        document.querySelectorAll('.chip-filtro').forEach(function(b){
+          b.addEventListener('click', function(){
+            var lista = FILTROS_ATIVOS[b.getAttribute('data-grupo')];
+            var valor = b.getAttribute('data-valor');
+            var pos = lista.indexOf(valor);
+            if (pos >= 0) lista.splice(pos, 1); else lista.push(valor);
+            b.classList.toggle('ativo', pos < 0);
+            b.setAttribute('aria-pressed', pos < 0 ? 'true' : 'false');
+            atualizarLimparFiltros();
+            filtrar();
+          });
+        });
+        document.getElementById('limpar-filtros').addEventListener('click', function(){
+          FILTROS_ATIVOS = { formato: [], colecao: [], paleta: [] };
+          document.querySelectorAll('.chip-filtro').forEach(function(b){ b.classList.remove('ativo'); b.setAttribute('aria-pressed', 'false'); });
+          atualizarLimparFiltros();
+          filtrar();
+        });
         document.querySelectorAll('.exemplo-busca').forEach(function(b){
           b.addEventListener('click', function(){
             document.getElementById('busca').value = b.getAttribute('data-q');
