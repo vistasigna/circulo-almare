@@ -50,7 +50,8 @@ const ROTAS_LIVRES_CADASTRO_INCOMPLETO = ['/completar-cadastro', '/logout'];
 function destinoLogin(req){
   if(req.method !== 'GET') return '/login';
   const exclusivo = /^\/(simulador|modelos-3d)/.test(req.path);
-  return '/login?voltar=' + encodeURIComponent(req.originalUrl) + (exclusivo ? '&motivo=exclusivo' : '');
+  const arquitetos = /^\/arquitetos/.test(req.path);
+  return '/login?voltar=' + encodeURIComponent(req.originalUrl) + (exclusivo ? '&motivo=exclusivo' : arquitetos ? '&motivo=arquitetos' : '');
 }
 async function authMembro(req, res, next) {
   const token = req.cookies.circulo_token;
@@ -750,6 +751,8 @@ function navBar(ativo, temImpacto=false, ehEspec=false) {
     { key: 'pedidos', href: '/meus-pedidos', label: 'Pedidos' },
     { key: 'meusdados', href: '/meus-dados', label: 'Meus dados' },
   ];
+  // discreto, no fim: espaço para arquitetos e designers de interiores
+  const arquitetos = [{ key: 'arquitetos', href: '/arquitetos', label: ehEspec ? 'Kit do especificador' : 'Para arquitetos e designers' }];
   const especLink = ehEspec ? [{ key: 'modelos3d', href: '/modelos-3d', label: 'Modelos 3D' }] : [];
   const impacto = temImpacto ? [{ key: 'impacto', href: '/meu-impacto', label: 'Impacto' }] : [];
   const fim = [
@@ -757,8 +760,11 @@ function navBar(ativo, temImpacto=false, ehEspec=false) {
     { key: 'convidar', href: '/meu-convite', label: 'Convidar' },
   ];
   const item = l => `<a href="${l.href}" class="nav-link${ativo===l.key?' ativo':''}">${l.label}</a>`;
-  return `<div class="nav-bar">${base.map(item).join('')}${especLink.map(item).join('')}${impacto.map(item).join('')}${fim.map(item).join('')}</div>`;
+  return `<div class="nav-bar">${base.map(item).join('')}${especLink.map(item).join('')}${impacto.map(item).join('')}${fim.map(item).join('')}${arquitetos.map(item).join('')}</div>`;
 }
+
+// Convênio de arquitetos e designers de interiores = função Especificador (o tipo fica em "detalhe")
+const TIPOS_CONVENIO = { arquiteto: 'Arquiteto(a)', designer_interiores: 'Designer de interiores' };
 
 // Funções que o membro pode pedir no cadastro
 // Funções concedidas apenas pelo admin (Embaixador e Especificador geram cashback,
@@ -1047,6 +1053,7 @@ app.get('/login',(req,res)=>res.send(html('Entrar',`
     ${req.query.erro?`<div class="msg-erro">${esc(req.query.erro)}</div>`:''}
     ${req.query.ok?`<div class="msg-ok">${esc(req.query.ok)}</div>`:''}
     ${req.query.motivo==='exclusivo'?`<div class="msg-ok" style="border-color:rgba(201,169,110,.4);color:var(--gold);">O simulador é exclusivo de quem faz parte do Círculo. Entre com sua conta ou <a href="/convite/geral" style="color:var(--gold);text-decoration:underline;">faça parte do Círculo</a>.</div>`:''}
+    ${req.query.motivo==='arquitetos'?`<div class="msg-ok" style="border-color:rgba(201,169,110,.4);color:var(--gold);">O espaço para arquitetos e designers é para quem faz parte do Círculo. Entre com sua conta ou <a href="/convite/geral" style="color:var(--gold);text-decoration:underline;">faça parte do Círculo</a>.</div>`:''}
     ${String(req.query.voltar||'')==='/carrinho'?`<div class="msg-ok">Entre para fechar seu pedido — seu carrinho continua guardado.</div>`:''}
     <a href="/catalogo" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);display:inline-block;margin-bottom:24px;">← Voltar às obras</a>
     <form method="POST" action="/login">
@@ -1433,20 +1440,20 @@ app.post('/meus-dados', authMembro, async(req,res)=>{
 
 app.get('/minhas-funcoes',authMembro,async(req,res)=>{
   const funcoes=await pool.query(`
-    SELECT f.nome,f.slug,f.descricao,mf.ativo,mf.id as mf_id FROM circulo_membro_funcoes mf
-    JOIN circulo_funcoes f ON f.id=mf.funcao_id WHERE mf.membro_id=$1`,[req.membro.id]);
+    SELECT f.nome,f.slug,f.descricao,mf.ativo,mf.status,mf.detalhe,mf.id as mf_id FROM circulo_membro_funcoes mf
+    JOIN circulo_funcoes f ON f.id=mf.funcao_id WHERE mf.membro_id=$1 AND mf.status IN ('ativa','pendente','recusada')`,[req.membro.id]);
 
   const itens=funcoes.rows.map(f=>`
     <div style="display:flex;justify-content:space-between;align-items:center;padding:16px 0;border-bottom:1px solid var(--border);">
       <div style="display:flex;align-items:center;gap:12px;">
-        <div style="width:10px;height:10px;border-radius:50%;background:${f.ativo?'#2ecc71':'#f0a500'};flex-shrink:0;"></div>
+        <div style="width:10px;height:10px;border-radius:50%;background:${f.status==='ativa'?'#2ecc71':f.status==='pendente'?'#f0a500':'#777'};flex-shrink:0;"></div>
         <div>
-          <div style="font-family:'Cormorant Garamond',serif;font-size:17px;margin-bottom:3px;">${f.nome}</div>
-          <div style="font-size:12px;color:var(--muted);">${f.descricao}</div>
+          <div style="font-family:'Cormorant Garamond',serif;font-size:17px;margin-bottom:3px;">${f.nome}${f.detalhe && TIPOS_CONVENIO[f.detalhe] ? ' · ' + TIPOS_CONVENIO[f.detalhe] : ''}</div>
+          <div style="font-size:12px;color:var(--muted);">${f.status==='pendente' ? 'Solicitação em análise.' : f.status==='recusada' ? 'Solicitação não aprovada. Você pode solicitar novamente quando quiser.' : f.descricao}</div>
         </div>
       </div>
       <div style="flex-shrink:0;margin-left:16px;">
-        ${f.ativo ? `<form method="POST" action="/minhas-funcoes/${f.slug}/desativar"><button class="btn btn-outline" style="padding:6px 14px;font-size:10px;">Desativar</button></form>` : ''}
+        ${f.status==='ativa' ? `<form method="POST" action="/minhas-funcoes/${f.slug}/desativar"><button class="btn btn-outline" style="padding:6px 14px;font-size:10px;">Desativar</button></form>` : f.status==='recusada' && f.slug==='especificador' ? `<a href="/arquitetos" class="btn btn-outline" style="padding:6px 14px;font-size:10px;">Solicitar de novo</a>` : ''}
       </div>
     </div>`).join('');
 
@@ -1465,8 +1472,67 @@ app.get('/minhas-funcoes',authMembro,async(req,res)=>{
   `,true));
 });
 
+// ════════════════════════════════════════════════════════════════
+// ESPAÇO PARA ARQUITETOS E DESIGNERS DE INTERIORES (só para quem é do Círculo)
+// Apresenta o kit de especificação; a bonificação aparece de forma discreta. O pedido de convênio vira um
+// pedido da função Especificador na fila do admin — uma vez por pedido.
+// ════════════════════════════════════════════════════════════════
+app.get('/arquitetos', authMembro, async (req, res) => {
+  const reg = (await pool.query(`SELECT mf.status, mf.detalhe FROM circulo_membro_funcoes mf JOIN circulo_funcoes f ON f.id=mf.funcao_id
+    WHERE mf.membro_id=$1 AND f.slug='especificador'`, [req.membro.id])).rows[0];
+  const estado = reg ? reg.status : null;
+  const tipo = reg && TIPOS_CONVENIO[reg.detalhe] ? TIPOS_CONVENIO[reg.detalhe] : '';
+  const botoes = `
+      <form method="POST" action="/arquitetos/solicitar" style="display:flex;gap:12px;flex-wrap:wrap;margin-top:18px;">
+        <button name="tipo" value="arquiteto" class="btn btn-outline">Sou arquiteto(a) — quero ser conveniado(a)</button>
+        <button name="tipo" value="designer_interiores" class="btn btn-outline">Sou designer de interiores — quero ser conveniado(a)</button>
+      </form>
+      <p style="font-size:12px;color:var(--muted);margin-top:12px;">Cada solicitação é analisada pessoalmente.</p>`;
+  const situacao =
+    estado === 'ativa' ? `<div class="card" style="border-color:rgba(46,204,113,.4);">
+        <div style="font-family:'Cormorant Garamond',serif;font-size:22px;margin-bottom:6px;">Você é ${tipo ? tipo.toLowerCase() : 'especificador(a)'} conveniado(a)</div>
+        <p style="color:#ccc;font-size:13px;margin-bottom:16px;">Seu kit de especificação está liberado.</p>
+        <div style="display:flex;gap:12px;flex-wrap:wrap;"><a href="/modelos-3d" class="btn btn-primary">Modelos 3D</a><a href="/simulador" class="btn btn-outline">Simulador de ambiente</a><a href="/catalogo" class="btn btn-outline">Obras</a></div>
+      </div>`
+    : estado === 'pendente' ? `<div class="card" style="border-color:rgba(240,165,0,.4);">
+        <div style="font-family:'Cormorant Garamond',serif;font-size:22px;margin-bottom:6px;">Solicitação em análise</div>
+        <p style="color:#ccc;font-size:13px;">Recebemos seu pedido${tipo ? ' como ' + tipo.toLowerCase() : ''}. Assim que for analisado, o kit aparece liberado aqui e em "Minhas funções".</p>
+      </div>`
+    : `<div class="card">
+        <div style="font-family:'Cormorant Garamond',serif;font-size:22px;margin-bottom:6px;">Solicitar convênio</div>
+        ${estado === 'recusada' ? `<p style="color:#ccc;font-size:13px;">Sua solicitação anterior não foi aprovada. Se quiser, você pode solicitar novamente.</p>` : `<p style="color:#ccc;font-size:13px;">Para arquitetos e designers de interiores que querem especificar ALMARE em seus projetos.</p>`}
+        ${botoes}
+      </div>`;
+  const recurso = (titulo, texto) => `<div class="card" style="flex:1;min-width:220px;"><div style="font-family:'Cormorant Garamond',serif;font-size:19px;margin-bottom:6px;">${titulo}</div><p style="color:var(--muted);font-size:13px;line-height:1.7;">${texto}</p></div>`;
+  res.send(html('Para arquitetos e designers', `
+    ${navBar('arquitetos', await temFuncaoComImpacto(req.membro.id), await ehEspecificador(req.membro.id))}
+    <h2 style="font-size:30px;margin-bottom:10px;">Espaço para arquitetos e designers de interiores</h2>
+    <p style="color:#ccc;max-width:720px;line-height:1.8;margin-bottom:28px;">A ALMARE foi pensada para entrar no projeto desde o início — não como o quadro escolhido no fim, mas como parte da especificação.</p>
+    <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:24px;">
+      ${recurso('Modelos 3D de cada obra', 'Arquivos para SketchUp, OBJ e DXF no tamanho e na moldura reais, prontos para importar no seu projeto.')}
+      ${recurso('Simulador de ambiente', 'Envie a foto do espaço e veja as obras que dialogam com ele, em escala.')}
+      ${recurso('Especificação pronta', 'Ficha técnica, dimensões e opções de moldura para o memorial descritivo.')}
+    </div>
+    <p style="color:var(--muted);font-size:12px;max-width:720px;line-height:1.7;margin-bottom:28px;">Arquitetos e designers conveniados também participam do valor que ajudam a criar quando uma obra especificada encontra lar. Os detalhes são apresentados após a aprovação.</p>
+    ${situacao}
+  `, true));
+});
+
+app.post('/arquitetos/solicitar', authMembro, async (req, res) => {
+  const tipo = TIPOS_CONVENIO[req.body.tipo] ? req.body.tipo : null;
+  if (!tipo) return res.redirect('/arquitetos');
+  const f = (await pool.query("SELECT id FROM circulo_funcoes WHERE slug='especificador'")).rows[0];
+  if (!f) return res.redirect('/arquitetos');
+  // vira pedido só se não estiver ativa nem já pendente (um pedido por vez; recusado/encerrado pode pedir de novo)
+  await pool.query(`INSERT INTO circulo_membro_funcoes (membro_id, funcao_id, ativo, status, detalhe, solicitado_em)
+      VALUES ($1, $2, false, 'pendente', $3, NOW())
+    ON CONFLICT (membro_id, funcao_id) DO UPDATE SET status='pendente', ativo=false, detalhe=$3, solicitado_em=NOW(), decidido_em=NULL
+      WHERE circulo_membro_funcoes.status NOT IN ('ativa','pendente')`, [req.membro.id, f.id, tipo]);
+  res.redirect('/arquitetos');
+});
+
 app.post('/minhas-funcoes/:slug/desativar',authMembro,async(req,res)=>{
-  await pool.query(`UPDATE circulo_membro_funcoes SET ativo=false WHERE membro_id=$1 AND funcao_id=(SELECT id FROM circulo_funcoes WHERE slug=$2)`,[req.membro.id,req.params.slug]);
+  await pool.query(`UPDATE circulo_membro_funcoes SET ativo=false, status='encerrada', decidido_em=NOW() WHERE membro_id=$1 AND funcao_id=(SELECT id FROM circulo_funcoes WHERE slug=$2) AND status='ativa'`,[req.membro.id,req.params.slug]);
   res.redirect('/minhas-funcoes');
 });
 
@@ -4804,11 +4870,11 @@ app.get('/admin',authAdmin,async(req,res)=>{
   const errosContatos = parseInt(sc.com_erro) ? (await pool.query(`SELECT nome, bling_erro FROM circulo_membros WHERE bling_id IS NULL AND bling_erro IS NOT NULL ORDER BY bling_erro_em DESC LIMIT 5`)).rows : [];
   // Funções pendentes de aprovação
   const pendentes=await pool.query(`
-    SELECT mf.id as mf_id, m.nome, m.email, m.codigo_membro, f.nome as funcao, f.slug, m.id as membro_id
+    SELECT mf.id as mf_id, m.nome, m.email, m.codigo_membro, f.nome as funcao, f.slug, m.id as membro_id, mf.detalhe, mf.solicitado_em
     FROM circulo_membro_funcoes mf
     JOIN circulo_membros m ON m.id=mf.membro_id
     JOIN circulo_funcoes f ON f.id=mf.funcao_id
-    WHERE mf.ativo=false ORDER BY mf.id ASC`);
+    WHERE mf.status='pendente' ORDER BY mf.solicitado_em ASC NULLS FIRST, mf.id ASC`);
   const membros=await pool.query('SELECT * FROM circulo_resumo_membro ORDER BY membro_desde DESC');
   const aguardando=await pool.query(`
     SELECT p.id, p.numero, p.total, p.criado_em, m.nome AS membro_nome, c.nome AS cliente_nome
@@ -4830,7 +4896,7 @@ app.get('/admin',authAdmin,async(req,res)=>{
   const linhaPendentes=pendentes.rows.map(p=>`
     <tr>
       <td><strong>${p.nome}</strong><br><span style="font-size:11px;color:var(--muted)">${p.email}</span></td>
-      <td><span class="badge badge-gold">${p.funcao}</span></td>
+      <td><span class="badge badge-gold">${p.funcao}${p.detalhe && TIPOS_CONVENIO[p.detalhe] ? ' · ' + TIPOS_CONVENIO[p.detalhe] : ''}</span>${p.solicitado_em ? `<br><span style="font-size:11px;color:var(--muted)">pedido em ${new Date(p.solicitado_em).toLocaleDateString('pt-BR')}</span>` : ''}</td>
       <td>
         <form method="POST" action="/admin/funcoes/${p.mf_id}/aprovar" style="display:inline">
           <button class="btn btn-primary" style="padding:6px 14px;font-size:10px;">Aprovar</button>
@@ -5051,9 +5117,9 @@ app.post('/admin/membros/:id/funcoes/:slug/conceder', authAdmin, async(req,res)=
   if(fr.rows.length){
     const existe = await pool.query('SELECT id FROM circulo_membro_funcoes WHERE membro_id=$1 AND funcao_id=$2',[req.params.id, fr.rows[0].id]);
     if(existe.rows.length){
-      await pool.query('UPDATE circulo_membro_funcoes SET ativo=true WHERE id=$1',[existe.rows[0].id]);
+      await pool.query("UPDATE circulo_membro_funcoes SET ativo=true, status='ativa', decidido_em=NOW() WHERE id=$1",[existe.rows[0].id]);
     } else {
-      await pool.query('INSERT INTO circulo_membro_funcoes (membro_id,funcao_id,ativo) VALUES ($1,$2,true)',[req.params.id, fr.rows[0].id]);
+      await pool.query("INSERT INTO circulo_membro_funcoes (membro_id,funcao_id,ativo,status,decidido_em) VALUES ($1,$2,true,'ativa',NOW())",[req.params.id, fr.rows[0].id]);
     }
   }
   res.redirect(`/admin/membros/${req.params.id}/editar`);
@@ -5061,7 +5127,7 @@ app.post('/admin/membros/:id/funcoes/:slug/conceder', authAdmin, async(req,res)=
 
 app.post('/admin/membros/:id/funcoes/:slug/remover', authAdmin, async(req,res)=>{
   await pool.query(
-    `UPDATE circulo_membro_funcoes SET ativo=false WHERE membro_id=$1 AND funcao_id=(SELECT id FROM circulo_funcoes WHERE slug=$2)`,
+    `UPDATE circulo_membro_funcoes SET ativo=false, status='encerrada', decidido_em=NOW() WHERE membro_id=$1 AND funcao_id=(SELECT id FROM circulo_funcoes WHERE slug=$2)`,
     [req.params.id, req.params.slug]
   );
   res.redirect(`/admin/membros/${req.params.id}/editar`);
@@ -5093,7 +5159,7 @@ app.post('/admin/membros/:id/editar', authAdmin, async(req,res)=>{
 });
 
 app.post('/admin/funcoes/:id/aprovar',authAdmin,async(req,res)=>{
-  await pool.query('UPDATE circulo_membro_funcoes SET ativo=true WHERE id=$1',[req.params.id]);
+  await pool.query("UPDATE circulo_membro_funcoes SET ativo=true, status='ativa', decidido_em=NOW() WHERE id=$1",[req.params.id]);
   // registra no passaporte
   const mf=await pool.query('SELECT mf.*,f.nome as fn,m.nome as mn FROM circulo_membro_funcoes mf JOIN circulo_funcoes f ON f.id=mf.funcao_id JOIN circulo_membros m ON m.id=mf.membro_id WHERE mf.id=$1',[req.params.id]);
   if(mf.rows.length){
@@ -5103,7 +5169,8 @@ app.post('/admin/funcoes/:id/aprovar',authAdmin,async(req,res)=>{
 });
 
 app.post('/admin/funcoes/:id/recusar',authAdmin,async(req,res)=>{
-  await pool.query('DELETE FROM circulo_membro_funcoes WHERE id=$1',[req.params.id]);
+  // recusado sai da fila e NÃO volta — só um novo pedido do próprio membro aparece de novo
+  await pool.query("UPDATE circulo_membro_funcoes SET ativo=false, status='recusada', decidido_em=NOW() WHERE id=$1",[req.params.id]);
   res.redirect('/admin');
 });
 
@@ -5214,6 +5281,20 @@ async function garantirTabelas(){
     // Dados do membro reaproveitados no faturamento
     await pool.query(`ALTER TABLE circulo_membros ADD COLUMN IF NOT EXISTS bling_id VARCHAR(50);`).catch(()=>{});
     await pool.query(`ALTER TABLE circulo_membros ADD COLUMN IF NOT EXISTS bling_erro TEXT;`).catch(()=>{});
+    // Funções com ESTADO claro: pendente (pedido de verdade) | ativa | recusada | encerrada (desativada/removida).
+    // Antes "pendente" era qualquer função inativa: desativar ou remover jogava a pessoa de novo na fila de
+    // aprovação, e cópias da mesma função faziam o pedido recusado "voltar".
+    await pool.query(`ALTER TABLE circulo_membro_funcoes ADD COLUMN IF NOT EXISTS status VARCHAR(20)`).catch(()=>{});
+    await pool.query(`ALTER TABLE circulo_membro_funcoes ADD COLUMN IF NOT EXISTS detalhe VARCHAR(40)`).catch(()=>{});
+    await pool.query(`ALTER TABLE circulo_membro_funcoes ADD COLUMN IF NOT EXISTS solicitado_em TIMESTAMP`).catch(()=>{});
+    await pool.query(`ALTER TABLE circulo_membro_funcoes ADD COLUMN IF NOT EXISTS decidido_em TIMESTAMP`).catch(()=>{});
+    // registros antigos: ativa continua ativa; inativa vira encerrada (eram restos, não pedidos)
+    await pool.query(`UPDATE circulo_membro_funcoes SET status = CASE WHEN ativo THEN 'ativa' ELSE 'encerrada' END WHERE status IS NULL`).catch(()=>{});
+    // cópias da mesma função do mesmo membro: fica a ativa (ou a mais antiga)
+    await pool.query(`DELETE FROM circulo_membro_funcoes a USING circulo_membro_funcoes b
+      WHERE a.membro_id=b.membro_id AND a.funcao_id=b.funcao_id AND a.id<>b.id
+        AND ((b.status='ativa' AND a.status<>'ativa') OR ((b.status='ativa')=(a.status='ativa') AND b.id<a.id))`).catch(e=>console.error('Limpeza de funções duplicadas:', e.message));
+    await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS circulo_membro_funcoes_unica ON circulo_membro_funcoes (membro_id, funcao_id)`).catch(e=>console.error('Trava de função única:', e.message));
     await pool.query(`ALTER TABLE circulo_membros ADD COLUMN IF NOT EXISTS bling_erro_em TIMESTAMPTZ;`).catch(()=>{});
     await pool.query(`ALTER TABLE circulo_membros ADD COLUMN IF NOT EXISTS documento VARCHAR(20);`).catch(()=>{});
     await pool.query(`ALTER TABLE circulo_membros ADD COLUMN IF NOT EXISTS telefone VARCHAR(20);`).catch(()=>{});
