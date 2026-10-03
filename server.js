@@ -4181,18 +4181,10 @@ app.get('/catalogo',membroOpcional,async(req,res)=>{
       </div>
 
             <style>
-        /* Prévia da moldura sobre uma parede com textura (cada moldura com a parede que dá contraste) */
-        .parede{text-align:center;margin-bottom:12px;padding:48px 24px;border-radius:2px;background-repeat:repeat;transition:background-color .35s;}
+        /* Só o FUNDO da prévia muda com a moldura (parede com textura pra dar contraste). A moldura não é alterada. */
         .parede-preta{background-color:#cfcbc4;background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='f'><feTurbulence type='fractalNoise' baseFrequency='.95' numOctaves='3' seed='3' stitchTiles='stitch'/><feColorMatrix type='matrix' values='0 0 0 0 .2 0 0 0 0 .19 0 0 0 0 .18 0 0 0 .9 0'/></filter><rect width='240' height='240' filter='url(%23f)'/></svg>"),url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='f'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' seed='7' stitchTiles='stitch'/><feColorMatrix type='matrix' values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 .6 0'/></filter><rect width='240' height='240' filter='url(%23f)'/></svg>"),url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='500' height='500'><filter id='f'><feTurbulence type='fractalNoise' baseFrequency='.035' numOctaves='4' seed='21' stitchTiles='stitch'/><feColorMatrix type='matrix' values='0 0 0 0 .25 0 0 0 0 .24 0 0 0 0 .22 0 0 0 .75 0'/></filter><rect width='500' height='500' filter='url(%23f)'/></svg>"),url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='900' height='900'><filter id='f'><feTurbulence type='fractalNoise' baseFrequency='.005' numOctaves='5' seed='11' stitchTiles='stitch'/><feColorMatrix type='matrix' values='0 0 0 0 .2 0 0 0 0 .19 0 0 0 0 .18 0 0 0 1.1 0'/></filter><rect width='900' height='900' filter='url(%23f)'/></svg>");}
         .parede-aco_escovado{background-color:#e7d9bc;background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='f'><feTurbulence type='fractalNoise' baseFrequency='.8' numOctaves='3' seed='5' stitchTiles='stitch'/><feColorMatrix type='matrix' values='0 0 0 0 .42 0 0 0 0 .33 0 0 0 0 .2 0 0 0 .8 0'/></filter><rect width='240' height='240' filter='url(%23f)'/></svg>"),url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='f'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' seed='9' stitchTiles='stitch'/><feColorMatrix type='matrix' values='0 0 0 0 1 0 0 0 0 .98 0 0 0 0 .92 0 0 0 .55 0'/></filter><rect width='240' height='240' filter='url(%23f)'/></svg>"),url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='500' height='500'><filter id='f'><feTurbulence type='fractalNoise' baseFrequency='.05' numOctaves='3' seed='23' stitchTiles='stitch'/><feColorMatrix type='matrix' values='0 0 0 0 .55 0 0 0 0 .44 0 0 0 0 .28 0 0 0 .45 0'/></filter><rect width='500' height='500' filter='url(%23f)'/></svg>"),url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='900' height='900'><filter id='f'><feTurbulence type='fractalNoise' baseFrequency='.007' numOctaves='4' seed='13' stitchTiles='stitch'/><feColorMatrix type='matrix' values='0 0 0 0 .5 0 0 0 0 .4 0 0 0 0 .25 0 0 0 .7 0'/></filter><rect width='900' height='900' filter='url(%23f)'/></svg>");}
         .parede-carvalho{background-color:#59614f;background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='f'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' seed='2' stitchTiles='stitch'/><feColorMatrix type='matrix' values='0 0 0 0 .1 0 0 0 0 .12 0 0 0 0 .09 0 0 0 .95 0'/></filter><rect width='240' height='240' filter='url(%23f)'/></svg>"),url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='f'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' seed='8' stitchTiles='stitch'/><feColorMatrix type='matrix' values='0 0 0 0 .88 0 0 0 0 .92 0 0 0 0 .84 0 0 0 .38 0'/></filter><rect width='240' height='240' filter='url(%23f)'/></svg>"),url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='500' height='500'><filter id='f'><feTurbulence type='fractalNoise' baseFrequency='.04' numOctaves='4' seed='27' stitchTiles='stitch'/><feColorMatrix type='matrix' values='0 0 0 0 .15 0 0 0 0 .17 0 0 0 0 .13 0 0 0 .6 0'/></filter><rect width='500' height='500' filter='url(%23f)'/></svg>"),url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='900' height='900'><filter id='f'><feTurbulence type='fractalNoise' baseFrequency='.006' numOctaves='5' seed='17' stitchTiles='stitch'/><feColorMatrix type='matrix' values='0 0 0 0 .1 0 0 0 0 .12 0 0 0 0 .08 0 0 0 .9 0'/></filter><rect width='900' height='900' filter='url(%23f)'/></svg>");}
-        .moldura{display:inline-block;padding:14px;max-width:100%;transition:background .35s;}
-        .moldura img{display:block;max-width:100%;max-height:440px;width:auto;height:auto;box-shadow:0 0 0 1px rgba(0,0,0,.25);}
-        .moldura-preta{background:#151515;box-shadow:inset 0 0 0 1px #000,inset 2px 2px 0 rgba(255,255,255,.08),0 24px 34px -14px rgba(0,0,0,.55),0 3px 8px rgba(0,0,0,.25);}
-        .moldura-carvalho{background:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='400' height='120'><filter id='f'><feTurbulence type='fractalNoise' baseFrequency='.012 .55' numOctaves='3' seed='4' stitchTiles='stitch'/><feColorMatrix type='matrix' values='0 0 0 0 .42 0 0 0 0 .28 0 0 0 0 .13 0 0 0 1.2 -.35'/></filter><rect width='400' height='120' filter='url(%23f)'/></svg>"),linear-gradient(180deg,#d6b98f,#c19d6c);box-shadow:inset 0 0 0 1px rgba(90,60,30,.45),inset 2px 2px 0 rgba(255,245,225,.35),0 24px 34px -14px rgba(0,0,0,.55),0 3px 8px rgba(0,0,0,.25);}
-        .moldura-aco_escovado{background:repeating-linear-gradient(0deg,rgba(255,255,255,.12) 0 1px,transparent 1px 3px),linear-gradient(135deg,#e1e3e5,#a2a6a9 45%,#d4d7d9 60%,#8d9194);box-shadow:inset 0 0 0 1px rgba(60,64,68,.5),inset 2px 2px 0 rgba(255,255,255,.5),0 24px 34px -14px rgba(0,0,0,.55),0 3px 8px rgba(0,0,0,.25);}
-        .moldura-amostra{width:34px;height:34px;border-radius:4px;cursor:pointer;padding:0;border:0;}
-        .moldura-amostra.ativa{outline:2px solid var(--gold);outline-offset:3px;}
       </style>
       <script>
         // ===== Busca do catálogo =====
@@ -4360,17 +4352,16 @@ app.get('/catalogo',membroOpcional,async(req,res)=>{
           const colecao=card.querySelector('[style*="text-transform"]').textContent;
           let html='';
           if(img){
-            html+=\`<div id="parede-preview" class="parede parede-preta">
-              <div id="moldura-preview" class="moldura moldura-preta">
-                <img src="\${img.src}" alt="">
+            html+=\`<div id="parede-preview" class="parede-preta" style="text-align:center;margin-bottom:16px;padding:24px;">
+              <div id="moldura-preview" style="display:inline-block;border:2px solid #1a1a1a;padding:3px;background:#0a0a0a;">
+                <img src="\${img.src}" style="max-width:100%;max-height:480px;width:auto;height:auto;object-fit:contain;display:block;">
               </div>
-            </div>
-            <div id="moldura-legenda" style="text-align:center;font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:14px;">Moldura preta · parede de cimento queimado</div>\`;
+            </div>\`;
             html+=\`<div style="display:flex;gap:8px;align-items:center;justify-content:center;margin-bottom:24px;">
               <span style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-right:8px;">Moldura:</span>
-              <button type="button" onclick="trocarMolduraModal('preta',this)" data-cor="preta" class="moldura-amostra moldura-preta ativa" title="Preta" aria-label="Moldura preta"></button>
-              <button type="button" onclick="trocarMolduraModal('carvalho',this)" data-cor="carvalho" class="moldura-amostra moldura-carvalho" title="Carvalho" aria-label="Moldura carvalho"></button>
-              <button type="button" onclick="trocarMolduraModal('aco_escovado',this)" data-cor="aco_escovado" class="moldura-amostra moldura-aco_escovado" title="Aço escovado" aria-label="Moldura aço escovado"></button>
+              <button type="button" onclick="trocarMolduraModal('#1a1a1a',this)" data-cor="preta" style="width:32px;height:32px;background:#1a1a1a;border:2px solid var(--gold);border-radius:3px;cursor:pointer;" title="Preta"></button>
+              <button type="button" onclick="trocarMolduraModal('#5c4a2e',this)" data-cor="carvalho" style="width:32px;height:32px;background:#5c4a2e;border:2px solid var(--border);border-radius:3px;cursor:pointer;" title="Carvalho"></button>
+              <button type="button" onclick="trocarMolduraModal('#9a9a9a',this)" data-cor="aco_escovado" style="width:32px;height:32px;background:linear-gradient(135deg,#aaa,#777);border:2px solid var(--border);border-radius:3px;cursor:pointer;" title="Aço escovado"></button>
             </div>\`;
           }
           html+=\`<div style="font-size:10px;letter-spacing:.25em;text-transform:uppercase;color:var(--muted);margin-bottom:6px;">\${colecao}</div>\`;
@@ -4382,19 +4373,14 @@ app.get('/catalogo',membroOpcional,async(req,res)=>{
           document.body.style.overflow='hidden';
         }
 
-        // Cada moldura aparece sobre a parede que dá contraste: preta/cimento queimado, aço/palha, carvalho/verde-musgo
-        var PAREDE_DA_MOLDURA = { preta: 'cimento queimado', aco_escovado: 'palha', carvalho: 'verde-musgo' };
-        var NOME_DA_MOLDURA = { preta: 'Moldura preta', aco_escovado: 'Moldura aço escovado', carvalho: 'Moldura carvalho' };
-        function trocarMolduraModal(slug, btn){
-          if(!PAREDE_DA_MOLDURA[slug]) return;
-          var moldura = document.getElementById('moldura-preview');
-          var parede = document.getElementById('parede-preview');
-          var legenda = document.getElementById('moldura-legenda');
-          if(moldura) moldura.className = 'moldura moldura-' + slug;
-          if(parede) parede.className = 'parede parede-' + slug;
-          if(legenda) legenda.textContent = NOME_DA_MOLDURA[slug] + ' · parede de ' + PAREDE_DA_MOLDURA[slug];
-          btn.parentElement.querySelectorAll('button').forEach(function(b){ b.classList.remove('ativa'); });
-          btn.classList.add('ativa');
+        function trocarMolduraModal(cor, btn){
+          const el = document.getElementById('moldura-preview');
+          if(el) el.style.borderColor = cor;
+          const parede = document.getElementById('parede-preview');
+          if(parede && btn.dataset.cor) parede.className = 'parede-' + btn.dataset.cor;
+          const grupo = btn.parentElement;
+          grupo.querySelectorAll('button').forEach(b=>{ b.style.borderColor = 'var(--border)'; });
+          btn.style.borderColor = 'var(--gold)';
         }
 
         function fecharModal(e){
