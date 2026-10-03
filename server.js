@@ -210,9 +210,9 @@ app.get('/auth/bling/callback', async (req, res) => {
     if (!data.access_token) return res.status(400).send('Erro ao obter token do Bling: ' + (data.error_description || data.error || 'desconhecido'));
 
     await pool.query(`
-      INSERT INTO circulo_bling_config (id, access_token, refresh_token, expira_em, autorizado)
-      VALUES (1, $1, $2, $3, TRUE)
-      ON CONFLICT (id) DO UPDATE SET access_token=$1, refresh_token=$2, expira_em=$3, autorizado=TRUE
+      INSERT INTO circulo_bling_config (id, access_token, refresh_token, expira_em, autorizado, renovado_em, ultimo_erro, ultimo_erro_em)
+      VALUES (1, $1, $2, $3, TRUE, NOW(), NULL, NULL)
+      ON CONFLICT (id) DO UPDATE SET access_token=$1, refresh_token=$2, expira_em=$3, autorizado=TRUE, renovado_em=NOW(), ultimo_erro=NULL, ultimo_erro_em=NULL
     `, [data.access_token, data.refresh_token, new Date(Date.now() + data.expires_in * 1000)]);
 
     res.redirect('/admin');
@@ -221,24 +221,105 @@ app.get('/auth/bling/callback', async (req, res) => {
   }
 });
 
+// ─── Acesso ao Bling: renovação segura e automática ─────────────────────────
+// O Bling dá um acesso de ~6h e uma chave de renovação que também vence se ficar sem uso. Antes o Círculo só
+// renovava quando precisava usar o Bling (e com pouco movimento a chave vencia -> "reconectar" na mão), duas
+// renovações ao mesmo tempo se atropelavam (o Bling troca a chave na 1ª e a 2ª falha), e o card do /admin
+// continuava dizendo "Conectado" mesmo com tudo falhando. Agora: uma renovação por vez (trava no processo e no
+// banco), renovação automática a cada poucas horas, e o motivo de qualquer falha fica registrado.
+let _renovacaoBlingEmAndamento = null;
+function renovarTokenBling(){
+  if (_renovacaoBlingEmAndamento) return _renovacaoBlingEmAndamento;
+  _renovacaoBlingEmAndamento = (async () => {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const r = await client.query('SELECT * FROM circulo_bling_config WHERE id=1 FOR UPDATE');
+      const cfg = r.rows[0];
+      if (!cfg || !cfg.autorizado) { await client.query('ROLLBACK'); throw new Error('Bling do Círculo não conectado. Vá em /admin e clique em Conectar Bling.'); }
+      // outra renovação terminou enquanto esperávamos a trava: usa a que já foi feita
+      if (cfg.expira_em && new Date(cfg.expira_em) > new Date(Date.now() + 2*60*60*1000) && cfg.renovado_em && (Date.now() - new Date(cfg.renovado_em)) < 5*60*1000) {
+        await client.query('COMMIT'); return cfg.access_token;
+      }
+      const creds = Buffer.from(`${BLING_CLIENT_ID}:${BLING_CLIENT_SECRET}`).toString('base64');
+      let data = {}, status = 0;
+      try {
+        const resp = await fetch('https://api.bling.com.br/Api/v3/oauth/token', {
+          method: 'POST',
+          headers: { 'Authorization': `Basic ${creds}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: cfg.refresh_token }),
+          signal: AbortSignal.timeout(15000)
+        });
+        status = resp.status;
+        data = await resp.json().catch(() => ({}));
+      } catch (e) { data = { error: { description: 'sem resposta do Bling (' + e.message + ')' } }; }
+      if (!data.access_token) {
+        const motivo = (data.error && (data.error.description || data.error.message || data.error.type)) || data.error_description || (typeof data.error === 'string' ? data.error : '') || ('resposta ' + status + ' do Bling');
+        await client.query('UPDATE circulo_bling_config SET ultimo_erro=$1, ultimo_erro_em=NOW() WHERE id=1', [String(motivo).slice(0, 300)]);
+        await client.query('COMMIT');
+        throw new Error('Não foi possível renovar o acesso ao Bling: ' + motivo);
+      }
+      await client.query('UPDATE circulo_bling_config SET access_token=$1, refresh_token=$2, expira_em=$3, renovado_em=NOW(), ultimo_erro=NULL, ultimo_erro_em=NULL WHERE id=1',
+        [data.access_token, data.refresh_token || cfg.refresh_token, new Date(Date.now() + (data.expires_in || 21600) * 1000)]);
+      await client.query('COMMIT');
+      return data.access_token;
+    } catch (e) {
+      try { await client.query('ROLLBACK'); } catch (_) {}
+      throw e;
+    } finally {
+      client.release();
+      _renovacaoBlingEmAndamento = null;
+    }
+  })();
+  return _renovacaoBlingEmAndamento;
+}
+
 async function getBlingToken() {
   const r = await pool.query('SELECT * FROM circulo_bling_config WHERE id=1');
   if (!r.rows.length || !r.rows[0].autorizado) throw new Error('Bling do Círculo não conectado. Vá em /admin e clique em Conectar Bling.');
   const config = r.rows[0];
-  if (new Date(config.expira_em) <= new Date()) {
-    const creds = Buffer.from(`${BLING_CLIENT_ID}:${BLING_CLIENT_SECRET}`).toString('base64');
-    const resp = await fetch('https://api.bling.com.br/Api/v3/oauth/token', {
-      method: 'POST',
-      headers: { 'Authorization': `Basic ${creds}`, 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: config.refresh_token })
-    });
-    const data = await resp.json();
-    if (!data.access_token) throw new Error('Erro ao renovar token Bling');
-    await pool.query('UPDATE circulo_bling_config SET access_token=$1, refresh_token=$2, expira_em=$3 WHERE id=1',
-      [data.access_token, data.refresh_token, new Date(Date.now() + data.expires_in * 1000)]);
-    return data.access_token;
-  }
+  // renova com folga (10 min antes de vencer), nunca em cima da hora
+  if (!config.expira_em || new Date(config.expira_em) <= new Date(Date.now() + 10*60*1000)) return renovarTokenBling();
   return config.access_token;
+}
+
+// Manutenção automática: mantém o acesso sempre renovado, mesmo semanas sem venda ou cadastro
+async function manterBlingRenovado(){
+  try {
+    const r = await pool.query('SELECT autorizado, expira_em FROM circulo_bling_config WHERE id=1');
+    const cfg = r.rows[0];
+    if (!cfg || !cfg.autorizado) return;
+    if (!cfg.expira_em || new Date(cfg.expira_em) <= new Date(Date.now() + 3*60*60*1000)) {
+      await renovarTokenBling();
+      console.log('Bling do Círculo: acesso renovado automaticamente');
+    }
+  } catch (e) { console.error('Bling do Círculo (manutenção automática):', e.message); }
+}
+
+// Teste real da conexão (usado no card do /admin): renova se precisar e faz uma consulta leve no Bling
+async function testarConexaoBling(){
+  const r = await pool.query('SELECT autorizado, renovado_em, ultimo_erro, ultimo_erro_em FROM circulo_bling_config WHERE id=1').catch(() => ({ rows: [] }));
+  const cfg = r.rows[0];
+  if (!cfg || !cfg.autorizado) return { conectado: false, ok: false };
+  try {
+    const token = await getBlingToken();
+    const resp = await fetch('https://api.bling.com.br/Api/v3/contatos?limite=1', { headers: { Authorization: 'Bearer ' + token, Accept: 'application/json' }, signal: AbortSignal.timeout(8000) });
+    if (resp.status === 401) {
+      // acesso recusado mesmo dentro da validade: força uma renovação e testa de novo
+      await pool.query("UPDATE circulo_bling_config SET expira_em = NOW() - INTERVAL '1 minute' WHERE id=1");
+      const t2 = await getBlingToken();
+      const r2 = await fetch('https://api.bling.com.br/Api/v3/contatos?limite=1', { headers: { Authorization: 'Bearer ' + t2, Accept: 'application/json' }, signal: AbortSignal.timeout(8000) });
+      if (!r2.ok) throw new Error('o Bling recusou o acesso (resposta ' + r2.status + ')');
+    } else if (!resp.ok) {
+      throw new Error('o Bling respondeu com erro ' + resp.status);
+    }
+    const atual = (await pool.query('SELECT renovado_em FROM circulo_bling_config WHERE id=1')).rows[0];
+    return { conectado: true, ok: true, renovadoEm: atual && atual.renovado_em };
+  } catch (e) {
+    const motivo = e.message.replace(/^Não foi possível renovar o acesso ao Bling: /, '');
+    await pool.query('UPDATE circulo_bling_config SET ultimo_erro=$1, ultimo_erro_em=NOW() WHERE id=1', [motivo.slice(0, 300)]).catch(() => {});
+    return { conectado: true, ok: false, motivo };
+  }
 }
 
 
@@ -4511,8 +4592,10 @@ app.get('/admin/modelos-3d', authAdmin, async(req,res)=>{
 
 
 app.get('/admin',authAdmin,async(req,res)=>{
-  const blingCfg = await pool.query('SELECT autorizado, expira_em FROM circulo_bling_config WHERE id=1').catch(()=>({rows:[]}));
-  const blingConectado = blingCfg.rows[0]?.autorizado;
+  // Estado REAL da conexão (testa de verdade no Bling), não só "um dia foi autorizado"
+  const blingStatus = await testarConexaoBling().catch(e=>({conectado:true, ok:false, motivo:e.message}));
+  const blingConectado = blingStatus.conectado && blingStatus.ok;
+  const fmtDataHora = d => d ? new Date(d).toLocaleString('pt-BR',{timeZone:'America/Fortaleza',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '';
   const pendentesBling = await pool.query("SELECT COUNT(*) FROM circulo_membros WHERE bling_id IS NULL").catch(()=>({rows:[{count:0}]}));
   const qtdPendentesBling = parseInt(pendentesBling.rows[0].count);
   // Funções pendentes de aprovação
@@ -4599,7 +4682,11 @@ app.get('/admin',authAdmin,async(req,res)=>{
     <div class="card" style="margin-bottom:24px;display:flex;justify-content:space-between;align-items:center;">
       <div>
         <strong>Conexão Bling do Círculo</strong><br>
-        <span style="font-size:12px;color:var(--muted)">${blingConectado?'✓ Conectado (isolado, exclusivo do Círculo)':'⚠ Não conectado — cadastros não sincronizam com o Bling'}</span>
+        ${blingConectado
+          ? `<span style="font-size:12px;color:#7fd8a0">✓ Conectado e funcionando</span><br><span style="font-size:11px;color:var(--muted)">O acesso é renovado sozinho${blingStatus.renovadoEm ? ' · última renovação ' + fmtDataHora(blingStatus.renovadoEm) : ''}. Não precisa reconectar.</span>`
+          : blingStatus.conectado
+            ? `<span style="font-size:12px;color:#ff8a8a">⚠ A conexão com o Bling parou de funcionar</span><br><span style="font-size:11px;color:var(--muted)">Motivo: ${esc(blingStatus.motivo||'desconhecido')}. Clique em Reconectar.</span>`
+            : `<span style="font-size:12px;color:var(--muted)">⚠ Não conectado — cadastros e pedidos não sincronizam com o Bling</span>`}
         ${blingConectado && qtdPendentesBling > 0 ? `<br><span style="font-size:12px;color:var(--gold)">${qtdPendentesBling} membro(s) ainda sem contato no Bling</span>` : ''}
       </div>
       <div style="display:flex;gap:8px">
@@ -4607,7 +4694,9 @@ app.get('/admin',authAdmin,async(req,res)=>{
           <form method="POST" action="/admin/bling/sincronizar" style="display:inline">
             <button class="btn btn-primary" style="padding:8px 16px;font-size:11px;">Sincronizar ${qtdPendentesBling} pendente(s)</button>
           </form>` : ''}
-        <a href="/auth/bling/conectar" class="btn btn-outline" style="padding:8px 16px;font-size:11px;">${blingConectado?'Reconectar':'Conectar Bling'}</a>
+        ${blingConectado
+          ? `<a href="/auth/bling/conectar" style="font-size:11px;color:var(--muted);text-decoration:underline;align-self:center;">refazer conexão</a>`
+          : `<a href="/auth/bling/conectar" class="btn btn-primary" style="padding:8px 16px;font-size:11px;">${blingStatus.conectado?'Reconectar agora':'Conectar Bling'}</a>`}
       </div>
     </div>
     ${req.query.bling_sync !== undefined ? `
@@ -4875,6 +4964,9 @@ async function garantirTabelas(){
         autorizado BOOLEAN DEFAULT FALSE,
         CONSTRAINT circulo_bling_config_singleton CHECK (id = 1)
       );`);
+    await pool.query(`ALTER TABLE circulo_bling_config ADD COLUMN IF NOT EXISTS renovado_em TIMESTAMPTZ`);
+    await pool.query(`ALTER TABLE circulo_bling_config ADD COLUMN IF NOT EXISTS ultimo_erro TEXT`);
+    await pool.query(`ALTER TABLE circulo_bling_config ADD COLUMN IF NOT EXISTS ultimo_erro_em TIMESTAMPTZ`);
     // Registro de downloads de modelos 3D (gerados sob demanda) — pro dashboard do admin
     await pool.query(`
       CREATE TABLE IF NOT EXISTS circulo_downloads_3d (
@@ -5008,4 +5100,7 @@ app.listen(PORT,()=>{
   console.log(`Círculo ALMARE rodando na porta ${PORT}`);
   if(!infinitepay.configurado()) console.error('[PAGAMENTO] ATENÇÃO: INFINITEPAY_HANDLE não está configurado — ninguém conseguirá pagar até essa variável ser definida no Railway.');
   garantirTabelas().finally(garantirColunasPagamento);
+// Bling: renova o acesso sozinho (1ª checagem 1 min após subir, depois a cada 2h)
+setTimeout(manterBlingRenovado, 60*1000);
+setInterval(manterBlingRenovado, 2*60*60*1000);
 });
