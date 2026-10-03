@@ -4546,6 +4546,88 @@ app.get('/admin/logout',(req,res)=>{res.clearCookie('circulo_admin');res.redirec
 
 
 // ─── SINCRONIZAR MEMBROS ANTIGOS COM O BLING (retroativo, so nome+email — sem documento/endereco que nunca foram guardados) ──
+// ─── Relatório de contatos duplicados no Bling (SOMENTE LEITURA: não cria, não altera, não apaga) ─────
+// Junta grupos com mesmo CPF/CNPJ, mesmo nome ou mesmo e-mail, e contatos sem CPF com nome de membro
+// (criados pelo antigo botão "Sincronizar pendentes"). Em cada grupo sugere qual MANTER: o vinculado a um
+// membro do Círculo; senão o mais completo (com CPF e endereço); senão o mais antigo.
+async function blingGetLento(caminho){
+  for (let tentativa = 0; tentativa < 4; tentativa++) {
+    const token = await getBlingToken();
+    const r = await fetch('https://api.bling.com.br/Api/v3' + caminho, { headers: { Authorization: 'Bearer ' + token, Accept: 'application/json' }, signal: AbortSignal.timeout(20000) });
+    await new Promise(ok => setTimeout(ok, 380)); // abaixo do limite de 3 req/s do Bling
+    if (r.status === 429) { await new Promise(ok => setTimeout(ok, 1500)); continue; }
+    if (!r.ok) throw new Error('Bling respondeu ' + r.status + ' em ' + caminho);
+    return r.json();
+  }
+  throw new Error('Bling limitou as consultas (429) em ' + caminho);
+}
+const normNome = s => String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9 ]+/g,' ').replace(/\s+/g,' ').trim();
+// Roda em segundo plano (pode levar minutos: o e-mail só vem consultando contato por contato, e o Bling
+// limita a 3 consultas/s). Resultado e progresso ficam guardados em circulo_relatorios.
+let _relatorioDuplicadosRodando = false;
+async function salvarRelatorio(campos){
+  await pool.query(`INSERT INTO circulo_relatorios (nome, status, progresso, resultado, atualizado_em) VALUES ('duplicados_bling', $1, $2, $3, NOW())
+    ON CONFLICT (nome) DO UPDATE SET status=$1, progresso=$2, resultado=COALESCE($3, circulo_relatorios.resultado), atualizado_em=NOW()`,
+    [campos.status, campos.progresso || '', campos.resultado ? JSON.stringify(campos.resultado) : null]);
+}
+async function gerarRelatorioDuplicados(){
+  if (_relatorioDuplicadosRodando) return;
+  _relatorioDuplicadosRodando = true;
+  try {
+    await salvarRelatorio({ status: 'rodando', progresso: 'lendo a lista de contatos' });
+    const todos = [];
+    for (let pagina = 1; pagina <= 200; pagina++) {
+      const d = await blingGetLento('/contatos?pagina=' + pagina + '&limite=100');
+      const lista = (d && d.data) || [];
+      todos.push(...lista);
+      if (lista.length < 100) break;
+    }
+    const detalhe = {};
+    for (let k = 0; k < Math.min(todos.length, 5000); k++) {
+      const id = String(todos[k].id);
+      try { const d = await blingGetLento('/contatos/' + id); detalhe[id] = (d && d.data) || {}; } catch (e) { detalhe[id] = { erro: e.message }; }
+      if (k % 25 === 0) await salvarRelatorio({ status: 'rodando', progresso: 'detalhes ' + k + ' de ' + todos.length });
+    }
+    const membros = (await pool.query('SELECT id, nome, email, bling_id FROM circulo_membros')).rows;
+    const vinculo = {}; membros.forEach(m => { if (m.bling_id) vinculo[String(m.bling_id)] = m; });
+    const nomesMembros = new Set(membros.map(m => normNome(m.nome)));
+    const docDe = c => String(c.numeroDocumento || '').replace(/\D/g, '');
+    const agrupar = chave => { const g = {}; todos.forEach(c => { const k = chave(c); if (k) (g[k] = g[k] || []).push(c); }); return Object.values(g).filter(x => x.length > 1); };
+    const porDoc = agrupar(c => docDe(c).length >= 11 ? docDe(c) : null);
+    const porNome = agrupar(c => normNome(c.nome) || null);
+    const porEmail = agrupar(c => { const e = String((detalhe[String(c.id)] || {}).email || '').trim().toLowerCase(); return e || null; });
+    const semCpfDeMembro = todos.filter(c => docDe(c).length < 11 && nomesMembros.has(normNome(c.nome)));
+    const linha = c => {
+      const d = detalhe[String(c.id)] || {}; const g = (d.endereco && d.endereco.geral) || {};
+      const m = vinculo[String(c.id)];
+      return { id: String(c.id), nome: c.nome || '', documento: docDe(c), email: d.email || '', telefone: d.celular || d.telefone || c.celular || c.telefone || '',
+        cidade: [g.municipio, g.uf].filter(Boolean).join('/'), endereco: [g.endereco, g.numero].filter(Boolean).join(', '), situacao: c.situacao || '',
+        membro_vinculado: m ? (m.nome + ' (membro #' + m.id + ')') : '' };
+    };
+    const montar = (grupos, tipo) => grupos.map((grupo, i) => {
+      const linhas = grupo.map(linha);
+      const pontos = l => (l.membro_vinculado ? 1000 : 0) + (l.documento ? 100 : 0) + (l.endereco ? 10 : 0) - Number(l.id) / 1e12;
+      const manter = linhas.slice().sort((a, b) => pontos(b) - pontos(a))[0];
+      return { tipo, grupo: i + 1, manter: manter.id, contatos: linhas.map(l => Object.assign(l, { sugestao: l.id === manter.id ? 'MANTER' : 'Duplicado de #' + manter.id + ' — mesclar ou apagar' })) };
+    });
+    await salvarRelatorio({ status: 'pronto', progresso: todos.length + ' contatos analisados', resultado: {
+      gerado_em: new Date().toISOString(), total_contatos: todos.length,
+      grupos: [].concat(montar(porDoc, 'Mesmo CPF/CNPJ'), montar(porNome, 'Mesmo nome'), montar(porEmail, 'Mesmo e-mail')),
+      sem_cpf_com_nome_de_membro: semCpfDeMembro.map(linha)
+    } });
+  } catch (e) {
+    await salvarRelatorio({ status: 'erro', progresso: e.message }).catch(() => {});
+  } finally { _relatorioDuplicadosRodando = false; }
+}
+// ?gerar=1 dispara (se não estiver rodando); sem parâmetro, devolve progresso e o último resultado
+app.get('/admin/bling/duplicados.json', authAdmin, async (req, res) => {
+  try {
+    if (req.query.gerar === '1' && !_relatorioDuplicadosRodando) { gerarRelatorioDuplicados(); await new Promise(ok => setTimeout(ok, 300)); }
+    const r = await pool.query("SELECT status, progresso, resultado, atualizado_em FROM circulo_relatorios WHERE nome='duplicados_bling'");
+    res.json(r.rows[0] || { status: 'nunca gerado' });
+  } catch (e) { res.status(500).json({ erro: e.message }); }
+});
+
 app.post('/admin/bling/sincronizar', authAdmin, async (req, res) => {
   // Não há mais botão: a sincronização é automática. A rota fica só por compatibilidade e não duplica nada.
   await sincronizarPendentesBling();
@@ -5069,6 +5151,8 @@ async function garantirTabelas(){
     // Uma vez só: a OBRA 001 (original da Peça 001) está em sigilo. Depois disso a marcação é de quem cuida do acervo.
     const mig = await pool.query(`INSERT INTO circulo_migracoes (nome) VALUES ('sigilo_obra_001') ON CONFLICT (nome) DO NOTHING`);
     if (mig.rowCount) await pool.query(`UPDATE almare_obras SET sigilo = TRUE WHERE codigo = 'ALM-001'`);
+    // Relatórios gerados em segundo plano (ex.: contatos duplicados no Bling)
+    await pool.query(`CREATE TABLE IF NOT EXISTS circulo_relatorios (nome VARCHAR(60) PRIMARY KEY, status VARCHAR(20), progresso TEXT, resultado JSONB, atualizado_em TIMESTAMP DEFAULT NOW())`);
     // Carrinho de visitante já transferido pra uma conta: garante que o mesmo carrinho nunca entra duas vezes
     await pool.query(`
       CREATE TABLE IF NOT EXISTS circulo_carrinhos_transferidos (
