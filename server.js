@@ -123,6 +123,10 @@ async function transferirCarrinhoVisitante(req, res, membroId){
   res.clearCookie(COOKIE_CARRINHO_VISITANTE);
   return n > 0;
 }
+// Obra que pode aparecer no Círculo: aprovada E não marcada "em sigilo" (ex.: OBRA 001, a original da Peça 001).
+// Vale pra tudo: catálogo, busca, compra, carrinho, simulador, identificar e modelos 3D.
+const OBRA_VISIVEL = "status='aprovada' AND COALESCE(sigilo,false)=false";
+
 function tokenMembroValido(req){
   try { return jwt.verify(req.cookies.circulo_token, JWT_SECRET); } catch { return null; }
 }
@@ -2441,7 +2445,7 @@ app.post('/simulador/analisar', authMembro, async(req,res)=>{
       SELECT id, codigo, nome, colecao, paleta, paleta_detalhe, personalidade_da_obra,
              nivel_de_destaque, ambientes_compativeis, tamanhos_recomendados,
              formato_recomendado, orientacao, imagem_preview
-      FROM almare_obras WHERE status='aprovada' AND codigo <> 'ALM-001'`);
+      FROM almare_obras WHERE ${OBRA_VISIVEL}`);
 
     // Rankeia TODAS as candidatas válidas de uma vez — precisamos da lista inteira tanto
     // pras sugestões "sozinhas" quanto pra escolher o par da composição.
@@ -2570,7 +2574,7 @@ app.get('/simulador/obras', authMembro, async(req,res)=>{
     const obras = await pool.query(`
       SELECT id, codigo, nome, colecao, formato_recomendado, orientacao,
              tamanhos_recomendados, imagem_preview
-      FROM almare_obras WHERE status='aprovada' AND codigo <> 'ALM-001'
+      FROM almare_obras WHERE ${OBRA_VISIVEL}
       ORDER BY colecao, nome`);
     const lista = obras.rows.map(o => {
       let tams = tamanhosOficiais(o.formato_recomendado, o.tamanhos_recomendados);
@@ -2717,7 +2721,7 @@ const MOLDURA_NOME = { preta:'Preta', carvalho:'Carvalho', aco_escovado:'Aço es
 
 // Retorna os tamanhos de uma obra (com id sequencial pro select), respeitando orientação
 async function tamanhosDaObra(obraId){
-  const o = await pool.query('SELECT formato_recomendado, tamanhos_recomendados, orientacao FROM almare_obras WHERE id=$1',[obraId]);
+  const o = await pool.query(`SELECT formato_recomendado, tamanhos_recomendados, orientacao FROM almare_obras WHERE id=$1 AND ${OBRA_VISIVEL}`,[obraId]);
   if(!o.rows.length) return [];
   let tams = tamanhosOficiais(o.rows[0].formato_recomendado, o.rows[0].tamanhos_recomendados);
   const orient = String(o.rows[0].orientacao||'').toLowerCase();
@@ -2963,7 +2967,7 @@ async function carrinhoVisitante(req, res){
   const linhas = []; let total = 0;
   for(let i=0;i<itens.length;i++){
     const it = itens[i];
-    const o = await pool.query("SELECT id,nome,imagem_preview FROM almare_obras WHERE id=$1 AND status='aprovada'",[parseInt(it.o)]);
+    const o = await pool.query(`SELECT id,nome,imagem_preview FROM almare_obras WHERE id=$1 AND ${OBRA_VISIVEL}`,[parseInt(it.o)]);
     const t = o.rows.length ? (await tamanhosDaObra(o.rows[0].id)).find(x=>x.id===parseInt(it.t)) : null;
     if(!o.rows.length || !t || !MOLDURA_NOME[it.m]) continue;
     const q = Math.max(1, Math.min(20, parseInt(it.q)||1));
@@ -3743,7 +3747,7 @@ app.get('/obra/:obraId/tamanhos-json', membroOpcional, async(req,res)=>{
 
 app.get('/obra/:obraId/comprar', membroOpcional, async(req,res)=>{
   const obraId = parseInt(req.params.obraId);
-  const obra = await pool.query('SELECT id,nome,colecao,imagem_preview FROM almare_obras WHERE id=$1 AND status=\'aprovada\'',[obraId]);
+  const obra = await pool.query(`SELECT id,nome,colecao,imagem_preview FROM almare_obras WHERE id=$1 AND ${OBRA_VISIVEL}`,[obraId]);
   if(!obra.rows.length) return res.send(html('Comprar',`<div class="msg-erro">Obra não encontrada.</div>`,!!req.membro));
   const o = obra.rows[0];
   const tamanhos = await tamanhosDaObra(obraId);
@@ -3789,7 +3793,7 @@ app.get('/modelos-3d', authMembro, async(req,res)=>{
   const temImpacto = await temFuncaoComImpacto(req.membro.id);
   const obras = await pool.query(`
     SELECT id, codigo, nome, colecao, formato_recomendado, tamanhos_recomendados, orientacao, imagem_preview
-    FROM almare_obras WHERE status='aprovada' AND codigo <> 'ALM-001' AND imagem_preview IS NOT NULL
+    FROM almare_obras WHERE ${OBRA_VISIVEL} AND imagem_preview IS NOT NULL
     ORDER BY nome`);
 
   let corpo = navBar('modelos3d', temImpacto, true);
@@ -3889,7 +3893,7 @@ app.get('/modelos-3d', authMembro, async(req,res)=>{
 // Tamanhos validos pra essa obra (mesma regra ja usada no simulador — respeita formato/orientacao)
 app.get('/modelos-3d/tamanhos/:obraId', authMembro, async(req,res)=>{
   try{
-    const o = await pool.query('SELECT formato_recomendado, tamanhos_recomendados, orientacao FROM almare_obras WHERE id=$1', [req.params.obraId]);
+    const o = await pool.query(`SELECT formato_recomendado, tamanhos_recomendados, orientacao FROM almare_obras WHERE id=$1 AND ${OBRA_VISIVEL}`, [req.params.obraId]);
     if(!o.rows.length) return res.json({ tamanhos: [] });
     let tams = tamanhosOficiais(o.rows[0].formato_recomendado, o.rows[0].tamanhos_recomendados);
     const orient = String(o.rows[0].orientacao||'').toLowerCase();
@@ -3908,7 +3912,7 @@ app.post('/modelos-3d/baixar', authMembro, async(req,res)=>{
 
     const zip = new AdmZip();
     for(const item of itens){
-      const obra = await pool.query('SELECT imagem_preview FROM almare_obras WHERE id=$1', [item.obraId]);
+      const obra = await pool.query(`SELECT imagem_preview FROM almare_obras WHERE id=$1 AND ${OBRA_VISIVEL}`, [item.obraId]);
       if(!obra.rows.length || !obra.rows[0].imagem_preview) continue;
       const base64Img = obra.rows[0].imagem_preview.replace(/^data:image\/\w+;base64,/, '');
       const imagemBytes = Buffer.from(base64Img, 'base64');
@@ -3998,7 +4002,8 @@ app.post('/identificar', membroOpcional, limiteIdentificarVisitante, uploadFoto.
     const fotoResized = await sharp(req.file.buffer).resize({ width: 500, height: 500, fit: 'inside' }).jpeg({ quality: 75 }).toBuffer();
     const fotoB64 = fotoResized.toString('base64');
 
-    const obras = await pool.query(`SELECT id, codigo, nome, colecao, imagem_preview FROM almare_obras WHERE imagem_preview IS NOT NULL ORDER BY id`);
+    // Só compara com obras que podem aparecer no Círculo (nada de não publicada, descartada ou em sigilo)
+    const obras = await pool.query(`SELECT id, codigo, nome, colecao, imagem_preview FROM almare_obras WHERE imagem_preview IS NOT NULL AND ${OBRA_VISIVEL} ORDER BY id`);
     if (!obras.rows.length) return res.status(404).json({ erro: 'Nenhuma obra cadastrada no acervo ainda' });
 
     const referencias = [];
@@ -4033,7 +4038,8 @@ app.post('/identificar', membroOpcional, limiteIdentificarVisitante, uploadFoto.
     if (!resultado.codigo_identificado || resultado.confianca === 'Nenhuma') {
       return res.json({ encontrado: false, justificativa: resultado.justificativa });
     }
-    const obraEncontrada = await pool.query('SELECT * FROM almare_obras WHERE codigo=$1', [resultado.codigo_identificado]);
+    // Devolve só o que a tela mostra — nunca a ficha interna (nota do curador, potencial, produção...)
+    const obraEncontrada = await pool.query(`SELECT id, codigo, nome, colecao, imagem_preview FROM almare_obras WHERE codigo=$1 AND ${OBRA_VISIVEL}`, [resultado.codigo_identificado]);
     if (!obraEncontrada.rows.length) return res.json({ encontrado: false, justificativa: 'Código identificado não encontrado no banco' });
 
     res.json({ encontrado: true, confianca: resultado.confianca, justificativa: resultado.justificativa, obra: obraEncontrada.rows[0] });
@@ -4096,7 +4102,7 @@ app.get('/catalogo',membroOpcional,async(req,res)=>{
     const navImpacto=slugs.some(s=>['embaixador','especificador','artista','colaborador'].includes(s))?'<a href="/meu-impacto" class="nav-link">Impacto</a>':'';
 
     // Obra inteira: tags e a ficha curatorial completa entram na busca
-    const obras=await pool.query(`SELECT o.* FROM almare_obras o WHERE o.status='aprovada' ORDER BY o.colecao, o.nome`);
+    const obras=await pool.query(`SELECT o.* FROM almare_obras o WHERE ${OBRA_VISIVEL} ORDER BY o.colecao, o.nome`);
 
     // Listas únicas para filtros — sem duplicar por acento ("Dourados e Ambar" = "Dourados e Âmbar");
     // o rótulo mostrado é a grafia mais usada
@@ -4181,10 +4187,9 @@ app.get('/catalogo',membroOpcional,async(req,res)=>{
       </div>
 
             <style>
-        /* Só o FUNDO da prévia muda com a moldura (parede com textura pra dar contraste). A moldura não é alterada. */
+        /* Só o FUNDO da prévia muda, e só na moldura preta (cimento queimado pra dar contraste). Carvalho e aço: fundo preto original. A moldura não é alterada. */
         .parede-preta{background-color:#cfcbc4;background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='f'><feTurbulence type='fractalNoise' baseFrequency='.95' numOctaves='3' seed='3' stitchTiles='stitch'/><feColorMatrix type='matrix' values='0 0 0 0 .2 0 0 0 0 .19 0 0 0 0 .18 0 0 0 .9 0'/></filter><rect width='240' height='240' filter='url(%23f)'/></svg>"),url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='f'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' seed='7' stitchTiles='stitch'/><feColorMatrix type='matrix' values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 .6 0'/></filter><rect width='240' height='240' filter='url(%23f)'/></svg>"),url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='500' height='500'><filter id='f'><feTurbulence type='fractalNoise' baseFrequency='.035' numOctaves='4' seed='21' stitchTiles='stitch'/><feColorMatrix type='matrix' values='0 0 0 0 .25 0 0 0 0 .24 0 0 0 0 .22 0 0 0 .75 0'/></filter><rect width='500' height='500' filter='url(%23f)'/></svg>"),url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='900' height='900'><filter id='f'><feTurbulence type='fractalNoise' baseFrequency='.005' numOctaves='5' seed='11' stitchTiles='stitch'/><feColorMatrix type='matrix' values='0 0 0 0 .2 0 0 0 0 .19 0 0 0 0 .18 0 0 0 1.1 0'/></filter><rect width='900' height='900' filter='url(%23f)'/></svg>");}
-        .parede-aco_escovado{background-color:#e7d9bc;background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='f'><feTurbulence type='fractalNoise' baseFrequency='.8' numOctaves='3' seed='5' stitchTiles='stitch'/><feColorMatrix type='matrix' values='0 0 0 0 .42 0 0 0 0 .33 0 0 0 0 .2 0 0 0 .8 0'/></filter><rect width='240' height='240' filter='url(%23f)'/></svg>"),url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='f'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' seed='9' stitchTiles='stitch'/><feColorMatrix type='matrix' values='0 0 0 0 1 0 0 0 0 .98 0 0 0 0 .92 0 0 0 .55 0'/></filter><rect width='240' height='240' filter='url(%23f)'/></svg>"),url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='500' height='500'><filter id='f'><feTurbulence type='fractalNoise' baseFrequency='.05' numOctaves='3' seed='23' stitchTiles='stitch'/><feColorMatrix type='matrix' values='0 0 0 0 .55 0 0 0 0 .44 0 0 0 0 .28 0 0 0 .45 0'/></filter><rect width='500' height='500' filter='url(%23f)'/></svg>"),url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='900' height='900'><filter id='f'><feTurbulence type='fractalNoise' baseFrequency='.007' numOctaves='4' seed='13' stitchTiles='stitch'/><feColorMatrix type='matrix' values='0 0 0 0 .5 0 0 0 0 .4 0 0 0 0 .25 0 0 0 .7 0'/></filter><rect width='900' height='900' filter='url(%23f)'/></svg>");}
-        .parede-carvalho{background-color:#59614f;background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='f'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' seed='2' stitchTiles='stitch'/><feColorMatrix type='matrix' values='0 0 0 0 .1 0 0 0 0 .12 0 0 0 0 .09 0 0 0 .95 0'/></filter><rect width='240' height='240' filter='url(%23f)'/></svg>"),url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='f'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' seed='8' stitchTiles='stitch'/><feColorMatrix type='matrix' values='0 0 0 0 .88 0 0 0 0 .92 0 0 0 0 .84 0 0 0 .38 0'/></filter><rect width='240' height='240' filter='url(%23f)'/></svg>"),url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='500' height='500'><filter id='f'><feTurbulence type='fractalNoise' baseFrequency='.04' numOctaves='4' seed='27' stitchTiles='stitch'/><feColorMatrix type='matrix' values='0 0 0 0 .15 0 0 0 0 .17 0 0 0 0 .13 0 0 0 .6 0'/></filter><rect width='500' height='500' filter='url(%23f)'/></svg>"),url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='900' height='900'><filter id='f'><feTurbulence type='fractalNoise' baseFrequency='.006' numOctaves='5' seed='17' stitchTiles='stitch'/><feColorMatrix type='matrix' values='0 0 0 0 .1 0 0 0 0 .12 0 0 0 0 .08 0 0 0 .9 0'/></filter><rect width='900' height='900' filter='url(%23f)'/></svg>");}
+        .parede-aco_escovado,.parede-carvalho{background:#0d0d0d;}
       </style>
       <script>
         // ===== Busca do catálogo =====
@@ -4650,7 +4655,7 @@ app.post('/admin/pedido-teste', authAdmin, async(req,res)=>{
     const membro = await pool.query('SELECT id FROM circulo_membros ORDER BY id ASC LIMIT 1');
     if(!membro.rows.length) return res.status(400).json({ erro: 'Nenhum membro cadastrado para atribuir o pedido de teste.' });
     const membroId = membro.rows[0].id;
-    const obra = await pool.query("SELECT id FROM almare_obras WHERE status='aprovada' ORDER BY id ASC OFFSET 1 LIMIT 1");
+    const obra = await pool.query(`SELECT id FROM almare_obras WHERE ${OBRA_VISIVEL} ORDER BY id ASC LIMIT 1`);
     if(!obra.rows.length) return res.status(400).json({ erro: 'Nenhuma obra aprovada para o item de teste.' });
     const obraId = obra.rows[0].id;
 
@@ -4957,6 +4962,12 @@ async function garantirTabelas(){
         bling_produto_id VARCHAR(50),
         criado_em TIMESTAMP DEFAULT NOW()
       );`);
+    // Obra "em sigilo": não aparece em lugar nenhum do Círculo (mesmo aprovada)
+    await pool.query(`ALTER TABLE almare_obras ADD COLUMN IF NOT EXISTS sigilo BOOLEAN DEFAULT FALSE`);
+    await pool.query(`CREATE TABLE IF NOT EXISTS circulo_migracoes (nome VARCHAR(80) PRIMARY KEY, feita_em TIMESTAMP DEFAULT NOW())`);
+    // Uma vez só: a OBRA 001 (original da Peça 001) está em sigilo. Depois disso a marcação é de quem cuida do acervo.
+    const mig = await pool.query(`INSERT INTO circulo_migracoes (nome) VALUES ('sigilo_obra_001') ON CONFLICT (nome) DO NOTHING`);
+    if (mig.rowCount) await pool.query(`UPDATE almare_obras SET sigilo = TRUE WHERE codigo = 'ALM-001'`);
     // Carrinho de visitante já transferido pra uma conta: garante que o mesmo carrinho nunca entra duas vezes
     await pool.query(`
       CREATE TABLE IF NOT EXISTS circulo_carrinhos_transferidos (
