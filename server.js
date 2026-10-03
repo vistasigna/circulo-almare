@@ -156,10 +156,8 @@ function navVisitante(ativo, req){
   return `<div class="nav-bar">${item('obras','/catalogo','Obras')}${item('identificar','/identificar','Identificar')}${item('simulador','/simulador','Simulador · membros')}${item('carrinho','/carrinho','Carrinho'+(qtd?' ('+qtd+')':''))}${item('arquitetos','/arquitetos','Para arquitetos')}${item('entrar','/login','Entrar')}<a href="/convite/geral" class="nav-link" style="color:var(--gold);">Fazer parte do Círculo</a></div>`;
 }
 function avisoVisitante(){
-  return `<div style="border:1px solid rgba(201,169,110,.35);background:rgba(201,169,110,.06);border-radius:4px;padding:16px 18px;margin-bottom:28px;display:flex;gap:16px;align-items:center;justify-content:space-between;flex-wrap:wrap;">
-    <div style="font-size:13px;line-height:1.6;color:#ccc;max-width:640px;">Você está conhecendo o acervo ALMARE como visitante: veja as obras, molduras e tamanhos e monte seu carrinho. <span style="color:var(--gold-light,#e8d5b0);">O simulador e o fechamento do pedido são exclusivos de quem faz parte do Círculo.</span></div>
-    <a href="/convite/geral" class="btn btn-primary" style="white-space:nowrap;">Fazer parte do Círculo</a>
-  </div>`;
+  // discreto, no canto de cima (antes era um painel grande logo na entrada)
+  return `<div style="text-align:right;font-size:11px;color:var(--muted);margin:-6px 0 10px;">Sem login: algumas funções não estão liberadas · <a href="/login" style="color:var(--gold);">Entrar</a></div>`;
 }
 // IP real (o último endereço que o Railway registra; o primeiro o próprio visitante consegue forjar)
 function ipReal(req){
@@ -4466,31 +4464,44 @@ app.get('/catalogo',membroOpcional,async(req,res)=>{
     const exemplosBusca=['branco e preto','azul','dourado','textura','corporativo','quadrado'];
 
     res.send(html('Catálogo',`
-      ${req.membro ? navBar('obras', !!navImpacto, slugs.includes('especificador')) : navVisitante('obras', req) + avisoVisitante()}
+      ${req.membro ? navBar('obras', !!navImpacto, slugs.includes('especificador')) : avisoVisitante() + navVisitante('obras', req)}
 
-      <!-- BARRA DE FILTROS -->
-      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:32px;align-items:center;">
-        <input id="busca" type="search" placeholder="Busque por nome, cor, tag, sensação, ambiente…" aria-label="Buscar obras" oninput="filtrar()" style="flex:1;min-width:240px;background:#0d0d0d;border:1px solid var(--border);color:var(--text);padding:10px 14px;border-radius:3px;font-size:13px;font-family:'Inter',sans-serif;outline:none;">
-        <span id="contagem" style="font-size:12px;color:var(--muted);white-space:nowrap;">${obras.rows.length} obras</span>
-      </div>
+      <!-- BARRA DE BUSCA E FILTROS (filtros recolhidos: abrem numa janelinha ao clicar) -->
       <style>
-        .filtros-grupos{display:grid;gap:10px;margin:-16px 0 26px;}
-        .filtro-linha{display:flex;gap:8px;flex-wrap:wrap;align-items:center;}
-        .filtro-titulo{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);min-width:72px;}
-        .chip-filtro{background:transparent;border:1px solid var(--border);color:var(--text);padding:6px 12px;border-radius:999px;font-size:12px;cursor:pointer;font-family:'Inter',sans-serif;}
-        .chip-filtro .chip-n{color:var(--muted);font-size:11px;margin-left:2px;}
-        .chip-filtro.ativo{background:var(--gold);border-color:var(--gold);color:#0a0a0a;font-weight:700;}
-        .chip-filtro.ativo::before{content:'✓ ';}
-        .chip-filtro.ativo .chip-n{color:#0a0a0a;}
-        #limpar-filtros{display:none;background:transparent;border:0;color:var(--gold);text-decoration:underline;font-size:12px;cursor:pointer;padding:4px 0;justify-self:start;}
+        .barra-catalogo{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:28px;}
+        .busca-wrap{position:relative;flex:1;min-width:220px;}
+        .sugestoes-busca{display:none;position:absolute;top:calc(100% + 6px);left:0;right:0;z-index:60;background:#111;border:1px solid var(--border);border-radius:4px;padding:10px;gap:6px;flex-wrap:wrap;align-items:center;box-shadow:0 12px 30px rgba(0,0,0,.5);}
+        .sugestoes-busca.aberta{display:flex;}
+        .sugestoes-busca span{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-right:4px;}
+        .exemplo-busca{background:transparent;border:1px solid var(--border);color:var(--text);padding:5px 12px;border-radius:999px;font-size:12px;cursor:pointer;}
+        .filtro-drop{position:relative;}
+        .filtro-botao{background:#0d0d0d;border:1px solid var(--border);color:var(--text);padding:10px 14px;border-radius:3px;font-size:12px;cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap;}
+        .filtro-botao.tem{border-color:var(--gold);color:var(--gold);font-weight:700;}
+        .filtro-painel{display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:60;background:#111;border:1px solid var(--border);border-radius:4px;padding:6px;min-width:230px;max-width:calc(100vw - 40px);max-height:340px;overflow:auto;box-shadow:0 12px 30px rgba(0,0,0,.5);}
+        .filtro-drop.ultimo .filtro-painel{left:auto;right:0;}
+        .filtro-drop.aberto .filtro-painel{display:block;}
+        .chip-filtro{display:flex;align-items:center;gap:10px;width:100%;background:transparent;border:0;color:var(--text);padding:9px 10px;border-radius:3px;font-size:13px;cursor:pointer;font-family:'Inter',sans-serif;text-align:left;}
+        .chip-filtro:hover{background:rgba(255,255,255,.05);}
+        .chip-filtro::before{content:'';flex-shrink:0;width:15px;height:15px;border:1px solid #666;border-radius:3px;}
+        .chip-filtro.ativo{color:var(--gold);font-weight:700;}
+        .chip-filtro.ativo::before{content:'✓';background:var(--gold);border-color:var(--gold);color:#0a0a0a;font-size:11px;line-height:15px;text-align:center;font-weight:700;}
+        .chip-filtro .chip-n{margin-left:auto;color:var(--muted);font-size:11px;font-weight:400;}
+        #limpar-filtros{display:none;background:transparent;border:0;color:var(--gold);text-decoration:underline;font-size:12px;cursor:pointer;padding:4px 0;}
+        /* celular: a janelinha ocupa a largura da barra, logo abaixo dela (nunca passa da tela) */
+        @media (max-width:640px){
+          .barra-catalogo{position:relative;}
+          .filtro-drop{position:static;}
+          .filtro-painel,.filtro-drop.ultimo .filtro-painel{left:0;right:0;min-width:0;max-width:none;}
+        }
       </style>
-      <div class="filtros-grupos">
-        ${gruposFiltro.map(([titulo, chips]) => chips ? `<div class="filtro-linha"><span class="filtro-titulo">${titulo}</span>${chips}</div>` : '').join('')}
-        <button type="button" id="limpar-filtros">Limpar filtros (ver todas as obras)</button>
-      </div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:-20px 0 28px;">
-        <span style="font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-right:4px;">Experimente:</span>
-        ${exemplosBusca.map(x=>`<button type="button" class="exemplo-busca" data-q="${esc(x)}" style="background:transparent;border:1px solid var(--border);color:var(--text);padding:5px 12px;border-radius:999px;font-size:12px;cursor:pointer;">${esc(x)}</button>`).join('')}
+      <div class="barra-catalogo">
+        <div class="busca-wrap">
+          <input id="busca" type="search" placeholder="Busque por nome, cor, tag, sensação, ambiente…" aria-label="Buscar obras" oninput="filtrar()" autocomplete="off" style="width:100%;background:#0d0d0d;border:1px solid var(--border);color:var(--text);padding:10px 14px;border-radius:3px;font-size:13px;font-family:'Inter',sans-serif;outline:none;">
+          <div class="sugestoes-busca" id="sugestoes-busca"><span>Experimente:</span>${exemplosBusca.map(x=>`<button type="button" class="exemplo-busca" data-q="${esc(x)}">${esc(x)}</button>`).join('')}</div>
+        </div>
+        ${gruposFiltro.map(([titulo, chips], k) => chips ? `<div class="filtro-drop${k === gruposFiltro.length - 1 ? ' ultimo' : ''}"><button type="button" class="filtro-botao" data-rotulo="${titulo}" aria-expanded="false">${titulo} ▾</button><div class="filtro-painel">${chips}</div></div>` : '').join('')}
+        <button type="button" id="limpar-filtros">Limpar filtros</button>
+        <span id="contagem" style="font-size:12px;color:var(--muted);white-space:nowrap;">${obras.rows.length} obras</span>
       </div>
 
       <!-- GRADE -->
@@ -4671,8 +4682,37 @@ app.get('/catalogo',membroOpcional,async(req,res)=>{
         var FILTROS_ATIVOS = { formato: [], colecao: [], paleta: [] };
         function atualizarLimparFiltros(){
           var algum = FILTROS_ATIVOS.formato.length || FILTROS_ATIVOS.colecao.length || FILTROS_ATIVOS.paleta.length;
-          document.getElementById('limpar-filtros').style.display = algum ? 'block' : 'none';
+          document.getElementById('limpar-filtros').style.display = algum ? 'inline-block' : 'none';
+          // cada botão mostra quantas opções estão marcadas: "Cor (2)"
+          document.querySelectorAll('.filtro-drop').forEach(function(d){
+            var botao = d.querySelector('.filtro-botao');
+            var n = d.querySelectorAll('.chip-filtro.ativo').length;
+            botao.textContent = botao.getAttribute('data-rotulo') + (n ? ' (' + n + ')' : '') + ' ▾';
+            botao.classList.toggle('tem', n > 0);
+          });
         }
+        function fecharJanelinhas(exceto){
+          document.querySelectorAll('.filtro-drop.aberto').forEach(function(d){ if (d !== exceto){ d.classList.remove('aberto'); d.querySelector('.filtro-botao').setAttribute('aria-expanded', 'false'); } });
+        }
+        document.querySelectorAll('.filtro-drop').forEach(function(d){
+          d.querySelector('.filtro-botao').addEventListener('click', function(e){
+            e.stopPropagation();
+            fecharJanelinhas(d);
+            var abre = !d.classList.contains('aberto');
+            d.classList.toggle('aberto', abre);
+            this.setAttribute('aria-expanded', abre ? 'true' : 'false');
+          });
+          d.querySelector('.filtro-painel').addEventListener('click', function(e){ e.stopPropagation(); });
+        });
+        var caixaSugestoes = document.getElementById('sugestoes-busca');
+        var campoBusca = document.getElementById('busca');
+        function mostrarSugestoes(){ caixaSugestoes.classList.toggle('aberta', !campoBusca.value.trim()); }
+        campoBusca.addEventListener('focus', function(){ fecharJanelinhas(null); mostrarSugestoes(); });
+        campoBusca.addEventListener('input', mostrarSugestoes);
+        campoBusca.addEventListener('click', function(e){ e.stopPropagation(); });
+        caixaSugestoes.addEventListener('mousedown', function(e){ e.preventDefault(); });
+        document.addEventListener('click', function(){ fecharJanelinhas(null); caixaSugestoes.classList.remove('aberta'); });
+        document.addEventListener('keydown', function(e){ if (e.key === 'Escape'){ fecharJanelinhas(null); caixaSugestoes.classList.remove('aberta'); } });
         document.querySelectorAll('.chip-filtro').forEach(function(b){
           b.addEventListener('click', function(){
             var lista = FILTROS_ATIVOS[b.getAttribute('data-grupo')];
@@ -4694,6 +4734,7 @@ app.get('/catalogo',membroOpcional,async(req,res)=>{
         document.querySelectorAll('.exemplo-busca').forEach(function(b){
           b.addEventListener('click', function(){
             document.getElementById('busca').value = b.getAttribute('data-q');
+            caixaSugestoes.classList.remove('aberta');
             filtrar();
             document.getElementById('busca').focus();
           });
