@@ -64,6 +64,7 @@ module.exports = function montar(app, { pool, authAdmin, html, esc }) {
              ${erro ? `<br><span style="font-size:11px;color:#ff8a8a">Não consegui renovar a conexão (${esc(erro.valor)}). Gere um token novo e cole abaixo.</span>` : ''}`
           : `<span style="font-size:13px;color:var(--muted)">Não conectado.</span>`}
       </div>
+      <div class="card" style="margin-bottom:24px;"><strong>Fila de posts e stories</strong><p style="font-size:12px;color:var(--muted);margin:8px 0 12px;">Envie o pacote, aprove as peças e publique. Nada sai sem aprovação.</p><a class="btn btn-primary" href="/admin/instagram/fila">Abrir a fila</a></div>
       <div class="card" style="margin-bottom:24px;">
         <strong>${c ? 'Trocar o token' : 'Conectar o Instagram'}</strong>
         <p style="font-size:12px;color:var(--muted);margin:8px 0 16px;">Cole o token gerado na Meta para a conta @galeriaalmare. Ele fica guardado só no servidor e não aparece de novo nesta tela.</p>

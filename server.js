@@ -5048,6 +5048,7 @@ app.get('/admin/modelos-3d', authAdmin, async(req,res)=>{
 
 
 const instagramAlmare = require('./almare-instagram')(app, { pool, authAdmin, html, esc });
+require('./almare-fila')(app, { pool, authAdmin, html, esc, instagram: instagramAlmare });
 app.get('/admin',authAdmin,async(req,res)=>{
   // Estado REAL da conexão (testa de verdade no Bling), não só "um dia foi autorizado"
   const blingStatus = await testarConexaoBling().catch(e=>({conectado:true, ok:false, motivo:e.message}));
