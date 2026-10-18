@@ -5047,6 +5047,7 @@ app.get('/admin/modelos-3d', authAdmin, async(req,res)=>{
 
 
 
+const instagramAlmare = require('./almare-instagram')(app, { pool, authAdmin, html, esc });
 app.get('/admin',authAdmin,async(req,res)=>{
   // Estado REAL da conexão (testa de verdade no Bling), não só "um dia foi autorizado"
   const blingStatus = await testarConexaoBling().catch(e=>({conectado:true, ok:false, motivo:e.message}));
@@ -5129,6 +5130,10 @@ app.get('/admin',authAdmin,async(req,res)=>{
     <div class="card" style="margin-bottom:24px;display:flex;justify-content:space-between;align-items:center;">
       <div><strong>Modelos 3D para especificadores</strong><br><span style="font-size:12px;color:var(--muted)">Gerados sob demanda (.skp/.obj/.dxf) — dashboard de downloads</span></div>
       <a href="/admin/modelos-3d" class="btn btn-outline" style="padding:8px 16px;font-size:11px;">Gerenciar</a>
+    </div>
+    <div class="card" style="margin-bottom:24px;display:flex;justify-content:space-between;align-items:center;">
+      <div><strong>Instagram da ALMARE</strong><br><span style="font-size:12px;color:var(--muted)">Conexão do @galeriaalmare para os posts e stories automáticos</span></div>
+      <a href="/admin/instagram" class="btn btn-outline" style="padding:8px 16px;font-size:11px;">Conectar</a>
     </div>
     <div class="card" style="margin-bottom:24px;display:flex;justify-content:space-between;align-items:center;">
       <div><strong>Teste de pagamento</strong><br><span style="font-size:12px;color:var(--muted)">Gera pedido de R$ 1,00 pelo caminho real — mesmo checkout, mesmo webhook</span></div>
