@@ -197,7 +197,8 @@ module.exports = function montar(app, { pool, authAdmin, html, esc, instagram })
         <strong>Enviar pacote de posts</strong>
         <form method="POST" action="/admin/instagram/fila/enviar" enctype="multipart/form-data" style="margin-top:10px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
           <input type="file" name="zip" accept=".zip" required>
-          <button class="btn btn-outline" style="padding:8px 14px;font-size:11px;">Enviar</button>
+          <label style="font-size:12px;display:flex;gap:6px;align-items:center;"><input type="checkbox" name="limpar" value="sim" style="width:18px;height:18px;"> Antes de importar, tirar da fila tudo que ainda não foi publicado</label>
+          <button class="btn btn-outline" style="padding:8px 14px;font-size:11px;" onclick="var c=this.form.limpar.checked;return !c||confirm('Isso remove da fila todas as peças não publicadas (aprovadas, aguardando e rejeitadas) antes de importar o pacote novo. Continuar?')">Enviar</button>
         </form>
         <p style="font-size:11px;color:var(--muted);margin-top:6px;">Peças que já estão na fila não são duplicadas. Todas entram como "aguardando aprovação".</p>
       </div>
@@ -315,6 +316,7 @@ module.exports = function montar(app, { pool, authAdmin, html, esc, instagram })
       await garantirTabelas();
       if (!req.file) throw new Error('Escolha o arquivo .zip.');
       const zip = new AdmZip(req.file.buffer);
+      if (req.body && req.body.limpar === 'sim') await pool.query(`DELETE FROM almare_posts WHERE status <> 'PUBLICADO'`);
       const entradas = {}; zip.getEntries().forEach((e) => { if (!e.isDirectory) entradas[e.entryName] = e; });
       const lj = entradas['legendas.json'];
       if (!lj) throw new Error('O pacote não tem o arquivo legendas.json.');
