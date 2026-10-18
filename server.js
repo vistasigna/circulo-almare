@@ -14,6 +14,7 @@ const uploadFoto = multer({ storage: multer.memoryStorage(), limits: { fileSize:
 
 const app = express();
 app.set('trust proxy', true); // essencial pro req.ip pegar o IP real do cliente (Railway fica atrás de proxy)
+app.use('/marca', express.static(require('path').join(__dirname,'marca'), { maxAge: '7d' }));
 app.use(express.json({ limit: '25mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
@@ -667,6 +668,7 @@ const CSS = `
   .container{max-width:960px;margin:0 auto;padding:0 24px}
   .container-sm{max-width:540px;margin:0 auto;padding:0 24px}
   .logo{font-family:'Cormorant Garamond',serif;font-size:22px;letter-spacing:.3em;color:var(--gold);text-transform:uppercase}
+  .logo-img{height:24px;width:auto;display:block}
   .logo-sub{font-size:10px;letter-spacing:.5em;color:var(--muted);text-transform:uppercase;margin-top:2px}
   header{padding:24px 0;border-bottom:1px solid var(--border);margin-bottom:40px}
   .card{background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:32px}
@@ -801,7 +803,7 @@ function html(titulo, corpo, nav=false) {
   return `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   ${tagGA4()}
   <title>${titulo} — Círculo ALMARE</title><style>${CSS}</style></head>
-  <body><div class="container"><header><div class="logo">ALMARE</div><div class="logo-sub">Círculo</div><div style="text-align:right">${sairHtml}</div></header>${corpo}</div></body></html>`;
+  <body><div class="container"><header><img class="logo-img" src="/marca/almare-branca.png" alt="ALMARE"><div class="logo-sub">Círculo</div><div style="text-align:right">${sairHtml}</div></header>${corpo}</div></body></html>`;
 }
 
 async function ehEspecificador(membroId) {
@@ -942,6 +944,7 @@ app.get('/convite/:codigo', async (req,res) => {
     
     /* HEADER */
     .header{padding:32px 48px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border);}
+    .logo-img{height:26px;width:auto;display:block}
     .logo{font-family:'Cormorant Garamond',serif;font-size:20px;letter-spacing:.4em;color:var(--gold);text-transform:uppercase;}
     .header-login{font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);text-decoration:none;transition:color .2s;}
     .header-login:hover{color:var(--gold);}
@@ -969,7 +972,7 @@ app.get('/convite/:codigo', async (req,res) => {
   </style></head>
   <body>
     <header class="header">
-      <div class="logo">ALMARE</div>
+      <img class="logo-img" src="/marca/almare-branca.png" alt="ALMARE">
       <a href="/login" class="header-login">Entrar na minha conta</a>
     </header>
 
@@ -3767,7 +3770,7 @@ function paginaPublicaHtml(titulo, corpo){
   return `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
     <title>${titulo} — ALMARE</title>${tagGA4()}<style>${CSS}</style></head>
     <body><div class="container" style="max-width:640px;padding-top:48px;">
-      <div class="logo" style="margin-bottom:32px;">ALMARE</div>
+      <img class="logo-img" src="/marca/almare-branca.png" alt="ALMARE" style="margin-bottom:32px;">
       ${corpo}
     </div></body></html>`;
 }
@@ -3991,7 +3994,7 @@ app.get('/pedido/:token', async(req,res)=>{
   res.send(`<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
     <title>Seu pedido — ALMARE</title>${tagGA4()}<style>${CSS}</style></head>
     <body><div class="container" style="max-width:640px;padding-top:48px;">
-      <div class="logo" style="margin-bottom:32px;">ALMARE</div>
+      <img class="logo-img" src="/marca/almare-branca.png" alt="ALMARE" style="margin-bottom:32px;">
       <h1 style="font-size:28px;margin-bottom:8px;">Seu pedido</h1>
       <p style="color:var(--muted);margin-bottom:24px;">Confira os itens abaixo antes de pagar.</p>
       <div class="card" style="margin-bottom:20px;">
@@ -4037,7 +4040,7 @@ app.get('/pedido/:token/confirmado', async(req,res)=>{
   res.send(`<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
     <title>Pedido confirmado — ALMARE</title>${tagGA4()}<style>${CSS}</style></head>
     <body><div class="container" style="max-width:640px;padding-top:48px;">
-      <div class="logo" style="margin-bottom:32px;">ALMARE</div>
+      <img class="logo-img" src="/marca/almare-branca.png" alt="ALMARE" style="margin-bottom:32px;">
       ${montarTelaConfirmacaoHtml(pedido, linhas, null, 'Fechar')}
     </div></body></html>`);
 });
