@@ -153,18 +153,24 @@ module.exports = function montar(app, { pool, authAdmin, html, esc, instagram })
     const msg = req.query.ok ? `<div class="card" style="margin-bottom:16px;background:rgba(0,255,150,0.06);">${esc(req.query.ok)}</div>` : req.query.erro ? `<div class="msg-erro" style="margin-bottom:16px;">${esc(req.query.erro)}</div>` : '';
     const cards = lista.rows.map((p) => {
       const [rot, cor] = ROT[p.status];
-      const btn = (acao, txt, estilo) => `<form method="POST" action="/admin/instagram/fila/${p.id}/${acao}" style="display:inline"><input type="hidden" name="volta" value="${esc(aqui)}"><button class="btn ${estilo || 'btn-outline'}" style="padding:4px 10px;font-size:10px;">${txt}</button></form>`;
-      return `<div style="border:1px solid var(--border);border-radius:10px;padding:8px;">
+      const btn = (acao, txt, estilo) => `<button type="submit" form="lote" formaction="/admin/instagram/fila/${p.id}/${acao}" class="btn ${estilo || 'btn-outline'}" style="padding:4px 10px;font-size:10px;">${txt}</button>`;
+      return `<label style="display:block;border:1px solid var(--border);border-radius:10px;padding:8px;position:relative;cursor:pointer;">
+        <input type="checkbox" class="sel" name="ids" value="${p.id}" form="lote" style="position:absolute;top:14px;left:14px;width:22px;height:22px;z-index:2;accent-color:#c9a45c;">
         <a href="/admin/instagram/fila/${p.id}"><img loading="lazy" src="/admin/instagram/fila/mini/${p.id}.jpg" alt="" style="width:100%;aspect-ratio:${p.tipo === 'story' ? '9/16' : '4/5'};object-fit:cover;border-radius:6px;display:block;"></a>
-        <div style="font-size:11px;margin-top:6px;"><b style="color:${cor}">${rot}</b> · ${p.tipo === 'story' ? 'story' : 'feed'} · obra ${esc(p.obras || '')}</div>
+        <div style="font-size:11px;margin-top:6px;"><b style="color:${cor}">${rot}</b> · ${p.tipo === 'story' ? 'story' : 'feed'} · obra ${esc(p.obras || '')} · ${esc(p.ambiente || '')}</div>
         ${p.erro ? `<div style="font-size:10px;color:#ff8a8a;">${esc(p.erro).slice(0, 120)}</div>` : ''}
         <div style="margin-top:6px;display:flex;gap:4px;flex-wrap:wrap;">
           ${p.status === 'PENDENTE' ? btn('aprovar', 'Aprovar', 'btn-primary') + btn('rejeitar', 'Rejeitar') : ''}
-          ${p.status === 'APROVADO' ? btn('pendente', 'Desfazer') : ''}
-          ${p.status === 'REJEITADO' ? btn('pendente', 'Voltar') : ''}
-          ${p.status === 'ERRO' ? btn('pendente', 'Voltar') : ''}
-        </div></div>`;
+          ${['APROVADO', 'REJEITADO', 'ERRO'].includes(p.status) ? btn('pendente', 'Desfazer') : ''}
+        </div></label>`;
     }).join('');
+    const nums = []; for (let i = 1; i <= paginas; i++) if (i === 1 || i === paginas || Math.abs(i - pagina) <= 2) nums.push(i);
+    const pager = paginas > 1 ? `<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:16px 0;">
+      ${pagina > 1 ? `<a class="btn btn-outline" style="padding:6px 12px;font-size:11px;" href="${base}&p=${pagina - 1}">← Anterior</a>` : ''}
+      ${nums.map((n, i) => (i && n - nums[i - 1] > 1 ? '<span>…</span>' : '') + `<a href="${base}&p=${n}" style="min-width:34px;text-align:center;padding:6px 8px;border:1px solid var(--border);border-radius:6px;${n === pagina ? 'background:var(--gold);color:#000;font-weight:700;' : ''}">${n}</a>`).join('')}
+      ${pagina < paginas ? `<a class="btn btn-outline" style="padding:6px 12px;font-size:11px;" href="${base}&p=${pagina + 1}">Próxima →</a>` : ''}
+      <form method="GET" action="/admin/instagram/fila" style="display:inline-flex;gap:4px;margin-left:8px;"><input type="hidden" name="tipo" value="${tipo}"><input type="hidden" name="status" value="${status}"><input type="hidden" name="q" value="${esc(q)}"><input name="p" type="number" min="1" max="${paginas}" placeholder="ir p/ pág." style="width:90px;padding:6px;"><button class="btn btn-outline" style="padding:6px 10px;font-size:11px;">Ir</button></form>
+    </div>` : '';
     const filtroLink = (t, s, txt) => `<a href="/admin/instagram/fila?tipo=${t}&status=${s}" style="padding:4px 10px;border:1px solid var(--border);border-radius:14px;font-size:12px;${(t === tipo && s === status) ? 'background:var(--gold);color:#000;font-weight:700;' : ''}">${txt}</a>`;
     res.send(html('Fila de posts da ALMARE', `
       <a href="/admin/instagram" style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);">← Instagram da ALMARE</a>
@@ -204,10 +210,25 @@ module.exports = function montar(app, { pool, authAdmin, html, esc, instagram })
         ${filtroLink('', '', 'Todos')} ${filtroLink('feed', '', 'Feed')} ${filtroLink('story', '', 'Stories')}
         ${filtroLink('', 'PENDENTE', 'Aguardando')} ${filtroLink('', 'APROVADO', 'Aprovados')} ${filtroLink('', 'PUBLICADO', 'Publicados')} ${filtroLink('', 'ERRO', 'Com erro')} ${filtroLink('', 'REJEITADO', 'Rejeitados')}
       </div>
-      ${total && status === 'PENDENTE' ? `<form method="POST" action="/admin/instagram/fila/aprovar-todos" onsubmit="return confirm('Aprovar as ${total} peças desta lista? Elas só saem quando você publicar ou ligar o automático.')" style="margin-bottom:12px;"><input type="hidden" name="tipo" value="${tipo}"><input type="hidden" name="q" value="${esc(q)}"><button class="btn btn-primary" style="padding:8px 14px;font-size:11px;">Aprovar as ${total} desta lista</button></form>` : ''}
-      <div style="font-size:12px;color:var(--muted);margin-bottom:10px;">${total} peça(s)${paginas > 1 ? ' · página ' + pagina + ' de ' + paginas : ''}</div>
+      <form id="lote" method="POST" action="/admin/instagram/fila/lote/aprovar"><input type="hidden" name="volta" value="${esc(aqui)}"></form>
+      <div style="position:sticky;top:0;z-index:5;background:var(--bg,#111);padding:10px 0;display:flex;gap:8px;flex-wrap:wrap;align-items:center;border-bottom:1px solid var(--border);">
+        <label style="font-size:13px;display:flex;gap:6px;align-items:center;cursor:pointer;"><input type="checkbox" id="todos" style="width:20px;height:20px;accent-color:#c9a45c;"> Marcar todas desta página</label>
+        <span id="cont" style="font-size:12px;color:var(--muted);">0 marcadas</span>
+        <button type="submit" form="lote" formaction="/admin/instagram/fila/lote/aprovar" class="btn btn-primary" style="padding:8px 14px;font-size:11px;">Aprovar marcadas</button>
+        <button type="submit" form="lote" formaction="/admin/instagram/fila/lote/pendente" class="btn btn-outline" style="padding:8px 14px;font-size:11px;">Voltar marcadas p/ aguardando</button>
+        <button type="submit" form="lote" formaction="/admin/instagram/fila/lote/rejeitar" class="btn btn-outline" style="padding:8px 14px;font-size:11px;">Rejeitar marcadas</button>
+        <button type="submit" form="lote" formaction="/admin/instagram/fila/desfazer-todas" class="btn btn-outline" style="padding:8px 14px;font-size:11px;margin-left:auto;" onclick="return confirm('Voltar TODAS as peças aprovadas (ainda não publicadas) para aguardando?')">Desfazer todas as aprovações</button>
+      </div>
+      <div style="font-size:12px;color:var(--muted);margin:10px 0;">${total} peça(s)${paginas > 1 ? ' · página ' + pagina + ' de ' + paginas : ''}</div>
+      ${pager}
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;">${cards || '<span style="color:var(--muted)">Nenhuma peça.</span>'}</div>
-      ${paginas > 1 ? `<div style="margin-top:16px;display:flex;gap:12px;">${pagina > 1 ? `<a href="${base}&p=${pagina - 1}">← anterior</a>` : ''}${pagina < paginas ? `<a href="${base}&p=${pagina + 1}">próxima →</a>` : ''}</div>` : ''}
+      ${pager}
+      <script>
+        var bx=[].slice.call(document.querySelectorAll('.sel')),ct=document.getElementById('cont');
+        function atu(){ct.textContent=bx.filter(function(b){return b.checked}).length+' marcadas'}
+        bx.forEach(function(b){b.addEventListener('change',atu)});
+        document.getElementById('todos').addEventListener('change',function(e){bx.forEach(function(b){b.checked=e.target.checked});atu()});
+      </script>
     `));
   });
 
@@ -247,6 +268,19 @@ module.exports = function montar(app, { pool, authAdmin, html, esc, instagram })
     await pool.query(`UPDATE almare_posts SET status=$2, aprovado_em=${para === 'APROVADO' ? 'NOW()' : 'NULL'}, erro=NULL WHERE id=$1 AND status = ANY($3)`, [id, para, de]);
     res.redirect(voltaPara(req));
   };
+  const ACOES = { aprovar: [['PENDENTE'], 'APROVADO'], rejeitar: [['PENDENTE'], 'REJEITADO'], pendente: [['APROVADO', 'REJEITADO', 'ERRO'], 'PENDENTE'] };
+  app.post('/admin/instagram/fila/lote/:acao', authAdmin, async (req, res) => {
+    const ac = ACOES[req.params.acao];
+    const ids = [].concat((req.body && req.body.ids) || []).map((x) => parseInt(x, 10)).filter(Boolean);
+    let n = 0;
+    if (ac && ids.length) n = (await pool.query(`UPDATE almare_posts SET status=$2, aprovado_em=${ac[1] === 'APROVADO' ? 'NOW()' : 'NULL'}, erro=NULL WHERE id = ANY($1) AND status = ANY($3)`, [ids, ac[1], ac[0]])).rowCount;
+    const v = voltaPara(req);
+    res.redirect(v + (v.includes('?') ? '&' : '?') + 'ok=' + encodeURIComponent(ids.length ? n + ' peça(s) atualizada(s).' : 'Nenhuma peça marcada.'));
+  });
+  app.post('/admin/instagram/fila/desfazer-todas', authAdmin, async (req, res) => {
+    const r = await pool.query(`UPDATE almare_posts SET status='PENDENTE', aprovado_em=NULL WHERE status='APROVADO'`);
+    res.redirect('/admin/instagram/fila?ok=' + encodeURIComponent(r.rowCount + ' aprovação(ões) desfeita(s).'));
+  });
   app.post('/admin/instagram/fila/:id/aprovar', authAdmin, mudar(['PENDENTE'], 'APROVADO'));
   app.post('/admin/instagram/fila/:id/rejeitar', authAdmin, mudar(['PENDENTE'], 'REJEITADO'));
   app.post('/admin/instagram/fila/:id/pendente', authAdmin, mudar(['APROVADO', 'REJEITADO', 'ERRO'], 'PENDENTE'));
